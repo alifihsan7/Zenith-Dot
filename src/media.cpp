@@ -1,5 +1,7 @@
 #include "media.hpp"
 
+#include <winrt/Windows.Foundation.Collections.h>
+
 #include <algorithm>
 #include <cmath>
 #include <utility>
