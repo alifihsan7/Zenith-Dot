@@ -16,13 +16,13 @@ Short notices split off the pill as a liquid bubble, or grow out of the dot: plu
 
 When the panel closes, it shrinks to a pill. The pill stays visible while an activity is running and shrinks to the black dot when idle.
 
-Zenith Dot hides during fullscreen on the primary display and resumes when you leave fullscreen. Microphone or camera activity shows a pill with a device icon and label. When music or a timer is active, device icons sit beside that activity. Orange marks the microphone, and green marks the camera. Both icons appear when both devices are in use. The panel shows the same icons beside its tabs.
+Zenith Dot hides during fullscreen on the primary display and resumes when you leave fullscreen. Microphone or camera activity shows a pill with a device icon and label. When music or a timer is active, device icons sit beside that activity. Orange marks the microphone, and green marks the camera. Both icons appear when both devices are in use. The panel shows the same icons beside its tabs. A microphone muted at the Windows device level is excluded. An app's own mute button can leave its Windows capture session active.
 
 System volume and brightness changes show a meter that updates in place as you adjust the level. Brightness requires a display that publishes Windows WMI brightness events. The Windows volume and brightness flyouts can appear alongside Zenith Dot.
 
 The accent colour follows the current cover. The tray menu has media controls, **Hide Zenith Dot**, and **Exit**. Hiding leaves playback running. Choose **Show Zenith Dot** from the tray to bring it back.
 
-Zenith pauses its bubbles when Windows reports that notifications are restricted. Countdowns still finish and show their completed state in the timer panel. Windows builds without the notification-mode API show **Notification status unavailable** in System.
+Zenith bubbles, including the live clipboard preview, still appear when Windows Do Not Disturb is on. System shows the current Windows notification mode. Windows builds without the notification-mode API show **Notification status unavailable** in System.
 
 The app uses C++20, Win32, Direct2D, DirectWrite, and C++/WinRT. It runs as one desktop process. The frame timer stops when the dot settles. Windows media events drive session updates, and the app reads power status every ten seconds and when Windows reports a change.
 
@@ -89,7 +89,7 @@ Temporary connection or service failures are retried automatically. If the looku
 - Hover the pill: the panel opens after a short delay. The title moves into place, while the cover fades in and out at its fixed position inside the panel. Move a little past the panel's edge and it should stay open, then close once the pointer is well away. Click outside it to close it right away.
 - Switch between Now Playing, Timers, and System. Drag the timeline to seek where the player allows it. With two players open, click the other app's logo to show it.
 - Open Timers, adjust Focus and Break, then switch to Quick Timer while Focus is running and start a second countdown. Check each timer's pill, pause/resume, and completion bubble. Close and reopen the panel and check that the last timer view returns.
-- Open System and switch the Windows default audio output. Check the displayed name and the Sound Settings link. Toggle Do Not Disturb in Windows and check the notification row and bubble behaviour.
+- Open System and switch the Windows default audio output. Check the displayed name and the Sound Settings link. Turn on Windows Do Not Disturb, check the notification row, then copy ordinary text and verify that the **Copied** bubble still appears.
 - Open Scratchpad, click the pin icon, and type a note. Switch to another app and confirm Scratchpad stays visible. Switch to Focus and System and check that the pin stays on. Unpin, close the panel, and hover again to check that System returns. Repeat with Lyrics open and manually scrolled. Reopen the editor, press Esc, and check that focus returns to the previous app. Restart Zenith Dot and confirm the note reloads.
 - While music plays, choose **Hide Zenith Dot** from the tray. Confirm playback continues, then restore the island with **Show Zenith Dot**.
 - With the browser extension enabled, play two tabs in the same browser and select each numbered logo. Verify that play/pause and seek affect the selected tab.
@@ -101,7 +101,7 @@ Temporary connection or service failures are retried automatically. If the looku
 - Unplug and reconnect the charger: "On Battery" and then a green "Charging" bubble, each with the battery level.
 - Open System and check the battery percentage and AC status. Unplug and reconnect the charger. On a desktop without a battery, confirm the panel reports that state.
 - Enter and leave fullscreen in a video player on the primary display. The island should fade out, close its panel, and return after you exit fullscreen. Notices raised during fullscreen should expire without appearing afterwards.
-- Start and stop microphone or camera capture in an app. Check the app name in the notice and the orange or green indicator. With both devices active, the indicator should be green.
+- Start microphone and camera capture in an app. Check that both icons appear. With capture still open, mute the microphone in Windows and verify that the orange icon disappears and the green one remains. Unmute and verify that the orange icon returns. With two active microphones, muting one should leave the icon visible.
 - Change volume repeatedly, then mute. Check that one volume notice updates in place. On a display that publishes Windows brightness events, repeat with brightness.
 - Install, sign out, sign back in, and confirm there is one Zenith Dot process. Launch it again from Start and check that the process count stays at one.
 - Compare private working set after a minute at idle and during playback. For an Electron baseline, include its renderer and helper processes.

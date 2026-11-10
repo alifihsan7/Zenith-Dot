@@ -135,30 +135,68 @@ std::wstring processLabel(DWORD pid, wchar_t const* fallback) {
     return captureName({path, length}, true);
 }
 
-DWORD microphoneProcess(IMMDeviceEnumerator& devices) {
+std::wstring activeMicrophone(IMMDeviceEnumerator& devices, std::wstring registryApp) {
     winrt::com_ptr<IMMDeviceCollection> inputs;
     UINT count = 0;
     if (FAILED(devices.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, inputs.put())) ||
-        FAILED(inputs->GetCount(&count))) return 0;
+        FAILED(inputs->GetCount(&count))) return registryApp;
+
+    bool allInputsMuted = true;
+    bool registryAppMuted = false;
+    bool registryAppLive = false;
+    bool unknownLiveSession = false;
+    DWORD liveProcess = 0;
     for (UINT index = 0; index < count; ++index) {
         winrt::com_ptr<IMMDevice> input;
+        if (FAILED(inputs->Item(index, input.put()))) {
+            allInputsMuted = false;
+            unknownLiveSession = true;
+            continue;
+        }
+        winrt::com_ptr<IAudioEndpointVolume> endpoint;
+        BOOL mute = FALSE;
+        const bool muted = SUCCEEDED(input->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_INPROC_SERVER,
+                                                      nullptr, endpoint.put_void())) &&
+                           SUCCEEDED(endpoint->GetMute(&mute)) && mute;
+        allInputsMuted = allInputsMuted && muted;
+        if (muted && registryApp.empty()) continue;
+
         winrt::com_ptr<IAudioSessionManager2> manager;
         winrt::com_ptr<IAudioSessionEnumerator> sessions;
         int sessionCount = 0;
-        if (FAILED(inputs->Item(index, input.put())) ||
-            FAILED(input->Activate(__uuidof(IAudioSessionManager2), CLSCTX_INPROC_SERVER, nullptr, manager.put_void())) ||
-            FAILED(manager->GetSessionEnumerator(sessions.put())) || FAILED(sessions->GetCount(&sessionCount))) continue;
+        if (FAILED(input->Activate(__uuidof(IAudioSessionManager2), CLSCTX_INPROC_SERVER, nullptr, manager.put_void())) ||
+            FAILED(manager->GetSessionEnumerator(sessions.put())) || FAILED(sessions->GetCount(&sessionCount))) {
+            if (!muted) unknownLiveSession = true;
+            continue;
+        }
         for (int i = 0; i < sessionCount; ++i) {
             winrt::com_ptr<IAudioSessionControl> session;
             AudioSessionState state{};
-            if (FAILED(sessions->GetSession(i, session.put())) ||
-                FAILED(session->GetState(&state)) || state != AudioSessionStateActive) continue;
+            if (FAILED(sessions->GetSession(i, session.put())) || FAILED(session->GetState(&state))) {
+                if (!muted) unknownLiveSession = true;
+                continue;
+            }
+            if (state != AudioSessionStateActive) continue;
             const auto details = session.try_as<IAudioSessionControl2>();
             DWORD pid = 0;
-            if (details && SUCCEEDED(details->GetProcessId(&pid)) && pid && pid != GetCurrentProcessId()) return pid;
+            if (!details || FAILED(details->GetProcessId(&pid)) || !pid) {
+                if (!muted) unknownLiveSession = true;
+                continue;
+            }
+            if (pid == GetCurrentProcessId()) continue;
+            if (!muted && !liveProcess) liveProcess = pid;
+            if (registryApp.empty()) continue;
+            const auto label = processLabel(pid, L"");
+            if (label.empty() && !muted) unknownLiveSession = true;
+            if (_wcsicmp(registryApp.c_str(), label.c_str()) == 0) {
+                if (muted) registryAppMuted = true;
+                else registryAppLive = true;
+            }
         }
     }
-    return 0;
+    if (allInputsMuted) return {};
+    if (!registryApp.empty() && (!registryAppMuted || registryAppLive || unknownLiveSession)) return registryApp;
+    return liveProcess ? processLabel(liveProcess, L"Audio input") : std::wstring{};
 }
 
 struct CameraActivity : winrt::implements<CameraActivity, IMFSensorActivitiesReportCallback> {
@@ -455,11 +493,7 @@ std::wstring const& DesktopMonitor::audioOutput() const { return state_->audioOu
 
 CaptureActivity DesktopMonitor::captureActivity() const {
     auto activity = readCaptureActivity();
-    if (activity.microphone.empty() && state_->enumerator) {
-        if (const auto pid = microphoneProcess(*state_->enumerator)) {
-            activity.microphone = processLabel(pid, L"Audio input");
-        }
-    }
+    if (state_->enumerator) activity.microphone = activeMicrophone(*state_->enumerator, std::move(activity.microphone));
     if (activity.camera.empty() && state_->cameraActivity) {
         if (const auto pid = state_->cameraActivity->process()) {
             activity.camera = processLabel(pid, L"Camera in use");

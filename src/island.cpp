@@ -474,14 +474,11 @@ void Island::setSystem(SystemStats const& stats) {
 
 void Island::setAudioOutput(std::wstring const& output) { audioOutput_ = output; }
 
-bool Island::setNotificationsQuiet(std::optional<bool> quiet) {
-    if (notificationsQuiet_ == quiet) return false;
-    notificationsQuiet_ = quiet;
-    if (notificationsQuiet()) clearAlerts();
+bool Island::setWindowsNotificationsQuiet(std::optional<bool> quiet) {
+    if (windowsNotificationsQuiet_ == quiet) return false;
+    windowsNotificationsQuiet_ = quiet;
     return true;
 }
-
-bool Island::notificationsQuiet() const { return notificationsQuiet_.value_or(false); }
 
 void Island::setLyrics(LyricsView const& lyrics) { lyrics_ = &lyrics; }
 
@@ -2075,8 +2072,8 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
     text(L"Audio Output", bodyFont_.get(), box(x + padX, y + 120, innerWidth, 17), rgb(inkColor));
     drawButton(box(x + padX, y + 139, innerWidth, 28),
                audioOutput_.empty() ? L"Choose output  ▾" : audioOutput_ + L"  ▾", Hit::audioPicker, record);
-    const auto notificationLabel = !notificationsQuiet_ ? L"Notification status unavailable" :
-        notificationsQuiet() ? L"Do Not Disturb on" : L"Do Not Disturb off";
+    const auto notificationLabel = !windowsNotificationsQuiet_ ? L"Notification status unavailable" :
+        *windowsNotificationsQuiet_ ? L"Do Not Disturb on" : L"Do Not Disturb off";
     drawButton(box(x + padX, y + 176, innerWidth, 25), notificationLabel, Hit::notificationSettings, record);
 }
 
@@ -2152,7 +2149,7 @@ void Island::drawSharedTitle(D2D1_RECT_F panel, float value) {
 // ---- Alerts --------------------------------------------------------------------------------------
 
 void Island::notify(IslandAlert alert) {
-    if (suppressed_ || notificationsQuiet()) return;
+    if (suppressed_) return;
     const auto now = Clock::now();
     prepareText();
     const bool replacesSameKind = alert.kind == IslandAlert::Kind::copy || alert.meter ||

@@ -136,7 +136,7 @@ int App::run(HINSTANCE instance) {
     });
     desktop_.start(window_);
     island_.setAudioOutput(desktop_.audioOutput());
-    island_.setNotificationsQuiet(desktop_.notificationsQuiet());
+    island_.setWindowsNotificationsQuiet(desktop_.notificationsQuiet());
     lyrics_ = std::make_shared<Lyrics>([this] { frame(); });
     island_.setLyrics(lyrics_->view());
     scratchpad_.load();
@@ -462,8 +462,7 @@ void App::queueClipboard(bool listenerEvent) {
 
 void App::refreshClipboard() {
     if (!clipboardAttempts_) return;
-    island_.setNotificationsQuiet(desktop_.notificationsQuiet());
-    if (suppressed() || island_.notificationsQuiet()) {
+    if (suppressed()) {
         clipboardSequence_ = GetClipboardSequenceNumber();
         KillTimer(window_, clipboardTimer);
         clipboardAttempts_.reset();
@@ -528,7 +527,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     }
     case WM_SETTINGCHANGE:
         refreshMotion();
-        island_.setNotificationsQuiet(desktop_.notificationsQuiet());
+        island_.setWindowsNotificationsQuiet(desktop_.notificationsQuiet());
         [[fallthrough]];
     case WM_DISPLAYCHANGE:
     case WM_DPICHANGED:
@@ -545,7 +544,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         if (wparam == MediaMonitor::artworkTimer && monitor_) monitor_->retryArtwork();
         if (wparam == powerTimer) {
             if (!clipboardListening_) clipboardListening_ = AddClipboardFormatListener(window_) != FALSE;
-            const bool changed = island_.setNotificationsQuiet(desktop_.notificationsQuiet());
+            const bool changed = island_.setWindowsNotificationsQuiet(desktop_.notificationsQuiet());
             refreshPower();
             if (changed) frame();
         }
@@ -582,7 +581,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         frame();
         return 0;
     case DesktopMonitor::notificationModeChanged:
-        if (island_.setNotificationsQuiet(desktop_.notificationsQuiet())) frame();
+        if (island_.setWindowsNotificationsQuiet(desktop_.notificationsQuiet())) frame();
         return 0;
     case DesktopMonitor::volumeChanged:
         if (desktop_.isCurrentVolume(lparam) && wparam != lastVolume_) {

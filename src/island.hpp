@@ -63,8 +63,7 @@ public:
     void setPower(PowerState const& power);
     void setSystem(SystemStats const& stats);
     void setAudioOutput(std::wstring const& output);
-    bool setNotificationsQuiet(std::optional<bool> quiet);
-    bool notificationsQuiet() const;
+    bool setWindowsNotificationsQuiet(std::optional<bool> quiet);
     void setSuppressed(bool suppressed);
     void setCaptureColors(std::optional<unsigned> microphone, std::optional<unsigned> camera);
     void setLyrics(LyricsView const& lyrics);
@@ -215,7 +214,7 @@ private:
     PowerState power_;
     SystemStats system_;
     std::wstring audioOutput_;
-    std::optional<bool> notificationsQuiet_;
+    std::optional<bool> windowsNotificationsQuiet_;
     bool animate_ = true;
     bool suppressed_ = false;
     float visibilityFrom_ = 1;
