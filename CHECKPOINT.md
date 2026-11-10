@@ -11,8 +11,8 @@ Serah terima untuk agent berikutnya (Codex). Isinya posisi kerja terakhir, cara 
 
 ## Lanjut dari sini
 
-- Paket terbaru ada di `out/ZenithDot-Privacy-DND.zip`. Bubble Zenith tetap tampil saat DND Windows aktif. Status DND tetap bisa dilihat di System. Indikator mic memperhitungkan mute perangkat Windows; tombol mute internal aplikasi bisa membiarkan sesi capture terbuka.
-- Preview ikon kucing ada di `experiments/zenith-dot-cat-icon.html`. Cek ukuran 16 px sebelum memasang ikon ke EXE dan tray.
+- Paket terbaru ada di `out/ZenithDot-Cat-Icon.zip`. Ikon kucing Option B v3 dari `assets/logos/zenith-dot.svg` dipakai untuk EXE, shortcut, dan tray. Ikon Windows dalam `src/zenith.ico` mencakup ukuran 16–256 px.
+- Bubble Zenith tetap tampil saat DND Windows aktif. Status DND tetap bisa dilihat di System. Indikator mic memperhitungkan mute perangkat Windows. Tombol mute internal aplikasi bisa membiarkan sesi capture terbuka.
 - Ekstensi browser mendukung Brave dan membaca judul serta timeline dari player utama YouTube. Tes simulasi lulus; setup ekstensi masih perlu dicek di Brave.
 - Transisi tutup lebih pelan dan bisa berbalik saat kursor kembali. Cover fade di dalam panel dan ikon privasi muncul setelah pill melebar. Tes frame dan simulasi Caps Lock serta Num Lock lulus. Tombol fisik dan rasa animasi masih perlu dicek di desktop interaktif.
 - Paket Release lokal ada di `out/ZenithDot-Timers-Unified.zip`. Isinya executable, installer, script setup browser bridge, dan ekstensi unpacked. Preview panel ada di `experiments/zenith-dot-scratchpad.html`.

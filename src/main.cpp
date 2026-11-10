@@ -4,6 +4,7 @@
 #include "desktop.hpp"
 #include "drop_zone.hpp"
 #include "island.hpp"
+#include "resource.h"
 #include <hidusage.h>
 #include <ole2.h>
 #include <set>
@@ -70,6 +71,7 @@ private:
     UINT taskbarCreated_ = 0;
     UINT frameInterval_ = 0;
     NOTIFYICONDATAW tray_{};
+    HICON trayIcon_ = nullptr;
     std::shared_ptr<MediaMonitor> monitor_;
     std::shared_ptr<Lyrics> lyrics_;
     MediaState media_;
@@ -311,7 +313,12 @@ void App::addTray() {
     tray_.uID = 1;
     tray_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
     tray_.uCallbackMessage = trayMessage;
-    tray_.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    if (!trayIcon_) {
+        trayIcon_ = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_ZENITH_DOT),
+                                                IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
+                                                GetSystemMetrics(SM_CYSMICON), 0));
+    }
+    tray_.hIcon = trayIcon_ ? trayIcon_ : LoadIconW(nullptr, IDI_APPLICATION);
     wcscpy_s(tray_.szTip, appName);
     if (Shell_NotifyIconW(NIM_ADD, &tray_)) {
         tray_.uVersion = NOTIFYICON_VERSION_4;
@@ -693,6 +700,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         if (monitor_) monitor_->stop();
         if (powerNotification_) UnregisterPowerSettingNotification(powerNotification_);
         Shell_NotifyIconW(NIM_DELETE, &tray_);
+        if (trayIcon_) DestroyIcon(trayIcon_);
         PostQuitMessage(0);
         return 0;
     }

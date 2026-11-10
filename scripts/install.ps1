@@ -21,6 +21,7 @@ $shell = New-Object -ComObject WScript.Shell
 foreach ($folder in @($programs, $startup)) {
     $shortcut = $shell.CreateShortcut((Join-Path $folder 'Zenith Dot.lnk'))
     $shortcut.TargetPath = $installedExe
+    $shortcut.IconLocation = "$installedExe,0"
     $shortcut.WorkingDirectory = $installDir
     $shortcut.Description = 'Zenith Dot'
     $shortcut.Save()

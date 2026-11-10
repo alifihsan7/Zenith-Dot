@@ -1,6 +1,8 @@
 #include <windows.h>
+#include "resource.h"
 
 1 RT_MANIFEST "zenith.manifest"
+IDI_ZENITH_DOT ICON "zenith.ico"
 
 1 VERSIONINFO
 FILEVERSION 0,1,0,0
