@@ -229,7 +229,9 @@ void App::run(IslandCommand const& command) {
     case IslandCommand::Kind::audioPicker: showAudioPicker(); break;
     case IslandCommand::Kind::clearDrop: dropZone_.clear(); break;
     case IslandCommand::Kind::removeDrop: dropZone_.remove(command.index); break;
-    case IslandCommand::Kind::openDropImage: dropZone_.openImage(command.index, window_); break;
+    case IslandCommand::Kind::openDropImage:
+        if (dropZone_.openImage(command.index, window_)) island_.setPopupOpen(true);
+        break;
     case IslandCommand::Kind::notificationSettings:
         ShellExecuteW(window_, L"open", L"ms-settings:notifications", nullptr, nullptr, SW_SHOWNORMAL);
         break;
@@ -274,7 +276,7 @@ void App::refreshMotion() {
 bool App::refreshFullscreen() {
     const auto foreground = GetForegroundWindow();
     if (foreground && (foreground == window_ || foreground == scratchpad_.window())) return false;
-    const bool fullscreen = fullscreenOnPrimary(window_);
+    const bool fullscreen = foreground != dropZone_.previewWindow() && fullscreenOnPrimary(window_);
     if (fullscreen == fullscreen_) return false;
     fullscreen_ = fullscreen;
     applyVisibility();
@@ -505,9 +507,11 @@ void App::refreshClipboard() {
     KillTimer(window_, clipboardTimer);
     clipboardAttempts_.reset();
     if (alert) {
-        if (image.value && dropZone_.addImage(image.value)) {
-            stagedImageSequence_ = clipboardSequence_;
-            alert->value = L"Image in Drop Zone";
+        if (image.value) {
+            const auto result = dropZone_.addImage(image.value);
+            if (result != DropZone::ImageResult::unavailable) stagedImageSequence_ = clipboardSequence_;
+            if (result == DropZone::ImageResult::duplicate) return;
+            if (result == DropZone::ImageResult::added) alert->value = L"Image in Drop Zone";
         }
         island_.notify(std::move(*alert));
         frame();
@@ -603,6 +607,14 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         return FALSE;
     case DesktopMonitor::foregroundChanged:
         if (refreshFullscreen()) frame();
+        return 0;
+    case DropZone::previewClosed:
+        if (!dropZone_.previewWindow()) {
+            island_.setPopupOpen(false);
+            refreshFullscreen();
+            island_.showDropZone(true);
+            frame();
+        }
         return 0;
     case DesktopMonitor::captureChanged:
         refreshCapture();

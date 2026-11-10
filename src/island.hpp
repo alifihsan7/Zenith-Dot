@@ -72,7 +72,7 @@ public:
     void setDropItems(std::vector<DropPreview> items);
     void setDropHover(bool hovering);
     void setPopupOpen(bool open);
-    void showDropZone();
+    void showDropZone(bool hold = false);
     std::optional<size_t> dropItemAt(POINT client) const;
     void closePanel();
     bool panelPinned() const;

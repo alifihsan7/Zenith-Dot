@@ -527,12 +527,16 @@ void Island::setDropHover(bool hovering) {
     }
 }
 
-void Island::showDropZone() {
+void Island::showDropZone(bool hold) {
     if (suppressed_) return;
     const auto now = Clock::now();
     if (bubbleShowing()) clearAlerts();
     setOpen(true, now);
     showScreen(Screen::drop, now);
+    if (hold) {
+        closeAt_ = now + 1200ms;
+        buttonWasDown_ = true;
+    }
 }
 
 std::optional<size_t> Island::dropItemAt(POINT client) const {

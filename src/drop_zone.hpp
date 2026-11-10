@@ -5,8 +5,10 @@
 #include <winrt/base.h>
 
 #include <functional>
+#include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,13 +30,16 @@ class DropZone {
 public:
     using Hover = std::function<void(bool)>;
     using Changed = std::function<void(std::vector<DropPreview>)>;
+    enum class ImageResult { unavailable, duplicate, added };
+    static constexpr UINT previewClosed = WM_APP + 11;
 
     ~DropZone();
     bool attach(HWND window, Hover hover, Changed changed);
     void detach();
-    bool addImage(HBITMAP bitmap);
+    ImageResult addImage(HBITMAP bitmap);
     void drag(size_t index);
-    void openImage(size_t index, HWND owner) const;
+    bool openImage(size_t index, HWND owner);
+    HWND previewWindow() const { return previewWindow_; }
     void remove(size_t index);
     void clear();
 
@@ -53,6 +58,7 @@ private:
     bool prepareImageFolder();
     void deleteTemporary(std::wstring const& path);
     void publish() const;
+    static LRESULT CALLBACK previewProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
 
     HWND window_ = nullptr;
     winrt::com_ptr<IDropTarget> target_;
@@ -61,6 +67,10 @@ private:
     std::wstring imageFolder_;
     std::vector<std::wstring> pendingDeletes_;
     unsigned imageNumber_ = 0;
+    std::optional<uint64_t> recentImageHash_;
+    std::chrono::steady_clock::time_point recentImageAt_{};
+    HWND previewWindow_ = nullptr;
+    std::shared_ptr<const DropThumbnail> previewImage_;
     bool dragging_ = false;
 };
 

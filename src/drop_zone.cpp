@@ -6,6 +6,7 @@
 #include <wincodec.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <string_view>
 #include <utility>
@@ -16,6 +17,7 @@ namespace {
 constexpr size_t maxItems = 64;
 constexpr size_t maxBytes = 16 * 1024 * 1024;
 constexpr uint64_t maxImagePixels = 32'000'000;
+constexpr auto imageDedupWindow = std::chrono::seconds(2);
 
 FORMATETC format(CLIPFORMAT type) { return {type, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL}; }
 
@@ -124,11 +126,37 @@ winrt::com_ptr<IDataObject> fileItem(std::wstring const& path, size_t bytes) {
     return takeItem(CF_HDROP, data);
 }
 
-std::shared_ptr<DropThumbnail> makeThumbnail(IWICImagingFactory& factory, IWICBitmapSource& source) {
+std::optional<uint64_t> imageHash(IWICImagingFactory& factory, IWICBitmapSource& source) {
+    UINT width = 0, height = 0;
+    if (FAILED(source.GetSize(&width, &height)) || !width || !height ||
+        static_cast<uint64_t>(width) * height > maxImagePixels) return std::nullopt;
+    winrt::com_ptr<IWICFormatConverter> converter;
+    if (FAILED(factory.CreateFormatConverter(converter.put())) ||
+        FAILED(converter->Initialize(&source, GUID_WICPixelFormat24bppBGR, WICBitmapDitherTypeNone,
+                                     nullptr, 0, WICBitmapPaletteTypeCustom))) return std::nullopt;
+    const UINT stride = width * 3;
+    const UINT rows = std::min(height, std::max(1u, 65536u / stride));
+    std::vector<uint8_t> pixels(stride * rows);
+    uint64_t hash = 14695981039346656037ull;
+    constexpr uint64_t prime = 1099511628211ull;
+    hash = (hash ^ width) * prime;
+    hash = (hash ^ height) * prime;
+    for (UINT y = 0; y < height; y += rows) {
+        const UINT count = std::min(rows, height - y);
+        const WICRect rect{0, static_cast<INT>(y), static_cast<INT>(width), static_cast<INT>(count)};
+        const UINT bytes = stride * count;
+        if (FAILED(converter->CopyPixels(&rect, stride, bytes, pixels.data()))) return std::nullopt;
+        for (UINT i = 0; i < bytes; ++i) hash = (hash ^ pixels[i]) * prime;
+    }
+    return hash;
+}
+
+std::shared_ptr<DropThumbnail> makeThumbnail(IWICImagingFactory& factory, IWICBitmapSource& source,
+                                             unsigned maxWidth, unsigned maxHeight) {
     UINT width = 0, height = 0;
     if (FAILED(source.GetSize(&width, &height)) || !width || !height ||
         static_cast<uint64_t>(width) * height > maxImagePixels) return {};
-    const double scale = std::min({1.0, 72.0 / width, 54.0 / height});
+    const double scale = std::min({1.0, static_cast<double>(maxWidth) / width, static_cast<double>(maxHeight) / height});
     auto thumbnail = std::make_shared<DropThumbnail>();
     thumbnail->width = std::max(1u, static_cast<unsigned>(width * scale));
     thumbnail->height = std::max(1u, static_cast<unsigned>(height * scale));
@@ -146,7 +174,7 @@ std::shared_ptr<DropThumbnail> makeThumbnail(IWICImagingFactory& factory, IWICBi
     return thumbnail;
 }
 
-std::shared_ptr<DropThumbnail> fileThumbnail(std::wstring const& path) {
+std::shared_ptr<DropThumbnail> fileThumbnail(std::wstring const& path, unsigned maxWidth = 72, unsigned maxHeight = 54) {
     const auto dot = path.find_last_of(L'.');
     if (dot == std::wstring::npos) return {};
     const auto* extension = path.c_str() + dot;
@@ -160,7 +188,7 @@ std::shared_ptr<DropThumbnail> fileThumbnail(std::wstring const& path) {
         FAILED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
                                                   WICDecodeMetadataCacheOnDemand, decoder.put())) ||
         FAILED(decoder->GetFrame(0, frame.put()))) return {};
-    return makeThumbnail(*factory, *frame);
+    return makeThumbnail(*factory, *frame, maxWidth, maxHeight);
 }
 
 bool encodePng(IWICImagingFactory& factory, IWICBitmapSource& source, std::wstring const& path) {
@@ -245,12 +273,14 @@ bool DropZone::attach(HWND window, Hover hover, Changed changed) {
 }
 
 void DropZone::detach() {
+    if (previewWindow_) DestroyWindow(previewWindow_);
     if (window_) RevokeDragDrop(std::exchange(window_, nullptr));
     target_ = nullptr;
     for (const auto& item : items_) if (item.temporary) DeleteFileW(item.imagePath.c_str());
     items_.clear();
     for (const auto& path : pendingDeletes_) DeleteFileW(path.c_str());
     pendingDeletes_.clear();
+    recentImageHash_.reset();
     if (!imageFolder_.empty()) RemoveDirectoryW(std::exchange(imageFolder_, {}).c_str());
 }
 
@@ -279,15 +309,19 @@ void DropZone::deleteTemporary(std::wstring const& path) {
         pendingDeletes_.push_back(path);
 }
 
-bool DropZone::addImage(HBITMAP bitmap) {
-    if (!bitmap || items_.size() >= maxItems || !remainingBytes()) return false;
+DropZone::ImageResult DropZone::addImage(HBITMAP bitmap) {
+    if (!bitmap) return ImageResult::unavailable;
     winrt::com_ptr<IWICImagingFactory> factory;
     winrt::com_ptr<IWICBitmap> image;
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                                 IID_PPV_ARGS(factory.put()))) ||
-        FAILED(factory->CreateBitmapFromHBITMAP(bitmap, nullptr, WICBitmapIgnoreAlpha, image.put()))) return false;
-    auto thumbnail = makeThumbnail(*factory, *image);
-    if (!thumbnail || !prepareImageFolder()) return false;
+        FAILED(factory->CreateBitmapFromHBITMAP(bitmap, nullptr, WICBitmapIgnoreAlpha, image.put()))) return ImageResult::unavailable;
+    const auto hash = imageHash(*factory, *image);
+    const auto now = std::chrono::steady_clock::now();
+    if (hash && hash == recentImageHash_ && now - recentImageAt_ < imageDedupWindow) return ImageResult::duplicate;
+    if (items_.size() >= maxItems || !remainingBytes()) return ImageResult::unavailable;
+    auto thumbnail = makeThumbnail(*factory, *image, 72, 54);
+    if (!thumbnail || !prepareImageFolder()) return ImageResult::unavailable;
 
     auto label = L"Capture " + std::to_wstring(++imageNumber_) + L".png";
     auto path = imageFolder_ + L"\\" + label;
@@ -296,16 +330,19 @@ bool DropZone::addImage(HBITMAP bitmap) {
         bool keep = false;
         ~UncommittedFile() { if (!keep) DeleteFileW(path.c_str()); }
     } temporary{path};
-    if (!encodePng(*factory, *image, path)) return false;
+    if (!encodePng(*factory, *image, path)) return ImageResult::unavailable;
     WIN32_FILE_ATTRIBUTE_DATA attributes{};
-    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) || attributes.nFileSizeHigh) return false;
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) || attributes.nFileSizeHigh)
+        return ImageResult::unavailable;
     const size_t itemBytes = sizeof(DROPFILES) + (path.size() + 2) * sizeof(wchar_t);
     const size_t bytes = itemBytes + attributes.nFileSizeLow + thumbnail->pixels.size();
-    if (bytes > remainingBytes()) return false;
+    if (bytes > remainingBytes()) return ImageResult::unavailable;
     items_.push_back({fileItem(path, itemBytes), {std::move(label), false, std::move(thumbnail)}, bytes, path, true});
     temporary.keep = true;
+    recentImageHash_ = hash;
+    recentImageAt_ = std::chrono::steady_clock::now();
     publish();
-    return true;
+    return ImageResult::added;
 }
 
 bool DropZone::append(CLIPFORMAT type, HGLOBAL data) {
@@ -382,9 +419,96 @@ void DropZone::clear() {
     publish();
 }
 
-void DropZone::openImage(size_t index, HWND owner) const {
-    if (index >= items_.size() || items_[index].imagePath.empty()) return;
-    ShellExecuteW(owner, L"open", items_[index].imagePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+bool DropZone::openImage(size_t index, HWND owner) {
+    if (index >= items_.size() || items_[index].imagePath.empty()) return false;
+    auto image = fileThumbnail(items_[index].imagePath, 1440, 1000);
+    if (!image) return false;
+    const auto title = items_[index].preview.label + L" · Zenith Dot";
+    if (previewWindow_) {
+        previewImage_ = std::move(image);
+        SetWindowTextW(previewWindow_, title.c_str());
+        InvalidateRect(previewWindow_, nullptr, FALSE);
+        ShowWindow(previewWindow_, SW_RESTORE);
+        SetForegroundWindow(previewWindow_);
+        return true;
+    }
+
+    WNDCLASSW type{};
+    type.style = CS_HREDRAW | CS_VREDRAW;
+    type.lpfnWndProc = previewProc;
+    type.hInstance = GetModuleHandleW(nullptr);
+    type.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    type.lpszClassName = L"ZenithDot.DropPreview";
+    if (!RegisterClassW(&type) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+
+    MONITORINFO monitor{sizeof(MONITORINFO)};
+    if (!GetMonitorInfoW(MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST), &monitor)) return false;
+    const LONG workWidth = monitor.rcWork.right - monitor.rcWork.left;
+    const LONG workHeight = monitor.rcWork.bottom - monitor.rcWork.top;
+    const LONG width = std::min(1000L, workWidth * 4 / 5);
+    const LONG height = std::min(700L, workHeight * 4 / 5);
+    previewImage_ = std::move(image);
+    previewWindow_ = CreateWindowExW(0, type.lpszClassName, title.c_str(),
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
+        monitor.rcWork.left + (workWidth - width) / 2,
+        monitor.rcWork.top + (workHeight - height) / 2,
+        width, height, owner, nullptr, type.hInstance, this);
+    if (!previewWindow_) {
+        previewImage_.reset();
+        return false;
+    }
+    ShowWindow(previewWindow_, SW_SHOW);
+    SetForegroundWindow(previewWindow_);
+    return true;
+}
+
+LRESULT CALLBACK DropZone::previewProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == WM_NCCREATE) {
+        const auto creation = reinterpret_cast<CREATESTRUCTW*>(lparam);
+        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(creation->lpCreateParams));
+    }
+    auto* zone = reinterpret_cast<DropZone*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (zone) {
+        if (message == WM_KEYDOWN && wparam == VK_ESCAPE) {
+            DestroyWindow(window);
+            return 0;
+        }
+        if (message == WM_ERASEBKGND) return 1;
+        if (message == WM_PAINT) {
+            PAINTSTRUCT paint{};
+            const auto dc = BeginPaint(window, &paint);
+            RECT client{};
+            GetClientRect(window, &client);
+            SetDCBrushColor(dc, RGB(15, 20, 28));
+            FillRect(dc, &client, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+            if (const auto& image = zone->previewImage_; image && client.right > 0 && client.bottom > 0) {
+                const auto scale = std::min({1.0, static_cast<double>(client.right) / image->width,
+                                             static_cast<double>(client.bottom) / image->height});
+                const int width = std::max(1, static_cast<int>(std::lround(image->width * scale)));
+                const int height = std::max(1, static_cast<int>(std::lround(image->height * scale)));
+                BITMAPINFO info{};
+                info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                info.bmiHeader.biWidth = static_cast<LONG>(image->width);
+                info.bmiHeader.biHeight = -static_cast<LONG>(image->height);
+                info.bmiHeader.biPlanes = 1;
+                info.bmiHeader.biBitCount = 32;
+                info.bmiHeader.biCompression = BI_RGB;
+                SetStretchBltMode(dc, HALFTONE);
+                SetBrushOrgEx(dc, 0, 0, nullptr);
+                StretchDIBits(dc, (client.right - width) / 2, (client.bottom - height) / 2, width, height,
+                    0, 0, static_cast<int>(image->width), static_cast<int>(image->height), image->pixels.data(),
+                    &info, DIB_RGB_COLORS, SRCCOPY);
+            }
+            EndPaint(window, &paint);
+            return 0;
+        }
+        if (message == WM_NCDESTROY) {
+            zone->previewWindow_ = nullptr;
+            zone->previewImage_.reset();
+            if (const auto owner = GetWindow(window, GW_OWNER)) PostMessageW(owner, previewClosed, 0, 0);
+        }
+    }
+    return DefWindowProcW(window, message, wparam, lparam);
 }
 
 }
