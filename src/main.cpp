@@ -2,7 +2,9 @@
 
 #include "browser_tabs.hpp"
 #include "desktop.hpp"
+#include "drop_zone.hpp"
 #include "island.hpp"
+#include <ole2.h>
 #include <shellapi.h>
 #include <windowsx.h>
 
@@ -17,10 +19,14 @@ constexpr UINT redrawMessage = WM_APP + 3;
 constexpr UINT_PTR powerTimer = 1;
 constexpr UINT_PTR frameTimer = 2;
 constexpr UINT_PTR fullscreenTimer = 3;
+constexpr UINT_PTR clipboardTimer = 5;
+static_assert(clipboardTimer != MediaMonitor::artworkTimer);
+constexpr UINT clipboardRetryInterval = 40;
+constexpr unsigned clipboardRetryLimit = 25;
 constexpr unsigned microphoneColor = 0xff9f0a;
 constexpr unsigned cameraColor = 0x30d158;
 
-enum Menu { previousTrack = 1, togglePlayback, nextTrack, toggleVisibility, exitApp };
+enum Menu { previousTrack = 1, togglePlayback, nextTrack, toggleVisibility, openDropZone, exitApp };
 constexpr MediaCommand controls[] = {MediaCommand::previous, MediaCommand::toggle, MediaCommand::next};
 
 class App {
@@ -43,7 +49,10 @@ private:
     void showLevel(IslandAlert::Kind kind, unsigned percent, bool muted = false);
     void addTray();
     void showMenu(POINT point);
-    std::optional<IslandAlert> clipboardAlert();
+    void showAudioPicker();
+    void queueClipboard(bool listenerEvent = false);
+    void refreshClipboard();
+    std::optional<IslandAlert> clipboardAlert(bool& busy);
 
     HWND window_ = nullptr;
     HPOWERNOTIFY powerNotification_ = nullptr;
@@ -61,11 +70,16 @@ private:
     std::optional<WPARAM> lastVolume_;
     SystemMonitor system_;
     Scratchpad scratchpad_;
+    DropZone dropZone_;
     std::chrono::steady_clock::time_point systemSampled_{};
     Island island_;
     bool tracking_ = false;
     bool fullscreen_ = false;
     bool hidden_ = false;
+    bool clipboardListening_ = false;
+    DWORD clipboardSequence_ = 0;
+    std::optional<unsigned> clipboardAttempts_;
+    unsigned captureTick_ = 0;
     unsigned lowWarned_ = 0;   // the low-battery threshold (20 or 10) already announced this discharge
 };
 
@@ -91,8 +105,18 @@ int App::run(HINSTANCE instance) {
                                                            DEVICE_NOTIFY_WINDOW_HANDLE);
     SetTimer(window_, powerTimer, 10'000, nullptr);
     SetTimer(window_, fullscreenTimer, 750, nullptr);
-    AddClipboardFormatListener(window_);
+    clipboardSequence_ = GetClipboardSequenceNumber();
+    clipboardListening_ = AddClipboardFormatListener(window_) != FALSE;
+    dropZone_.attach(window_, [this](bool hovering) {
+        island_.setDropHover(hovering);
+        frame();
+    }, [this](std::vector<DropPreview> items) {
+        island_.setDropItems(std::move(items));
+        frame();
+    });
     desktop_.start(window_);
+    island_.setAudioOutput(desktop_.audioOutput());
+    island_.setNotificationsQuiet(desktop_.notificationsQuiet());
     lyrics_ = std::make_shared<Lyrics>([this] { frame(); });
     island_.setLyrics(lyrics_->view());
     scratchpad_.load();
@@ -155,24 +179,31 @@ void App::control(MediaCommand command) {
 }
 
 void App::run(IslandCommand const& command) {
-    if (!monitor_) return;
     switch (command.kind) {
     case IslandCommand::Kind::previous: control(MediaCommand::previous); break;
     case IslandCommand::Kind::toggle: control(MediaCommand::toggle); break;
     case IslandCommand::Kind::next: control(MediaCommand::next); break;
     case IslandCommand::Kind::seek:
-        if (media_.sourceId.empty()) monitor_->seek(command.seconds);
+        if (media_.sourceId.empty()) {
+            if (monitor_) monitor_->seek(command.seconds);
+        }
         else browserTabs_.seek(media_.sourceId, command.seconds);
         break;
     case IslandCommand::Kind::selectSource:
         if (browserTabs_.select(command.appId)) updateMedia();
-        else monitor_->select(command.appId);
+        else if (monitor_) monitor_->select(command.appId);
         break;
     case IslandCommand::Kind::retryLyrics: if (lyrics_) lyrics_->retry(); break;
     case IslandCommand::Kind::editScratchpad:
         if (const auto bounds = island_.scratchEditorRect()) {
             island_.setScratchEditing(scratchpad_.open(window_, *bounds));
         }
+        break;
+    case IslandCommand::Kind::audioPicker: showAudioPicker(); break;
+    case IslandCommand::Kind::clearDrop: dropZone_.clear(); break;
+    case IslandCommand::Kind::removeDrop: dropZone_.remove(command.index); break;
+    case IslandCommand::Kind::notificationSettings:
+        ShellExecuteW(window_, L"open", L"ms-settings:notifications", nullptr, nullptr, SW_SHOWNORMAL);
         break;
     case IslandCommand::Kind::none: break;
     }
@@ -231,17 +262,16 @@ void App::applyVisibility() {
 }
 
 void App::refreshCapture(bool announce) {
-    auto activity = readCaptureActivity();
+    auto activity = desktop_.captureActivity();
     if (activity == capture_) return;
-    std::optional<unsigned> color;
-    if (!activity.camera.empty()) color = cameraColor;
-    else if (!activity.microphone.empty()) color = microphoneColor;
-    island_.setCaptureColor(color);
+    island_.setCaptureColors(activity.microphone.empty() ? std::nullopt : std::optional(microphoneColor),
+                             activity.camera.empty() ? std::nullopt : std::optional(cameraColor));
     if (announce) {
-        if (capture_.camera.empty() && !activity.camera.empty()) {
-            island_.notify({IslandAlert::Kind::camera, L"Camera", activity.camera, cameraColor, 2});
-        } else if (capture_.microphone.empty() && !activity.microphone.empty()) {
+        if (capture_.microphone != activity.microphone && !activity.microphone.empty()) {
             island_.notify({IslandAlert::Kind::microphone, L"Microphone", activity.microphone, microphoneColor, 2});
+        }
+        if (capture_.camera != activity.camera && !activity.camera.empty()) {
+            island_.notify({IslandAlert::Kind::camera, L"Camera", activity.camera, cameraColor, 2});
         }
     }
     capture_ = std::move(activity);
@@ -278,6 +308,7 @@ void App::showMenu(POINT point) {
     AppendMenuW(menu, MF_STRING | skip, nextTrack, L"&Next track");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, toggleVisibility, hidden_ ? L"&Show Zenith Dot" : L"&Hide Zenith Dot");
+    AppendMenuW(menu, MF_STRING | (suppressed() ? MF_GRAYED : MF_ENABLED), openDropZone, L"&Drop Zone");
     AppendMenuW(menu, MF_STRING, exitApp, L"E&xit Zenith Dot");
     // TrackPopupMenu needs the owner in the foreground to dismiss correctly. Hand focus back afterwards.
     const auto previous = GetForegroundWindow();
@@ -293,30 +324,77 @@ void App::showMenu(POINT point) {
         hidden_ = !hidden_;
         applyVisibility();
         frame();
+    } else if (selected == openDropZone) {
+        island_.showDropZone();
+        frame();
     } else if (selected >= previousTrack && selected <= nextTrack && monitor_) {
         control(controls[selected - previousTrack]);
     }
 }
 
+void App::showAudioPicker() {
+    const auto outputs = desktop_.audioOutputs();
+    const auto menu = CreatePopupMenu();
+    if (!menu) return;
+    const auto settings = static_cast<UINT>(outputs.size()) + 1;
+    for (size_t i = 0; i < outputs.size(); ++i) {
+        auto label = outputs[i].name;
+        for (size_t pos = 0; (pos = label.find(L'&', pos)) != std::wstring::npos; pos += 2) {
+            label.insert(pos, 1, L'&');
+        }
+        AppendMenuW(menu, MF_STRING | (outputs[i].active ? MF_CHECKED : MF_UNCHECKED), i + 1, label.c_str());
+    }
+    if (outputs.empty()) AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"No outputs available");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, settings, L"Sound settings…");
+    POINT point{};
+    GetCursorPos(&point);
+    const auto previous = GetForegroundWindow();
+    island_.setPopupOpen(true);
+    SetForegroundWindow(window_);
+    const auto selected = static_cast<UINT>(
+        TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, point.x, point.y, 0, window_, nullptr));
+    island_.setPopupOpen(false);
+    DestroyMenu(menu);
+    PostMessageW(window_, WM_NULL, 0, 0);
+    if (previous && previous != window_ && IsWindow(previous)) SetForegroundWindow(previous);
+    if (selected == settings) {
+        ShellExecuteW(window_, L"open", L"ms-settings:sound", nullptr, nullptr, SW_SHOWNORMAL);
+    } else if (selected > 0 && selected <= outputs.size() && !outputs[selected - 1].active) {
+        if (!desktop_.selectAudioOutput(outputs[selected - 1].id)) {
+            MessageBoxW(window_, L"Windows couldn't switch to that audio output.", appName, MB_OK | MB_ICONWARNING);
+        }
+        desktop_.refreshAudioDevice();
+        island_.setAudioOutput(desktop_.audioOutput());
+    }
+}
+
 // "Copied" plus a short preview. Nothing is kept. Content that password managers mark as private
 // (excluded from monitoring or from clipboard history) is not announced at all.
-std::optional<IslandAlert> App::clipboardAlert() {
+std::optional<IslandAlert> App::clipboardAlert(bool& busy) {
     static const UINT excluded = RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
     static const UINT history = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
+    busy = !OpenClipboard(window_);
+    if (busy) return std::nullopt;
+    struct Close {
+        DWORD& sequence;
+        ~Close() {
+            sequence = GetClipboardSequenceNumber();
+            CloseClipboard();
+        }
+    } close{clipboardSequence_};
     if (IsClipboardFormatAvailable(excluded)) return std::nullopt;
     IslandAlert alert{IslandAlert::Kind::copy, L"Copied"};
-    if (!OpenClipboard(window_)) return alert;
     bool hidden = false;
     if (const auto flag = IsClipboardFormatAvailable(history) ? GetClipboardData(history) : nullptr) {
-        if (const auto value = static_cast<DWORD const*>(GlobalLock(flag))) {
-            hidden = *value == 0;
-            GlobalUnlock(flag);
+        if (GlobalSize(flag) >= sizeof(DWORD)) {
+            if (const auto value = static_cast<DWORD const*>(GlobalLock(flag))) {
+                hidden = *value == 0;
+                GlobalUnlock(flag);
+            }
         }
     }
-    if (hidden) {
-        CloseClipboard();
-        return std::nullopt;
-    }
+    if (hidden) return std::nullopt;
     if (const auto data = GetClipboardData(CF_UNICODETEXT)) {
         if (const auto text = static_cast<wchar_t const*>(GlobalLock(data))) {
             // First non-empty line, trimmed, at most 60 characters.
@@ -347,8 +425,41 @@ std::optional<IslandAlert> App::clipboardAlert() {
     } else if (IsClipboardFormatAvailable(CF_DIB) || IsClipboardFormatAvailable(CF_BITMAP)) {
         alert.value = L"Image";
     }
-    CloseClipboard();
     return alert;
+}
+
+void App::queueClipboard(bool listenerEvent) {
+    if (clipboardAttempts_) return;
+    // A listener event can arrive before a delayed format advances the sequence number.
+    if (!listenerEvent) {
+        const auto sequence = GetClipboardSequenceNumber();
+        if (!sequence || sequence == clipboardSequence_) return;
+        clipboardSequence_ = sequence;
+    }
+    clipboardAttempts_ = 0;
+    if (!SetTimer(window_, clipboardTimer, clipboardRetryInterval, nullptr)) refreshClipboard();
+}
+
+void App::refreshClipboard() {
+    if (!clipboardAttempts_) return;
+    island_.setNotificationsQuiet(desktop_.notificationsQuiet());
+    if (suppressed() || island_.notificationsQuiet()) {
+        clipboardSequence_ = GetClipboardSequenceNumber();
+        KillTimer(window_, clipboardTimer);
+        clipboardAttempts_.reset();
+        return;
+    }
+    bool busy = false;
+    auto alert = clipboardAlert(busy);
+    if (busy && ++*clipboardAttempts_ < clipboardRetryLimit) {
+        if (SetTimer(window_, clipboardTimer, clipboardRetryInterval, nullptr)) return;
+    }
+    KillTimer(window_, clipboardTimer);
+    clipboardAttempts_.reset();
+    if (alert) {
+        island_.notify(std::move(*alert));
+        frame();
+    }
 }
 
 LRESULT CALLBACK App::dispatch(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -383,6 +494,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     }
     case WM_SETTINGCHANGE:
         refreshMotion();
+        island_.setNotificationsQuiet(desktop_.notificationsQuiet());
         [[fallthrough]];
     case WM_DISPLAYCHANGE:
     case WM_DPICHANGED:
@@ -396,10 +508,22 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         refreshPower();
         return TRUE;
     case WM_TIMER:
-        if (wparam == powerTimer) refreshPower();
+        if (wparam == MediaMonitor::artworkTimer && monitor_) monitor_->retryArtwork();
+        if (wparam == powerTimer) {
+            if (!clipboardListening_) clipboardListening_ = AddClipboardFormatListener(window_) != FALSE;
+            const bool changed = island_.setNotificationsQuiet(desktop_.notificationsQuiet());
+            refreshPower();
+            if (changed) frame();
+        }
         if (wparam == frameTimer) frame();
+        if (wparam == clipboardTimer) refreshClipboard();
         if (wparam == fullscreenTimer) {
             const bool changed = refreshFullscreen();
+            queueClipboard();
+            if (++captureTick_ == 4) {
+                captureTick_ = 0;
+                refreshCapture();
+            }
             if (browserTabs_.prune()) updateMedia();
             else if (changed) frame();
         }
@@ -420,6 +544,11 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     case DesktopMonitor::audioDeviceChanged:
         lastVolume_.reset();
         desktop_.refreshAudioDevice();
+        island_.setAudioOutput(desktop_.audioOutput());
+        frame();
+        return 0;
+    case DesktopMonitor::notificationModeChanged:
+        if (island_.setNotificationsQuiet(desktop_.notificationsQuiet())) frame();
         return 0;
     case DesktopMonitor::volumeChanged:
         if (desktop_.isCurrentVolume(lparam) && wparam != lastVolume_) {
@@ -434,11 +563,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         if (monitor_) monitor_->refresh(wparam);
         return 0;
     case WM_CLIPBOARDUPDATE:
-        if (suppressed()) return 0;
-        if (auto alert = clipboardAlert()) {
-            island_.notify(std::move(*alert));
-            frame();
-        }
+        queueClipboard(true);
         return 0;
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;
@@ -466,13 +591,20 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_MOUSEWHEEL: {
         POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         ScreenToClient(window_, &point);
-        if (island_.scrollLyrics(point, GET_WHEEL_DELTA_WPARAM(wparam))) frame();
+        if (island_.scroll(point, GET_WHEEL_DELTA_WPARAM(wparam))) frame();
         return 0;
     }
-    case WM_LBUTTONDOWN:
-        if (island_.pointerDown({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)})) SetCapture(window_);
+    case WM_LBUTTONDOWN: {
+        POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        if (const auto item = island_.dropItemAt(point)) {
+            ClientToScreen(window_, &point);
+            if (DragDetect(window_, point) && IsWindow(window_)) dropZone_.drag(*item);
+        } else if (island_.pointerDown(point)) {
+            SetCapture(window_);
+        }
         frame();
         return 0;
+    }
     case WM_LBUTTONUP: {
         const auto command = island_.pointerUp({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
         if (GetCapture() == window_) ReleaseCapture();
@@ -506,10 +638,12 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         }
         return 0;
     case WM_DESTROY:
+        dropZone_.detach();
         scratchpad_.close();
         KillTimer(window_, powerTimer);
         KillTimer(window_, frameTimer);
         KillTimer(window_, fullscreenTimer);
+        KillTimer(window_, clipboardTimer);
         desktop_.stop();
         if (lyrics_) lyrics_->stop();
         RemoveClipboardFormatListener(window_);
@@ -537,6 +671,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     int result = 1;
     try {
         winrt::init_apartment(winrt::apartment_type::single_threaded);
+        struct Ole {
+            HRESULT status = OleInitialize(nullptr);
+            ~Ole() { if (SUCCEEDED(status)) OleUninitialize(); }
+        } ole;
         result = zenith::App{}.run(instance);
     } catch (winrt::hresult_error const& failure) {
         MessageBoxW(nullptr, failure.message().c_str(), L"Zenith Dot could not start", MB_OK | MB_ICONERROR);

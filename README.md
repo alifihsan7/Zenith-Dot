@@ -2,20 +2,27 @@
 
 A Windows 11 overlay that sits as a dot at the top center of the primary display. When a Windows media session plays, the dot grows into a pill with the track title and a waveform. After five seconds paused, it shrinks back to the dot. Hover the pill or the dot to open the panel:
 
-- **Now Playing:** cover, title, artist, a seekable timeline, playback controls, and one button per app with a media session. Open **Lyrics** with the speech bubble beside the title.
-- **Focus:** a 25-minute timer. While it runs, the pill shows the time left.
+- **Now Playing:** cover, title, artist, a seekable timeline, playback controls, and one button per app with a media session. Open **Lyrics** with the music note beside the title.
+- **Timers:** choose Focus, Break, or Quick Timer from one tab. Focus and Break start at 25 and 5 minutes. Quick Timer offers 1, 5, and 10 minute presets, or use − and + to set 1–120 minutes. It can run alongside a Focus or Break countdown. The pill shows the selected active timer.
 - **Scratchpad:** one note that saves locally as you type. While editing, press Esc to close the panel and return focus to the previous app.
-- **System:** CPU, memory, and power status, including the estimated battery time remaining when Windows provides it.
+- **Drop Zone.** Drop files from Explorer or text from another app onto the island. Each file gets its own row, and new drops join the existing items. Drag a row to another app, use × to remove it, or choose **Clear all**. The list holds up to 64 items in memory until Zenith Dot exits.
+- **System:** CPU, memory, power, audio output, and Windows notification mode. Click the output name to select a device. The picker changes the default for system and media audio and also offers a shortcut to Sound settings. The notification row opens Windows notification settings.
 
 Click the pin icon beside the panel tabs to keep Zenith Dot open while you use another app. The filled icon indicates that the panel is pinned. Click it again to restore hover dismissal. When the panel closes, the next hover restores the last tab and any open Lyrics column. If you scrolled manually, the reading position is kept for the same track.
 
+Scroll over the compact pill or anywhere in the open panel to move one tab at a time. Over the pill, the new tab's icon and name appear briefly before the panel opens. Lyrics, the Scratchpad editor, and a Drop Zone list with more than four rows use the wheel to scroll their own content.
+
 Short notices split off the pill as a liquid bubble, or grow out of the dot: plugging in or unplugging the charger, low battery at 20% and 10%, the end of a Focus session, and copying something (with a short preview). While the panel is open they show as a row at its top instead. Clipboard content is never stored, and content that password managers mark as private is not announced.
 
-Zenith Dot hides during fullscreen on the primary display and resumes when you leave fullscreen. The idle dot turns orange during microphone use and green during camera use. In pill mode, the indicator sits on the right. When capture starts, a notice shows the app using the device.
+When the panel closes, it shrinks to a pill. The pill stays visible while an activity is running and shrinks to the black dot when idle.
+
+Zenith Dot hides during fullscreen on the primary display and resumes when you leave fullscreen. Microphone or camera activity shows a pill with a device icon and label. When music or a timer is active, device icons sit beside that activity. Orange marks the microphone, and green marks the camera. Both icons appear when both devices are in use. The panel shows the same icons beside its tabs.
 
 System volume and brightness changes show a meter that updates in place as you adjust the level. Brightness requires a display that publishes Windows WMI brightness events. The Windows volume and brightness flyouts can appear alongside Zenith Dot.
 
 The accent colour follows the current cover. The tray menu has media controls, **Hide Zenith Dot**, and **Exit**. Hiding leaves playback running. Choose **Show Zenith Dot** from the tray to bring it back.
+
+Zenith pauses its bubbles when Windows reports that notifications are restricted. Countdowns still finish and show their completed state in the timer panel. Windows builds without the notification-mode API show **Notification status unavailable** in System.
 
 The app uses C++20, Win32, Direct2D, DirectWrite, and C++/WinRT. It runs as one desktop process. The frame timer stops when the dot settles. Windows media events drive session updates, and the app reads power status every ten seconds and when Windows reports a change.
 
@@ -51,7 +58,7 @@ The extension sends playback metadata and timing to the local native messaging h
 
 Opening **Lyrics** sends the selected track's title, artist, duration, and album when available to [LRCLIB](https://lrclib.net/docs). When a matching track has synced lyrics and the player supplies a timeline, the side column shows the full lyrics within the height of Now Playing. Long lines wrap, and the active line uses a brighter text colour. Scroll over the lyrics to read ahead or back. Playback following resumes five seconds after the last scroll. If the player supports seeking, click any lyric line to jump to its timestamp.
 
-With Lyrics enabled, the compact pill shows the current synced line. It widens to fit the text and wraps longer lines. The track title returns before the first line or at gaps marked in the lyrics. After a pause, the pill keeps the last line for five seconds before shrinking. If Focus and media are both active, the pill follows the one you selected most recently.
+With Lyrics enabled, the compact pill shows the current synced line beside the Lyrics icon. It widens to fit the text and wraps longer lines. New lines slide in as the old line fades, with resizing timed to make room for the text. The track title returns before the first line or at gaps marked in the lyrics. After a pause, the pill keeps the last line for five seconds before shrinking. If Focus, Quick Timer, and media overlap, the pill prioritizes the active feature you selected most recently.
 
 If the first lookup misses, Zenith Dot searches for the same title and artist within four seconds of the track's duration. When only plain lyrics are available, the column shows them with an **Unsynced** label. If no lyrics are found, reopen Lyrics after 30 seconds to retry.
 
@@ -75,15 +82,19 @@ Temporary connection or service failures are retried automatically. If the looku
 ## Verify on Windows 11
 
 - Start Spotify or YouTube in a browser that publishes a Windows media session. Check track metadata and playback progress where the player provides them. Try Previous, Pause, and Next, then resume from the tray. If one player pauses while another is still playing, verify the island switches to the playing session.
+- Switch tracks in Spotify and return to a recent track. Its cached cover should appear again while Windows refreshes the thumbnail. Verify that a new track never displays the previous track's cover.
 - Play tracks with differently coloured covers. The waveform and progress bar should fade to a colour from each cover, with a faint tint in the panel's lower-right corner. A greyscale cover or a player without artwork should fall back to light blue.
 - Type in another app, then hover and click the island (including Previous, Pause, and Next). Focus and the caret must stay in that app. Right-click the island, close the menu, and confirm focus returns to the app.
 - Hover the pill: the panel opens after a short delay, and the cover and title move into place. Move a little past the panel's edge and it should stay open, then close once the pointer is well away. Click outside it to close it right away.
-- Switch between Now Playing, Focus, and System. Drag the timeline to seek where the player allows it. With two players open, click the other app's logo to show it.
+- Switch between Now Playing, Timers, and System. Drag the timeline to seek where the player allows it. With two players open, click the other app's logo to show it.
+- Open Timers, adjust Focus and Break, then switch to Quick Timer while Focus is running and start a second countdown. Check each timer's pill, pause/resume, and completion bubble. Close and reopen the panel and check that the last timer view returns.
+- Open System and switch the Windows default audio output. Check the displayed name and the Sound Settings link. Toggle Do Not Disturb in Windows and check the notification row and bubble behaviour.
 - Open Scratchpad, click the pin icon, and type a note. Switch to another app and confirm Scratchpad stays visible. Switch to Focus and System and check that the pin stays on. Unpin, close the panel, and hover again to check that System returns. Repeat with Lyrics open and manually scrolled. Reopen the editor, press Esc, and check that focus returns to the previous app. Restart Zenith Dot and confirm the note reloads.
 - While music plays, choose **Hide Zenith Dot** from the tray. Confirm playback continues, then restore the island with **Show Zenith Dot**.
 - With the browser extension enabled, play two tabs in the same browser and select each numbered logo. Verify that play/pause and seek affect the selected tab.
 - Open Lyrics on a song with an LRCLIB match. Check that long lines wrap. Click a wrapped line and confirm playback jumps to its timestamp in a seekable player. Scroll to the first and last lines and check that playback following resumes five seconds after the last scroll. Switch tracks while a lookup is pending and check that the old track's lyrics disappear.
 - Leave Lyrics enabled and move away from the panel. Check that the pill shows the active line, wraps a long line, and shrinks after five seconds paused. Trigger a Copy notice while the lyric pill is wide and verify that it splits off cleanly.
+- Scroll over the compact pill and over the tab bar. Check the selected tab, the compact preview, and that scrolling inside Lyrics still moves the text.
 - Pause playback: the pill should show a pause glyph, then shrink to the dot after five seconds.
 - Copy some text: a "Copied" bubble should stretch out of the pill, pinch off, show the first line, and merge back after about two seconds. Copy with the panel open: the notice should appear as a row at the top of the panel. Copy a password from a password manager: no notice.
 - Unplug and reconnect the charger: "On Battery" and then a green "Charging" bubble, each with the battery level.

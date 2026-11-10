@@ -19,6 +19,8 @@ constexpr float pillWidth = 147;
 constexpr float pillHeight = 40;
 constexpr float maxPillLyricWidth = 720;
 constexpr float maxPillLyricHeight = 160;
+constexpr float pillLyricIconSpace = 24;
+constexpr float pillLyricTravel = 4;
 constexpr float pillCenterY = pillTop + pillHeight / 2;
 constexpr float pillLeft = -pillWidth / 2;
 constexpr float dotSize = 12;
@@ -47,17 +49,22 @@ constexpr float maxBubble = 259;
 constexpr auto openDelay = 50ms;
 constexpr auto closeDelay = 185ms;
 constexpr auto parkDelay = 5s;
+constexpr auto featurePreviewTime = 850ms;
 constexpr auto pillGrowTime = 280ms;
 constexpr auto pillShrinkTime = 320ms;
 constexpr auto panelTime = 220ms;
+constexpr auto idlePillHold = 160ms;
 constexpr auto themeTime = 700ms;
 constexpr auto alertOpenTime = 540ms;
 constexpr auto alertCloseTime = 440ms;
 constexpr auto inlineAlertTime = 2000ms;
 constexpr auto visibilityTime = 200ms;
 constexpr auto lyricScrollTime = 190ms;
-constexpr auto pillLyricTime = 210ms;
-constexpr int focusLength = 25 * 60;
+constexpr auto pillLyricTime = 250ms;
+constexpr int timerPresets[]{1, 5, 10};
+constexpr int quickMinMinutes = 1;
+constexpr int quickMaxMinutes = 120;
+constexpr size_t visibleDropRows = 4;
 
 constexpr unsigned inkColor = 0xf5f6f8;
 constexpr unsigned mutedColor = 0xa4aab4;
@@ -462,11 +469,54 @@ void Island::setSystem(SystemStats const& stats) {
     system_ = stats;
 }
 
+void Island::setAudioOutput(std::wstring const& output) { audioOutput_ = output; }
+
+bool Island::setNotificationsQuiet(std::optional<bool> quiet) {
+    if (notificationsQuiet_ == quiet) return false;
+    notificationsQuiet_ = quiet;
+    if (notificationsQuiet()) clearAlerts();
+    return true;
+}
+
+bool Island::notificationsQuiet() const { return notificationsQuiet_.value_or(false); }
+
 void Island::setLyrics(LyricsView const& lyrics) { lyrics_ = &lyrics; }
 
 void Island::setScratchpad(ScratchpadView const& scratchpad) { scratchpad_ = &scratchpad; }
 
 void Island::setScratchEditing(bool editing) { scratchEditing_ = editing; }
+
+void Island::setDropItems(std::vector<DropPreview> items) {
+    const size_t limit = items.size() - std::min(items.size(), visibleDropRows);
+    dropOffset_ = items.size() > dropItems_.size() ? limit : std::min(dropOffset_, limit);
+    dropItems_ = std::move(items);
+}
+
+void Island::setPopupOpen(bool open) {
+    popupOpen_ = open;
+    closeAt_.reset();
+}
+
+void Island::setDropHover(bool hovering) {
+    dropHover_ = hovering;
+    if (hovering) {
+        closeAt_.reset();
+        showDropZone();
+    }
+}
+
+void Island::showDropZone() {
+    if (suppressed_) return;
+    const auto now = Clock::now();
+    if (bubbleShowing()) clearAlerts();
+    setOpen(true, now);
+    showScreen(Screen::drop, now);
+}
+
+std::optional<size_t> Island::dropItemAt(POINT client) const {
+    const auto item = targetAt(stagePoint(client));
+    return item && item->hit == Hit::dropItem ? std::optional<size_t>(item->index) : std::nullopt;
+}
 
 void Island::closePanel() { setOpen(false, Clock::now()); }
 
@@ -492,15 +542,36 @@ float Island::pillAmount(Clock::time_point now) const {
     return std::lerp(pillFrom_, pillTarget_, progress(pillStart_, pillLength_, now));
 }
 
-float Island::pillLyricBlend(Clock::time_point now) const {
-    return animate_ ? easeInOut(progress(pillLyricStart_, pillLyricTime, now)) : 1;
+float Island::pillLyricProgress(Clock::time_point now) const {
+    return animate_ ? progress(pillLyricStart_, pillLyricTime, now) : 1;
+}
+
+bool Island::pillLyricGrowing() const {
+    return pillSizeTarget_.width > pillSizeFrom_.width || pillSizeTarget_.height > pillSizeFrom_.height;
+}
+
+float Island::pillLyricOut(float t) const {
+    return easeInOut(lin(0, pillLyricGrowing() ? 0.72f : 0.55f, t));
+}
+
+float Island::pillLyricIn(float t) const {
+    return easeOut(lin(pillLyricGrowing() ? 0.52f : 0.32f, 1, t));
 }
 
 D2D1_SIZE_F Island::pillSize(Clock::time_point now) const {
-    if (pillSizeTarget_.width == 0) return {pillWidth, pillHeight};
-    const float t = pillLyricBlend(now);
-    return {std::lerp(pillSizeFrom_.width, pillSizeTarget_.width, t),
-            std::lerp(pillSizeFrom_.height, pillSizeTarget_.height, t)};
+    const float extra = captureWidth();
+    if (pillSizeTarget_.width == 0) return {pillWidth + extra, pillHeight};
+    const float t = pillLyricProgress(now);
+    const auto resize = [t](float from, float to) {
+        const float phase = to >= from ? lin(0, 0.64f, t) : lin(0.46f, 1, t);
+        return std::lerp(from, to, easeInOut(phase));
+    };
+    return {resize(pillSizeFrom_.width, pillSizeTarget_.width) + extra,
+            resize(pillSizeFrom_.height, pillSizeTarget_.height)};
+}
+
+float Island::captureWidth() const {
+    return (cameraColor_ ? 19.0f : 0.0f) + (microphoneColor_ ? 19.0f : 0.0f);
 }
 
 D2D1_RECT_F Island::compactShape(Clock::time_point now, float amount) const {
@@ -520,9 +591,10 @@ float Island::panelValue(Clock::time_point now) const {
 float Island::screenHeight(Screen screen) const {
     switch (screen) {
     case Screen::media: return media_.hasSession ? mediaPanelHeight : 146;
-    case Screen::focus: return 183.0f;
+    case Screen::timers: return 238;
     case Screen::scratch: return 216.0f;
-    case Screen::system: return 169.5f;
+    case Screen::drop: return 249.0f;
+    case Screen::system: return 249;
     }
     return 146.0f;
 }
@@ -539,12 +611,6 @@ float Island::panelWidthAt(Clock::time_point now) const {
 D2D1_RECT_F Island::panelRect(Clock::time_point now) const {
     const float width = panelWidthAt(now);
     return box(-width / 2, pillTop, width, panelHeight(now) + inlineInset());
-}
-
-int Island::focusRemaining(Clock::time_point now) const {
-    if (!focusUntil_) return focusLeft_;
-    const float left = std::chrono::duration<float>(*focusUntil_ - now).count();
-    return std::max(0, static_cast<int>(std::ceil(left)));
 }
 
 bool Island::moving(Clock::time_point now) const {
@@ -564,16 +630,37 @@ std::wstring Island::title() const {
 void Island::updatePill(Clock::time_point now) {
     auto mode = PillMode::dot;
     const bool mediaActive = media_.hasSession && (media_.playing || open_ || now - lastActive_ < parkDelay);
-    const bool focusActive = focusUntil_ || (alert_ && alert_->kind == IslandAlert::Kind::focusDone);
-    if (focusActive && (!mediaActive || preferredPill_ == PillMode::focus)) {
+    const bool focusActive = focus_.running() || focus_.paused() ||
+        (alert_ && (alert_->kind == IslandAlert::Kind::focusDone || alert_->kind == IslandAlert::Kind::breakDone));
+    const bool timerActive = quick_.running() || quick_.paused() || (alert_ && alert_->kind == IslandAlert::Kind::timerDone);
+    if (!open_ && now < previewUntil_) {
+        mode = PillMode::preview;
+    } else if (focusActive && preferredPill_ == PillMode::focus) {
         mode = PillMode::focus;
+    } else if (timerActive && preferredPill_ == PillMode::timer) {
+        mode = PillMode::timer;
     } else if (mediaActive) {
         mode = PillMode::media;
+    } else if (focusActive) {
+        mode = PillMode::focus;
+    } else if (timerActive) {
+        mode = PillMode::timer;
+    } else if (microphoneColor_ || cameraColor_) {
+        mode = PillMode::privacy;
+    } else if (now < idlePillUntil_) {
+        mode = PillMode::idle;
     }
     pillMode_ = mode;
     if (mode != PillMode::dot) {
         pillContent_ = mode;
-        pillTitle_ = mode == PillMode::media ? title() : L"Focus";
+        if (mode == PillMode::media) pillTitle_ = title();
+        else if (mode == PillMode::focus) pillTitle_ = breakPhase_ ? L"Break" : L"Focus";
+        else if (mode == PillMode::timer) pillTitle_ = L"Timer";
+        else if (mode == PillMode::privacy) {
+            pillTitle_ = microphoneColor_ && cameraColor_ ? L"Mic & camera in use" :
+                microphoneColor_ ? L"Mic in use" : L"Camera in use";
+        } else if (mode == PillMode::idle) pillTitle_ = L"Zenith Dot";
+        else pillTitle_ = screenLabel(screen_);
         pillPlaying_ = media_.playing;
     }
     if (bubbleShowing()) return;   // never reshape while a bubble is split off
@@ -582,13 +669,15 @@ void Island::updatePill(Clock::time_point now) {
         pillFrom_ = pillAmount(now);
         pillTarget_ = target;
         pillStart_ = now;
-        pillLength_ = target > 0 ? Clock::duration(pillGrowTime) : Clock::duration(pillShrinkTime);
+        const bool closing = !open_ && now < idlePillUntil_;
+        pillLength_ = target > 0 ? Clock::duration(closing ? panelTime : pillGrowTime) : Clock::duration(pillShrinkTime);
     }
 }
 
 void Island::updatePillLyric(Clock::time_point now, float workWidth) {
     if (bubbleShowing() || (pillMode_ == PillMode::dot && pillAmount(now) > 0)) return;
-    if (pillLyricBlend(now) >= 1) previousPillLyric_ = {};
+    const float t = pillLyricProgress(now);
+    if (t >= 1) previousPillLyric_ = {};
 
     std::wstring_view line;
     if (wantsLyricPill() && lyrics_ && lyrics_->status == LyricsStatus::ready && media_.duration > 0) {
@@ -597,7 +686,7 @@ void Island::updatePillLyric(Clock::time_point now, float workWidth) {
         if (next != lines.begin()) line = (next - 1)->text;
         if (line.find_first_not_of(L" \t\r\n") == std::wstring_view::npos || line.size() > 4096) line = {};
     }
-    const float maxWidth = std::clamp(workWidth - maxBubble - 60, 180.0f, maxPillLyricWidth);
+    const float maxWidth = std::clamp(workWidth - maxBubble - 60 - captureWidth(), 180.0f, maxPillLyricWidth);
     const float maxHeight = std::min(maxPillLyricHeight, maxWidth / 2);
     if (line == pillLyric_.text && (line.empty() || maxWidth == pillLyricMaxWidth_)) return;
 
@@ -606,28 +695,41 @@ void Island::updatePillLyric(Clock::time_point now, float workWidth) {
     if (!line.empty()) {
         next.text = line;
         winrt::check_hresult(fonts_->CreateTextLayout(line.data(), static_cast<UINT32>(line.size()),
-            pillLyricFont_.get(), maxWidth - pillHeight, 10'000, next.layout.put()));
+            pillLyricFont_.get(), maxWidth - pillHeight - pillLyricIconSpace, 10'000, next.layout.put()));
         DWRITE_TEXT_METRICS metrics{};
         winrt::check_hresult(next.layout->GetMetrics(&metrics));
         if (metrics.lineCount > 1) {
             // Reserve space for both rounded ends even when a lyric needs several rows.
-            winrt::check_hresult(next.layout->SetMaxWidth(maxWidth - maxHeight));
+            winrt::check_hresult(next.layout->SetMaxWidth(maxWidth - maxHeight - pillLyricIconSpace));
             winrt::check_hresult(next.layout->GetMetrics(&metrics));
         }
         if (metrics.height + 16 <= maxHeight) {
             next.textSize = {metrics.layoutWidth, metrics.height};
-            target = {metrics.lineCount > 1 ? maxWidth : std::max(pillWidth, std::ceil(metrics.width) + pillHeight),
+            target = {metrics.lineCount > 1 ? maxWidth :
+                        std::max(pillWidth, std::ceil(metrics.width) + pillHeight + pillLyricIconSpace),
                       std::max(pillHeight, std::ceil(metrics.height) + 16)};
         } else {
             next.layout = nullptr;
         }
     }
+    const float outgoing = pillLyricOut(t);
+    const float incoming = pillLyricIn(t);
+    const float oldAlpha = previousPillAlpha_ * (1 - outgoing);
+    if (oldAlpha > incoming) {
+        previousPillAlpha_ = oldAlpha;
+        previousPillOffset_ = std::lerp(previousPillOffset_, -pillLyricTravel, outgoing);
+    } else {
+        previousPillLyric_ = std::move(pillLyric_);
+        previousPillAlpha_ = incoming;
+        previousPillOffset_ = pillLyricTravel * (1 - incoming);
+    }
     pillLyricMaxWidth_ = maxWidth;
     pillSizeFrom_ = pillSize(now);
+    pillSizeFrom_.width -= captureWidth();
     pillSizeTarget_ = target;
-    previousPillLyric_ = pillMode_ == PillMode::dot ? PillLyric{} : std::move(pillLyric_);
     pillLyric_ = std::move(next);
     pillLyricStart_ = pillMode_ == PillMode::dot ? Clock::time_point{} : now;
+    if (pillMode_ == PillMode::dot) previousPillLyric_ = {};
 }
 
 void Island::updateTheme(Clock::time_point now) {
@@ -666,17 +768,18 @@ void Island::setSuppressed(bool suppressed) {
     visibilityStart_ = now;
     suppressed_ = suppressed;
     if (!suppressed_) return;
-    alert_.reset();
-    queued_.reset();
-    alertHoldUntil_.reset();
-    alertFrom_ = alertTo_ = 0;
+    previewUntil_ = {};
+    idlePillUntil_ = {};
+    clearAlerts();
     setOpen(false, now);
     hovered_ = Hit::none;
     pointerCancel();
 }
 
-void Island::setCaptureColor(std::optional<unsigned> color) {
-    captureColor_ = color;
+void Island::setCaptureColors(std::optional<unsigned> microphone, std::optional<unsigned> camera) {
+    microphoneColor_ = microphone;
+    cameraColor_ = camera;
+    updatePill(Clock::now());
 }
 
 void Island::setOpen(bool open, Clock::time_point now) {
@@ -688,16 +791,20 @@ void Island::setOpen(bool open, Clock::time_point now) {
     // The cover and title travel between the pill and the panel when both show the track.
     const bool trackVisible = media_.hasSession && screen_ == Screen::media;
     if (open) {
+        previewUntil_ = {};
+        idlePillUntil_ = {};
         widthStart_ = {};
         screenFrom_ = screen_;
         screenStart_ = {};
         heightFrom_ = screenHeight(screen_);
     }
     const bool pill = pillAmount(now) >= 1;
-    shareCover_ = trackVisible && pillMode_ != PillMode::focus && !pillLyric_.layout && !previousPillLyric_.layout &&
+    shareCover_ = trackVisible && (pillMode_ == PillMode::media || pillMode_ == PillMode::dot) &&
+                  !pillLyric_.layout && !previousPillLyric_.layout &&
                   (pillContent_ == PillMode::media || !pill);
     shareTitle_ = shareCover_ && pill && pillContent_ == PillMode::media;
     open_ = open;
+    if (!open && !suppressed_) idlePillUntil_ = now + idlePillHold + (animate_ ? panelTime : 0ms);
     updateLyricVisibility(lyricsVisible, now);
     if (!open) panelPinned_ = false;
     keepHeight_ = 0;
@@ -718,25 +825,46 @@ void Island::showScreen(Screen screen, Clock::time_point now) {
     screenFrom_ = screen_;
     screen_ = screen;
     if (screen == Screen::media) preferredPill_ = PillMode::media;
-    if (screen == Screen::focus) preferredPill_ = PillMode::focus;
+    if (screen == Screen::timers) preferredPill_ = quickView_ ? PillMode::timer : PillMode::focus;
     updateLyricVisibility(lyricsVisible, now);
     screenStart_ = animate_ ? now : Clock::time_point{};
     widthStart_ = screenStart_;
 }
 
 void Island::toggleFocus(Clock::time_point now) {
-    if (focusUntil_) {
-        focusLeft_ = focusRemaining(now);
-        focusUntil_.reset();
-    } else {
-        focusUntil_ = now + std::chrono::seconds(focusLeft_ > 0 ? focusLeft_ : focusLength);
+    if (focus_.done()) selectFocusPhase(!breakPhase_);
+    focus_.toggle(now);
+    preferredPill_ = PillMode::focus;
+}
+
+void Island::selectTimerView(size_t index) {
+    const bool quick = index == 2;
+    const bool resting = index == 1;
+    if (!quick && resting != breakPhase_) {
+        if (focus_.running() || focus_.paused()) return;
+        selectFocusPhase(resting);
     }
-    updatePill(now);
+    quickView_ = quick;
+    preferredPill_ = quick ? PillMode::timer : PillMode::focus;
+}
+
+void Island::selectFocusPhase(bool resting) {
+    if (focus_.running() || focus_.paused()) return;
+    breakPhase_ = resting;
+    focus_.configure((resting ? breakMinutes_ : focusMinutes_) * 60);
+}
+
+void Island::adjustFocus(int direction) {
+    if (focus_.running() || focus_.paused()) return;
+    auto& minutes = breakPhase_ ? breakMinutes_ : focusMinutes_;
+    const int step = breakPhase_ ? 1 : 5;
+    minutes = std::clamp(minutes + direction * step, step, breakPhase_ ? 30 : 120);
+    focus_.configure(minutes * 60);
 }
 
 void Island::tick() {
     const auto now = Clock::now();
-    if (open_ && !panelPinned_) {
+    if (open_ && !panelPinned_ && !dropHover_ && !popupOpen_) {
         // Hover hysteresis: entering needs the real pill, but the open panel stays while the pointer
         // is within keepOpenMargin of it. An outside click closes an unpinned panel.
         POINT cursor{};
@@ -758,16 +886,30 @@ void Island::tick() {
         if (down && !buttonWasDown_ && !inside(panel, point)) setOpen(false, now);
         buttonWasDown_ = down;
     }
-    if (openAt_ && now >= *openAt_) setOpen(true, now);
-    if (closeAt_ && now >= *closeAt_) setOpen(false, now);
-    if (focusUntil_ && now >= *focusUntil_) {
-        focusUntil_.reset();
-        focusLeft_ = focusLength;
-        notify({IslandAlert::Kind::focusDone, L"Focus done", L"Take a break", std::nullopt, 3, 2600ms});
+    if (openAt_ && now >= *openAt_) {
+        if (previewUntil_ != Clock::time_point{}) {
+            POINT cursor{};
+            GetCursorPos(&cursor);
+            const auto point = pt((cursor.x - anchor_.x) / scale_, (cursor.y - anchor_.y) / scale_);
+            if (!inside(grow(compactShape(now, 1), 0, 3), point)) openAt_.reset();
+        }
+        if (openAt_) setOpen(true, now);
     }
+    if (!openAt_ && now >= previewUntil_) previewUntil_ = {};
+    if (closeAt_ && now >= *closeAt_) setOpen(false, now);
+    if (focus_.expire(now)) {
+        notify({breakPhase_ ? IslandAlert::Kind::breakDone : IslandAlert::Kind::focusDone,
+                breakPhase_ ? L"Break done" : L"Focus done", L"", std::nullopt, 3, 2600ms});
+    }
+    if (quick_.expire(now)) notify({IslandAlert::Kind::timerDone, L"Timer done", L"", std::nullopt, 3, 2600ms});
     if (alert_) {
         if (alertInline_) {
             if (now >= alertUntil_) finishAlert(now);
+            else if (!open_ && panelValue(now) <= 0) {
+                auto alert = std::move(*alert_);
+                alert.hold = std::chrono::duration_cast<std::chrono::milliseconds>(alertUntil_ - now);
+                startAlert(std::move(alert), now, false);
+            }
         } else if (alertTo_ > 0) {
             if (!alertHoldUntil_ && progress(alertStart_, alertLength_, now) >= 1) {
                 alertHoldUntil_ = now + alert_->hold;
@@ -790,16 +932,21 @@ void Island::tick() {
 
 unsigned Island::frameInterval() const {
     const auto now = Clock::now();
+    const bool timerRunning = focus_.running() || quick_.running();
     if (animate_ && now - visibilityStart_ < visibilityTime) return 10;
-    if (suppressed_) return focusUntil_ ? 1000 : 0;
+    if (suppressed_) return timerRunning ? 1000 : 0;
     if (moving(now) || openAt_ || closeAt_ || dragging_) return 10;
     if (panelPinned() && !alert_) {
         if (screen_ == Screen::media && (media_.playing || (wantsLyrics() && now < lyricFollowAt_))) return 50;
-        return screen_ == Screen::system || scratchEditing_ || focusUntil_ ? 1000 : 0;
+        return screen_ == Screen::system || scratchEditing_ || timerRunning ? 1000 : 0;
     }
     if (open_ || alert_) return 50;
+    if (now < idlePillUntil_) return 16;
+    if (pillMode_ == PillMode::preview) return 50;
     if (wantsLyricPill() && media_.playing) return 50;
     if (pillMode_ == PillMode::media && media_.playing && animate_) return 33;
+    if (pillMode_ == PillMode::focus || pillMode_ == PillMode::timer) return timerRunning ? 1000 : 0;
+    if (pillMode_ == PillMode::privacy) return 0;
     if (pillMode_ != PillMode::dot) return 250;
     return 0;
 }
@@ -849,7 +996,7 @@ bool Island::pointerMove(POINT client) {
     const auto index = target ? target->index : 0;
     if (!open_) {
         if (hit == Hit::pill) {
-            if (!openAt_) openAt_ = Clock::now() + openDelay;
+            if (!openAt_) openAt_ = std::max(Clock::now() + openDelay, previewUntil_);
         } else {
             openAt_.reset();
         }
@@ -862,6 +1009,7 @@ bool Island::pointerMove(POINT client) {
 
 bool Island::pointerLeave() {
     openAt_.reset();
+    wheelRemainder_ = 0;
     if (hovered_ == Hit::none) return false;
     hovered_ = Hit::none;
     return true;
@@ -892,8 +1040,58 @@ void Island::updateLyricVisibility(bool wasVisible, Clock::time_point now) {
     }
 }
 
-bool Island::scrollLyrics(POINT client, int delta) {
-    if (!wantsLyrics() || !inside(lyricViewport_, stagePoint(client))) return false;
+bool Island::scroll(POINT client, int delta) {
+    const auto point = stagePoint(client);
+    if (open_ && screen_ == Screen::drop && dropItems_.size() > visibleDropRows && inside(dropViewport_, point)) {
+        wheelRemainder_ = 0;
+        dropWheelRemainder_ += delta;
+        const int steps = dropWheelRemainder_ / WHEEL_DELTA;
+        dropWheelRemainder_ %= WHEEL_DELTA;
+        const int limit = static_cast<int>(dropItems_.size() - visibleDropRows);
+        dropOffset_ = static_cast<size_t>(std::clamp(static_cast<int>(dropOffset_) - steps, 0, limit));
+        return steps != 0;
+    }
+    dropWheelRemainder_ = 0;
+    if (wantsLyrics() && inside(lyricViewport_, point)) {
+        wheelRemainder_ = 0;
+        return scrollLyrics(delta);
+    }
+    if (scratchEditor_ && inside(*scratchEditor_, point)) {
+        wheelRemainder_ = 0;
+        return false;
+    }
+
+    const auto target = targetAt(point);
+    const bool compact = !open_ && target && target->hit == Hit::pill;
+    const bool panel = open_ && inside(panelWheel_, point);
+    if (!(compact || panel) || delta == 0) {
+        wheelRemainder_ = 0;
+        return false;
+    }
+    const auto now = Clock::now();
+    if (now - wheelAt_ > 300ms || (wheelRemainder_ != 0 && (wheelRemainder_ > 0) != (delta > 0))) {
+        wheelRemainder_ = 0;
+    }
+    wheelAt_ = now;
+    wheelRemainder_ += delta;
+    if (std::abs(wheelRemainder_) < WHEEL_DELTA) {
+        if (compact) openAt_ = std::max(now + 300ms, previewUntil_);
+        return compact;
+    }
+
+    constexpr int count = static_cast<int>(std::size(screens));
+    const auto current = std::ranges::find(screens, screen_) - std::begin(screens);
+    const int step = wheelRemainder_ < 0 ? 1 : -1;
+    wheelRemainder_ %= WHEEL_DELTA;
+    showScreen(screens[(current + step + count) % count], now);
+    if (compact) {
+        previewUntil_ = now + featurePreviewTime;
+        openAt_ = previewUntil_;
+    }
+    return true;
+}
+
+bool Island::scrollLyrics(int delta) {
     const float limit = lyricContentHeight_ - (lyricViewport_.bottom - lyricViewport_.top);
     if (limit <= 0) return false;
     const auto now = Clock::now();
@@ -952,8 +1150,9 @@ IslandCommand Island::pointerUp(POINT client) {
         }
         break;
     case Hit::navMedia: showScreen(Screen::media, now); break;
-    case Hit::navFocus: showScreen(Screen::focus, now); break;
+    case Hit::navTimers: showScreen(Screen::timers, now); break;
     case Hit::navScratch: showScreen(Screen::scratch, now); break;
+    case Hit::navDrop: showScreen(Screen::drop, now); break;
     case Hit::navSystem: showScreen(Screen::system, now); break;
     case Hit::lyrics: {
         const bool lyricsVisible = wantsLyrics();
@@ -975,11 +1174,33 @@ IslandCommand Island::pointerUp(POINT client) {
         closeAt_.reset();
         break;
     case Hit::focusToggle: toggleFocus(now); break;
-    case Hit::focusReset:
-        focusUntil_.reset();
-        focusLeft_ = focusLength;
-        updatePill(now);
+    case Hit::focusReset: focus_.reset(); break;
+    case Hit::timerView: selectTimerView(index); break;
+    case Hit::focusAdjust: adjustFocus(index == 1 ? 1 : -1); break;
+    case Hit::timerPreset:
+        if (index < std::size(timerPresets) && !quick_.running() && !quick_.paused()) {
+            quick_.configure(timerPresets[index] * 60);
+        }
         break;
+    case Hit::quickAdjust:
+        if (!quick_.running() && !quick_.paused()) {
+            const int minutes = std::clamp(quick_.duration() / 60 + (index == 1 ? 1 : -1),
+                                           quickMinMinutes, quickMaxMinutes);
+            quick_.configure(minutes * 60);
+        }
+        break;
+    case Hit::timerToggle:
+        quick_.toggle(now);
+        preferredPill_ = PillMode::timer;
+        break;
+    case Hit::timerReset: quick_.reset(); break;
+    case Hit::audioPicker: command.kind = IslandCommand::Kind::audioPicker; break;
+    case Hit::clearDrop: command.kind = IslandCommand::Kind::clearDrop; break;
+    case Hit::removeDrop:
+        command.kind = IslandCommand::Kind::removeDrop;
+        command.index = index;
+        break;
+    case Hit::notificationSettings: command.kind = IslandCommand::Kind::notificationSettings; break;
     default: break;
     }
     return command;
@@ -1209,6 +1430,14 @@ void Island::drawFocusGlyph(D2D1_POINT_2F center, float size, D2D1_COLOR_F color
     target_->DrawLine(at(8, 8), at(10.5f, 9.5f), ink(color), stroke, roundStroke_.get());
 }
 
+void Island::drawTimerGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color) {
+    drawFocusGlyph(pt(center.x, center.y + 1.5f), 14, color);
+    target_->DrawLine(pt(center.x - 2.5f, center.y - 7.5f), pt(center.x + 2.5f, center.y - 7.5f),
+                      ink(color), 1.4f, roundStroke_.get());
+    target_->DrawLine(pt(center.x, center.y - 7.5f), pt(center.x, center.y - 4.5f),
+                      ink(color), 1.4f, roundStroke_.get());
+}
+
 void Island::drawChipGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color) {
     target_->DrawRoundedRectangle(rounded(box(center.x - 5, center.y - 5, 10, 10), 2), ink(color), 1.2f);
     for (const float offset : {-2.5f, 2.5f}) {
@@ -1219,12 +1448,12 @@ void Island::drawChipGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color) {
     }
 }
 
-void Island::drawButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record) {
-    const float fill = pressed(hit) ? 0.14f : hovered(hit) ? 0.08f : 0.04f;
-    target_->FillRoundedRectangle(rounded(rect, 8), ink(white(fill)));
+void Island::drawButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record, size_t index, bool selected) {
+    const float fill = pressed(hit, index) ? 0.14f : hovered(hit, index) ? 0.08f : 0.04f;
+    target_->FillRoundedRectangle(rounded(rect, 8), ink(selected ? withAlpha(accent_, 0.16f) : white(fill)));
     target_->DrawRoundedRectangle(rounded(grow(rect, -0.5f, -0.5f), 7.5f), ink(white(0.12f)), 1);
-    text(label, buttonFont_.get(), rect, rgb(inkColor));
-    if (record) addTarget(rect, hit);
+    text(label, buttonFont_.get(), rect, selected ? accent_ : rgb(inkColor));
+    if (record) addTarget(rect, hit, index);
 }
 
 // The cover, or the app's logo on a dark tile when the player gives no cover.
@@ -1269,9 +1498,6 @@ void Island::drawCompact(Clock::time_point now, float amount, bool hideShared) {
 
     const float radius = std::min(shape.right - shape.left, shape.bottom - shape.top) / 2;
     fillShell(rounded(shape, radius));
-    if (captureColor_ && amount < 1) {
-        target_->FillRoundedRectangle(rounded(shape, radius), ink(rgb(*captureColor_, 1 - amount)));
-    }
     target_->DrawRoundedRectangle(rounded(grow(shape, -0.5f, -0.5f), radius - 0.5f), ink(white(0.13f)), 1);
 
     const float opacity = lin(0.55f, 1, amount);
@@ -1285,35 +1511,81 @@ void Island::drawCompact(Clock::time_point now, float amount, bool hideShared) {
 
 void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideShared) {
     const auto center = pt((shape.left + shape.right) / 2, (shape.top + shape.bottom) / 2);
-    const float blend = pillLyricBlend(now);
-    const auto drawLyric = [&](PillLyric const& lyric, float opacity) {
+    const float t = pillLyricProgress(now);
+    const float fadeOut = pillLyricOut(t);
+    const float oldOpacity = previousPillAlpha_ * (1 - fadeOut);
+    const float newOpacity = pillLyricIn(t);
+    const auto drawLyric = [&](PillLyric const& lyric, float opacity, float offset) {
         if (!lyric.layout || opacity <= 0) return;
-        target_->DrawTextLayout(pt(center.x - lyric.textSize.width / 2, center.y - lyric.textSize.height / 2),
+        target_->DrawTextLayout(pt(center.x + (pillLyricIconSpace - lyric.textSize.width - captureWidth()) / 2,
+                                   center.y - lyric.textSize.height / 2 + offset),
                                 lyric.layout.get(), ink(rgb(inkColor, opacity)));
     };
-    drawLyric(previousPillLyric_, 1 - blend);
-    drawLyric(pillLyric_, blend);
-    const float mediaOpacity = (previousPillLyric_.layout ? 0 : 1 - blend) + (pillLyric_.layout ? 0 : blend);
+    drawLyric(previousPillLyric_, oldOpacity, std::lerp(previousPillOffset_, -pillLyricTravel, fadeOut));
+    drawLyric(pillLyric_, newOpacity, pillLyricTravel * (1 - newOpacity));
+    const bool bothLyrics = previousPillLyric_.layout && pillLyric_.layout;
+    const float iconOpacity = bothLyrics ? 1 : (pillLyric_.layout ? newOpacity : (previousPillLyric_.layout ? oldOpacity : 0));
+    if (iconOpacity > 0) {
+        drawLyricsGlyph(pt(shape.left + 13, center.y - 8), withAlpha(accent_, iconOpacity));
+    }
+    float mediaOpacity = 1;
+    if (previousPillLyric_.layout || pillLyric_.layout) {
+        mediaOpacity = (previousPillLyric_.layout ? 0 : oldOpacity) + (pillLyric_.layout ? 0 : newOpacity);
+    }
     if (mediaOpacity > 0) {
-        target_->SetTransform(D2D1::Matrix3x2F::Translation(center.x, center.y - pillCenterY) * base_);
+        target_->SetTransform(D2D1::Matrix3x2F::Translation(center.x - captureWidth() / 2, center.y - pillCenterY) * base_);
         if (mediaOpacity < 1) pushLayer(nullptr, mediaOpacity);
         drawPillContent(now, hideShared);
         if (mediaOpacity < 1) popLayer();
         target_->SetTransform(base_);
     }
-    if (captureColor_) {
-        target_->FillEllipse(D2D1::Ellipse({shape.right - 12, center.y}, 3, 3), ink(rgb(*captureColor_)));
+    drawCaptureIndicators(pt(shape.right - 17, center.y));
+}
+
+void Island::drawCaptureIndicators(D2D1_POINT_2F right) {
+    if (cameraColor_) {
+        drawAlertIcon(IslandAlert::Kind::camera, pt(right.x - 8, right.y - 8), rgb(*cameraColor_));
+        right.x -= 19;
     }
+    if (microphoneColor_) drawAlertIcon(IslandAlert::Kind::microphone, pt(right.x - 8, right.y - 8), rgb(*microphoneColor_));
+}
+
+void Island::drawLyricsGlyph(D2D1_POINT_2F origin, D2D1_COLOR_F color) {
+    const auto x = origin.x, y = origin.y;
+    target_->FillEllipse(D2D1::Ellipse(pt(x + 3.5f, y + 12), 2.7f, 1.9f), ink(color));
+    target_->DrawLine(pt(x + 5.6f, y + 12), pt(x + 5.6f, y + 2.5f), ink(color), 1.4f, roundStroke_.get());
+    target_->DrawLine(pt(x + 5.6f, y + 2.5f), pt(x + 10, y + 4), ink(color), 1.4f, roundStroke_.get());
+    target_->DrawLine(pt(x + 9, y + 8), pt(x + 15, y + 8), ink(color), 1.4f, roundStroke_.get());
+    target_->DrawLine(pt(x + 9, y + 12), pt(x + 13.5f, y + 12), ink(color), 1.4f, roundStroke_.get());
 }
 
 void Island::drawPillContent(Clock::time_point now, bool hideShared) {
     const float edge = pillLeft + pillWidth - 12;
-    const float right = edge - (captureColor_ ? 11 : 0);
-    if (pillContent_ == PillMode::focus) {
-        drawFocusGlyph({pillLeft + 19, pillCenterY}, 14, accent_);
-        const bool done = !focusUntil_ && alert_ && alert_->kind == IslandAlert::Kind::focusDone;
-        text(done ? L"0:00" : timestamp(focusRemaining(now)), timerFont_.get(), box(right - 40, pillTop, 40, pillHeight),
-             accent_);
+    const float right = edge;
+    if (pillContent_ == PillMode::privacy || pillContent_ == PillMode::idle) {
+        text(pillTitle_, pillTitleFont_.get(), box(pillLeft + 14, pillTop, right - pillLeft - 14, pillHeight), rgb(inkColor));
+        return;
+    }
+    if (pillContent_ == PillMode::preview) {
+        drawScreenGlyph(screen_, box(pillLeft + 8, pillTop, 26, pillHeight), accent_);
+        text(pillTitle_, pillTitleFont_.get(), box(pillLeft + 39, pillTop, right - (pillLeft + 39), pillHeight),
+             rgb(inkColor));
+        return;
+    }
+    if (pillContent_ == PillMode::focus || pillContent_ == PillMode::timer) {
+        const bool quickTimer = pillContent_ == PillMode::timer;
+        const auto& timer = quickTimer ? quick_ : focus_;
+        const auto color = timer.paused() ? rgb(mutedColor) : accent_;
+        const auto center = pt(pillLeft + 19, pillCenterY);
+        if (timer.paused()) {
+            target_->FillRectangle(box(center.x - 4, center.y - 5, 2.5f, 10), ink(color));
+            target_->FillRectangle(box(center.x + 1.5f, center.y - 5, 2.5f, 10), ink(color));
+        } else if (quickTimer) {
+            drawTimerGlyph(center, color);
+        } else {
+            drawFocusGlyph(center, 14, color);
+        }
+        text(timestamp(timer.seconds(now)), timerFont_.get(), box(right - 44, pillTop, 44, pillHeight), color);
         text(pillTitle_, pillTitleFont_.get(), box(pillLeft + 34, pillTop, right - 48 - (pillLeft + 34), pillHeight),
              rgb(inkColor));
         return;
@@ -1359,7 +1631,11 @@ void Island::drawPanel(Clock::time_point now, float value, float amount) {
     const auto full = panelRect(now);
     const auto from = compactShape(now, amount);
     const float fromRadius = std::min(from.right - from.left, from.bottom - from.top) / 2;
-    const auto clip = mixRect(from, full, value);
+    auto clip = mixRect(from, full, value);
+    const float breadth = value + 0.18f * value * (1 - value);
+    clip.left = std::lerp(from.left, full.left, breadth);
+    clip.right = std::lerp(from.right, full.right, breadth);
+    if (open_) panelWheel_ = clip;
     const float radius = std::lerp(fromRadius, panelRadius, value);
     const float opacity = open_ ? std::lerp(0.68f, 1.0f, value) : value;
 
@@ -1387,18 +1663,14 @@ void Island::drawPanel(Clock::time_point now, float value, float amount) {
     }
     const float switching = progress(screenStart_, panelTime, now);
     if (switching < 1 && screenFrom_ != screen_) {
-        // Cross-fade: the old screen fades out fast, the new one fades in slightly later and rises 3px.
-        const float ms = elapsedMs(screenStart_, now);
-        pushLayer(nullptr, 1 - easeOut(clamp01(ms / 120)));
+        const float enter = easeInOut(switching);
+        pushLayer(nullptr, 1 - enter);
         drawScreen(screenFrom_, content, now, false, false);
         popLayer();
-        const float enter = easeOut(clamp01((ms - 48) / 195));
         if (enter > 0) {
-            target_->SetTransform(D2D1::Matrix3x2F::Translation(0, 3 * (1 - enter)) * base_);
             pushLayer(nullptr, enter);
             drawScreen(screen_, content, now, false, recordPanel_);
             popLayer();
-            target_->SetTransform(base_);
         }
     } else {
         drawScreen(screen_, content, now, hideShared, recordPanel_);
@@ -1412,9 +1684,10 @@ void Island::drawPanel(Clock::time_point now, float value, float amount) {
 void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, bool hideShared, bool record) {
     switch (screen) {
     case Screen::media: drawMedia(panel, now, hideShared, record); break;
-    case Screen::focus: drawFocus(panel, now, record); break;
+    case Screen::timers: drawTimers(panel, now, record); break;
     case Screen::scratch: drawScratchpad(panel, record); break;
-    case Screen::system: drawSystem(panel); break;
+    case Screen::drop: drawDropZone(panel, record); break;
+    case Screen::system: drawSystem(panel, record); break;
     }
 }
 
@@ -1435,15 +1708,7 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, bool hideShared
     if (lyricsOpen_ || hovered(Hit::lyrics) || pressed(Hit::lyrics)) {
         target_->FillRoundedRectangle(rounded(lyricButton, 7), ink(white(0.10f)));
     }
-    const auto glyph = lyricsOpen_ ? rgb(readoutColor) : rgb(inkColor);
-    const float gx = lyricButton.left + 9, gy = lyricButton.top + 9;
-    PathBuilder speech(graphics_.get());
-    speech.move(pt(gx + 1, gy + 2), false).line(pt(gx + 15, gy + 2)).line(pt(gx + 15, gy + 11))
-        .line(pt(gx + 8, gy + 11)).line(pt(gx + 4, gy + 14)).line(pt(gx + 4, gy + 11))
-        .line(pt(gx + 1, gy + 11)).close();
-    target_->DrawGeometry(speech.finish().get(), ink(glyph), 1.4f, roundStroke_.get());
-    target_->DrawLine(pt(gx + 4, gy + 5), pt(gx + 12, gy + 5), ink(glyph), 1.4f, roundStroke_.get());
-    target_->DrawLine(pt(gx + 4, gy + 8), pt(gx + 9, gy + 8), ink(glyph), 1.4f, roundStroke_.get());
+    drawLyricsGlyph(pt(lyricButton.left + 9, lyricButton.top + 9), lyricsOpen_ ? rgb(readoutColor) : rgb(inkColor));
     if (record) addTarget(lyricButton, Hit::lyrics);
 
     // Timeline.
@@ -1633,16 +1898,54 @@ void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double positio
     target_->PopAxisAlignedClip();
 }
 
-void Island::drawFocus(D2D1_RECT_F panel, Clock::time_point now, bool record) {
+void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     const float x = panel.left;
     const float y = panel.top;
-    text(L"Focus", titleFont_.get(), box(x + padX, y + padTop, innerWidth, 22.4f), rgb(inkColor));
-    const int left = focusRemaining(now);
-    text(timestamp(left), clockFont_.get(), box(x + padX, y + 43.4f, innerWidth, 44.8f), rgb(inkColor));
-    const auto label = focusUntil_ ? L"Pause" : (left == focusLength || left == 0) ? L"Start" : L"Resume";
     const float centerX = x + panelWidth / 2;
-    drawButton(box(centerX - 68, y + 96.2f, 64, 30), label, Hit::focusToggle, record);
-    drawButton(box(centerX + 4, y + 96.2f, 64, 30), L"Reset", Hit::focusReset, record);
+    text(L"Timers", titleFont_.get(), box(x + padX, y + padTop, innerWidth, 22.4f), rgb(inkColor));
+    constexpr wchar_t const* labels[]{L"Focus", L"Break", L"Quick Timer"};
+    const size_t phase = breakPhase_ ? 1 : 0;
+    const size_t selected = quickView_ ? 2 : phase;
+    const bool focusBusy = focus_.running() || focus_.paused();
+    for (size_t i = 0; i < std::size(labels); ++i) {
+        const bool selectable = i == 2 || !focusBusy || i == phase;
+        drawButton(box(centerX - 116 + 80 * static_cast<float>(i), y + 43, 72, 28),
+                   labels[i], Hit::timerView, record && selectable, i, i == selected);
+    }
+
+    const auto& timer = quickView_ ? quick_ : focus_;
+    const bool adjustable = !timer.running() && !timer.paused();
+    text(timestamp(timer.seconds(now)), clockFont_.get(), box(x + padX, y + 77, innerWidth, 44), rgb(inkColor));
+    if (quickView_) {
+        for (size_t i = 0; i < std::size(timerPresets); ++i) {
+            const auto minutes = timerPresets[i];
+            drawButton(box(centerX - 88 + 60 * static_cast<float>(i), y + 126, 56, 26),
+                       std::to_wstring(minutes) + L" min", Hit::timerPreset, record && adjustable, i,
+                       quick_.duration() == minutes * 60);
+        }
+        if (adjustable) {
+            const int minutes = quick_.duration() / 60;
+            drawButton(box(centerX - 122, y + 126, 28, 26), L"−", Hit::quickAdjust,
+                       record && minutes > quickMinMinutes, 0);
+            drawButton(box(centerX + 94, y + 126, 28, 26), L"+", Hit::quickAdjust,
+                       record && minutes < quickMaxMinutes, 1);
+        }
+    } else {
+        text(std::to_wstring(focus_.duration() / 60) + L" min", buttonFont_.get(),
+             box(centerX - 47, y + 126, 94, 26), rgb(mutedColor));
+        if (adjustable) {
+            drawButton(box(centerX - 80, y + 126, 26, 26), L"−", Hit::focusAdjust, record, 0);
+            drawButton(box(centerX + 54, y + 126, 26, 26), L"+", Hit::focusAdjust, record, 1);
+        }
+    }
+    auto action = L"Start";
+    if (timer.running()) action = L"Pause";
+    else if (timer.paused()) action = L"Resume";
+    else if (timer.done()) action = quickView_ ? L"Restart" : (breakPhase_ ? L"Start Focus" : L"Start Break");
+    drawButton(box(centerX - 93, y + 161, 106, 29), action,
+               quickView_ ? Hit::timerToggle : Hit::focusToggle, record);
+    drawButton(box(centerX + 21, y + 161, 72, 29), L"Reset",
+               quickView_ ? Hit::timerReset : Hit::focusReset, record);
 }
 
 void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
@@ -1668,7 +1971,42 @@ void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
     }
 }
 
-void Island::drawSystem(D2D1_RECT_F panel) {
+void Island::drawDropZone(D2D1_RECT_F panel, bool record) {
+    const float x = panel.left + padX;
+    const float y = panel.top + padTop;
+    text(L"Drop Zone", titleFont_.get(), box(x, y, innerWidth, 22), rgb(inkColor));
+    constexpr float rowHeight = 32.0f;
+    const auto field = box(x, y + 33, innerWidth, rowHeight * visibleDropRows);
+    target_->FillRoundedRectangle(rounded(field, 7), ink(white(0.04f)));
+    target_->DrawRoundedRectangle(rounded(field, 7), ink(dropHover_ ? accent_ : rgb(0x737e8c)), 1);
+    if (record) dropViewport_ = field;
+    if (dropItems_.empty()) {
+        text(L"Drop files or text here", headingCenterFont_.get(), field, rgb(inkColor));
+        return;
+    }
+
+    drawButton(box(x + innerWidth - 70, y, 70, 25), L"Clear all", Hit::clearDrop, record);
+    const auto end = std::min(dropItems_.size(), dropOffset_ + visibleDropRows);
+    for (size_t index = dropOffset_; index < end; ++index) {
+        const float rowY = field.top + rowHeight * static_cast<float>(index - dropOffset_);
+        const auto drag = box(x + 4, rowY + 2, innerWidth - 43, rowHeight - 4);
+        const auto remove = box(x + innerWidth - 36, rowY + 2, 26, rowHeight - 4);
+        if (hovered(Hit::dropItem, index)) target_->FillRoundedRectangle(rounded(drag, 5), ink(white(0.09f)));
+        const auto& item = dropItems_[index];
+        text(item.text ? L"Text" : L"File", bodyFont_.get(), box(x + 12, rowY, 38, rowHeight), rgb(mutedColor));
+        text(item.label, bodyFont_.get(), box(x + 54, rowY, innerWidth - 100, rowHeight), rgb(inkColor));
+        if (record) addTarget(drag, Hit::dropItem, index);
+        drawButton(remove, L"×", Hit::removeDrop, record, index);
+    }
+    const auto count = std::to_wstring(dropItems_.size()) + (dropItems_.size() == 1 ? L" item" : L" items");
+    const auto status = dropItems_.size() > visibleDropRows
+        ? std::to_wstring(dropOffset_ + 1) + L"–" + std::to_wstring(end) + L" of " + count
+        : count;
+    text(L"Drag an item to another app", bodyFont_.get(), box(x, field.bottom + 8, 220, 18), rgb(mutedColor));
+    text(status, bodyEndFont_.get(), box(x + 221, field.bottom + 8, innerWidth - 221, 18), rgb(mutedColor));
+}
+
+void Island::drawSystem(D2D1_RECT_F panel, bool record) {
     const float x = panel.left;
     const float y = panel.top;
     text(L"System", titleFont_.get(), box(x + padX, y + padTop, innerWidth, 22.4f), rgb(inkColor));
@@ -1699,25 +2037,54 @@ void Island::drawSystem(D2D1_RECT_F panel) {
     const auto level = power_.percent ? std::to_wstring(*power_.percent) + L"%" : std::wstring{};
     text(status, bodyFont_.get(), box(x + 14, y + 96.4f, 260, 17), rgb(readoutColor));
     text(level, strongEndFont_.get(), box(x + 275, y + 96.4f, 80, 17), rgb(readoutColor));
+    text(L"Audio Output", bodyFont_.get(), box(x + padX, y + 120, innerWidth, 17), rgb(inkColor));
+    drawButton(box(x + padX, y + 139, innerWidth, 28),
+               audioOutput_.empty() ? L"Choose output  ▾" : audioOutput_ + L"  ▾", Hit::audioPicker, record);
+    const auto notificationLabel = !notificationsQuiet_ ? L"Notification status unavailable" :
+        notificationsQuiet() ? L"Do Not Disturb on" : L"Do Not Disturb off";
+    drawButton(box(x + padX, y + 176, innerWidth, 25), notificationLabel, Hit::notificationSettings, record);
+}
+
+std::wstring_view Island::screenLabel(Screen screen) {
+    switch (screen) {
+    case Screen::media: return L"Now Playing";
+    case Screen::timers: return L"Timers";
+    case Screen::scratch: return L"Scratchpad";
+    case Screen::drop: return L"Drop Zone";
+    case Screen::system: return L"System";
+    }
+    return {};
+}
+
+void Island::drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color) {
+    const auto center = pt((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+    switch (screen) {
+    case Screen::media: text(L"♫", glyphFont_.get(), rect, color); break;
+    case Screen::timers: drawTimerGlyph(center, color); break;
+    case Screen::scratch: text(L"✎", glyphFont_.get(), rect, color); break;
+    case Screen::drop:
+        target_->DrawLine(pt(center.x, center.y - 7), pt(center.x, center.y + 1), ink(color), 1.5f);
+        target_->DrawLine(pt(center.x - 3, center.y - 2), pt(center.x, center.y + 1), ink(color), 1.5f);
+        target_->DrawLine(pt(center.x, center.y + 1), pt(center.x + 3, center.y - 2), ink(color), 1.5f);
+        target_->DrawRoundedRectangle(rounded(box(center.x - 7, center.y + 3, 14, 4), 1), ink(color), 1.5f);
+        break;
+    case Screen::system: drawChipGlyph(center, color); break;
+    }
 }
 
 void Island::drawNav(D2D1_RECT_F panel, bool record) {
     const float top = panel.bottom - padBottom - navHeight;
-    target_->FillRectangle(box(panel.left + padX, top - 6, innerWidth, 1), ink(white(0.12f)));
-    const float start = panel.left + panelWidth / 2 - (4 * 35 + 3 * 8) / 2.0f;
-    const Hit hits[]{Hit::navMedia, Hit::navFocus, Hit::navScratch, Hit::navSystem};
-    const Screen screens[]{Screen::media, Screen::focus, Screen::scratch, Screen::system};
-    for (int i = 0; i < 4; ++i) {
-        const auto rect = box(start + i * 43.0f, top, 35, navHeight);
+    drawCaptureIndicators(pt(panel.left + padX + 26, top + navHeight / 2));
+    constexpr auto count = std::size(screens);
+    const float start = panel.left + panelWidth / 2 - (count * 35 + (count - 1) * 8) / 2.0f;
+    const Hit hits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem};
+    for (size_t i = 0; i < count; ++i) {
+        const auto rect = box(start + static_cast<float>(i) * 43, top, 35, navHeight);
         const bool selected = screen_ == screens[i];
         if (selected) target_->FillRoundedRectangle(rounded(rect, 7), ink(withAlpha(accent_, 0.14f)));
         else if (hovered(hits[i])) target_->FillRoundedRectangle(rounded(rect, 7), ink(white(0.08f)));
         const auto color = selected ? accent_ : rgb(mutedColor);
-        const D2D1_POINT_2F c{rect.left + 17.5f, rect.top + 15.5f};
-        if (i == 0) text(L"♫", glyphFont_.get(), rect, color);
-        if (i == 1) drawFocusGlyph(c, 15, color);
-        if (i == 2) text(L"✎", glyphFont_.get(), rect, color);
-        if (i == 3) drawChipGlyph(c, color);
+        drawScreenGlyph(screens[i], rect, color);
         if (record) addTarget(rect, hits[i]);
     }
     const auto pin = box(panel.left + panelWidth - padX - 34, top + 1, 34, 29);
@@ -1756,7 +2123,7 @@ void Island::drawShared(D2D1_RECT_F panel, Clock::time_point now, float value, f
 // ---- Alerts --------------------------------------------------------------------------------------
 
 void Island::notify(IslandAlert alert) {
-    if (suppressed_) return;
+    if (suppressed_ || notificationsQuiet()) return;
     const auto now = Clock::now();
     prepareText();
     if (alert_ && alert_->kind == alert.kind && (alert.kind == IslandAlert::Kind::copy || alert.meter)) {
@@ -1778,6 +2145,13 @@ void Island::notify(IslandAlert alert) {
         return;
     }
     startAlert(std::move(alert), now, false);
+}
+
+void Island::clearAlerts() {
+    alert_.reset();
+    queued_.reset();
+    alertHoldUntil_.reset();
+    alertFrom_ = alertTo_ = 0;
 }
 
 void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
@@ -1894,9 +2268,6 @@ void Island::drawSplit(Clock::time_point now, float amount) {
         area = box(area.left * scale, pillTop, (area.right - area.left) * scale, size.height);
     }
     fillShell(visible);
-    if (!fromPill && captureColor_) {
-        target_->FillGeometry(visible, ink(rgb(*captureColor_, 1 - easeOut(p))));
-    }
     target_->DrawGeometry(visible, ink(white(0.13f)), 1);
 
     if (fromPill) {
@@ -1965,7 +2336,11 @@ void Island::drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_CO
             rounded(box(3, 6, kind == IslandAlert::Kind::lowBattery ? 2.0f : 7.0f, 4), 0.5f), ink(color));
         break;
     case IslandAlert::Kind::focusDone:
+    case IslandAlert::Kind::breakDone:
         drawFocusGlyph(pt(8, 8), 16, color);
+        break;
+    case IslandAlert::Kind::timerDone:
+        drawTimerGlyph(pt(8, 8), color);
         break;
     case IslandAlert::Kind::microphone: {
         target_->DrawRoundedRectangle(rounded(box(6, 1.5f, 4, 8), 2), ink(color), 1.5f);
@@ -2085,6 +2460,8 @@ void Island::draw(HWND window) {
     targets_.clear();
     scratchEditor_.reset();
     lyricViewport_ = {};
+    dropViewport_ = {};
+    panelWheel_ = {};
     layerDepth_ = 0;
     target_->BeginDraw();
     target_->SetTransform(base_);

@@ -1,0 +1,265 @@
+#include "drop_zone.hpp"
+
+#include <ole2.h>
+#include <shellapi.h>
+#include <shlobj.h>
+
+#include <algorithm>
+#include <cstring>
+#include <string_view>
+#include <utility>
+
+namespace zenith {
+namespace {
+
+constexpr size_t maxItems = 64;
+constexpr size_t maxBytes = 16 * 1024 * 1024;
+
+FORMATETC format(CLIPFORMAT type) { return {type, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL}; }
+
+struct Medium {
+    STGMEDIUM value{};
+    ~Medium() { ReleaseStgMedium(&value); }
+};
+
+struct Item : winrt::implements<Item, IDataObject> {
+    Item(CLIPFORMAT type, HGLOBAL data) : type_(type), data_(data) {}
+    ~Item() { GlobalFree(data_); }
+
+    HRESULT STDMETHODCALLTYPE GetData(FORMATETC* requested, STGMEDIUM* medium) noexcept override {
+        if (!medium) return E_POINTER;
+        *medium = {};
+        const auto result = QueryGetData(requested);
+        if (FAILED(result)) return result;
+        const auto copy = OleDuplicateData(data_, type_, GMEM_MOVEABLE);
+        if (!copy) return E_OUTOFMEMORY;
+        medium->tymed = TYMED_HGLOBAL;
+        medium->hGlobal = copy;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) noexcept override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* requested) noexcept override {
+        if (!requested) return E_POINTER;
+        if (requested->cfFormat != type_) return DV_E_FORMATETC;
+        if (!(requested->tymed & TYMED_HGLOBAL)) return DV_E_TYMED;
+        if (requested->dwAspect != DVASPECT_CONTENT) return DV_E_DVASPECT;
+        return requested->lindex == -1 ? S_OK : DV_E_LINDEX;
+    }
+    HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC*, FORMATETC* output) noexcept override {
+        if (!output) return E_POINTER;
+        *output = {};
+        return DATA_S_SAMEFORMATETC;
+    }
+    HRESULT STDMETHODCALLTYPE SetData(FORMATETC*, STGMEDIUM*, BOOL) noexcept override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD direction, IEnumFORMATETC** enumerator) noexcept override {
+        if (direction != DATADIR_GET) return E_NOTIMPL;
+        auto offered = format(type_);
+        return SHCreateStdEnumFmtEtc(1, &offered, enumerator);
+    }
+    HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) noexcept override { return OLE_E_ADVISENOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) noexcept override { return OLE_E_ADVISENOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA**) noexcept override { return OLE_E_ADVISENOTSUPPORTED; }
+
+private:
+    CLIPFORMAT type_;
+    HGLOBAL data_;
+};
+
+struct Source : winrt::implements<Source, IDropSource> {
+    HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escape, DWORD keys) noexcept override {
+        if (escape) return DRAGDROP_S_CANCEL;
+        return (keys & MK_LBUTTON) ? S_OK : DRAGDROP_S_DROP;
+    }
+    HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) noexcept override { return DRAGDROP_S_USEDEFAULTCURSORS; }
+};
+
+CLIPFORMAT supported(IDataObject* data) {
+    for (const auto type : {CF_HDROP, CF_UNICODETEXT}) {
+        auto offered = format(static_cast<CLIPFORMAT>(type));
+        if (data->QueryGetData(&offered) == S_OK) return offered.cfFormat;
+    }
+    return 0;
+}
+
+std::wstring textPreview(HGLOBAL data) {
+    const auto raw = static_cast<wchar_t const*>(GlobalLock(data));
+    if (!raw) return {};
+    const std::wstring_view contents(raw, wcsnlen(raw, GlobalSize(data) / sizeof(wchar_t)));
+    const auto start = contents.find_first_not_of(L" \t\r\n");
+    std::wstring label;
+    if (start != std::wstring_view::npos) {
+        const auto line = contents.substr(start);
+        const auto length = std::min(line.find_first_of(L"\r\n"), size_t{100});
+        label = line.substr(0, length);
+    }
+    const bool empty = contents.empty();
+    GlobalUnlock(data);
+    return label.empty() && !empty ? L"Text" : label;
+}
+
+winrt::com_ptr<IDataObject> takeItem(CLIPFORMAT type, HGLOBAL data) {
+    if (!data) winrt::throw_hresult(E_OUTOFMEMORY);
+    try {
+        return winrt::make<Item>(type, data);
+    } catch (...) {
+        GlobalFree(data);
+        throw;
+    }
+}
+
+winrt::com_ptr<IDataObject> fileItem(std::wstring const& path, size_t bytes) {
+    const auto data = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
+    if (!data) winrt::throw_hresult(E_OUTOFMEMORY);
+    const auto header = static_cast<DROPFILES*>(GlobalLock(data));
+    if (!header) {
+        GlobalFree(data);
+        winrt::throw_last_error();
+    }
+    header->pFiles = sizeof(DROPFILES);
+    header->fWide = TRUE;
+    std::memcpy(header + 1, path.c_str(), (path.size() + 1) * sizeof(wchar_t));
+    GlobalUnlock(data);
+    return takeItem(CF_HDROP, data);
+}
+
+}
+
+struct DropZone::Target : winrt::implements<Target, IDropTarget> {
+    Target(DropZone& owner, Hover hover) : owner_(owner), hover_(std::move(hover)) {}
+
+    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data, DWORD, POINTL, DWORD* effect) noexcept override {
+        type_ = owner_.dragging_ ? 0 : supported(data);
+        return update(effect);
+    }
+    HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL, DWORD* effect) noexcept override { return update(effect); }
+    HRESULT STDMETHODCALLTYPE DragLeave() noexcept override {
+        type_ = 0;
+        return highlight(false);
+    }
+    HRESULT STDMETHODCALLTYPE Drop(IDataObject* data, DWORD, POINTL, DWORD* effect) noexcept override {
+        const auto allowed = *effect;
+        *effect = DROPEFFECT_NONE;
+        const auto type = std::exchange(type_, CLIPFORMAT{});
+        try {
+            if (const auto hr = highlight(false); FAILED(hr)) return hr;
+            if (type == 0 || !(allowed & DROPEFFECT_COPY) || owner_.dragging_) return S_OK;
+            auto offered = format(type);
+            Medium medium;
+            if (FAILED(data->GetData(&offered, &medium.value)) || medium.value.tymed != TYMED_HGLOBAL) return S_OK;
+            if (owner_.append(type, medium.value.hGlobal)) *effect = DROPEFFECT_COPY;
+            return S_OK;
+        } catch (...) {
+            return winrt::to_hresult();
+        }
+    }
+
+private:
+    HRESULT update(DWORD* effect) noexcept {
+        const bool offered = type_ != 0 && (*effect & DROPEFFECT_COPY) != 0;
+        *effect = offered && owner_.items_.size() < maxItems ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+        return highlight(offered);
+    }
+    HRESULT highlight(bool value) noexcept {
+        try {
+            if (value != highlighted_) {
+                highlighted_ = value;
+                hover_(value);
+            }
+            return S_OK;
+        } catch (...) {
+            return winrt::to_hresult();
+        }
+    }
+
+    DropZone& owner_;
+    Hover hover_;
+    CLIPFORMAT type_ = 0;
+    bool highlighted_ = false;
+};
+
+DropZone::~DropZone() { detach(); }
+
+bool DropZone::attach(HWND window, Hover hover, Changed changed) {
+    auto target = winrt::make<Target>(*this, std::move(hover));
+    if (FAILED(RegisterDragDrop(window, target.get()))) return false;
+    window_ = window;
+    target_ = std::move(target);
+    changed_ = std::move(changed);
+    return true;
+}
+
+void DropZone::detach() {
+    if (window_) RevokeDragDrop(std::exchange(window_, nullptr));
+    target_ = nullptr;
+    items_.clear();
+}
+
+bool DropZone::append(CLIPFORMAT type, HGLOBAL data) {
+    size_t remaining = maxBytes;
+    for (const auto& item : items_) remaining -= item.bytes;
+    const size_t size = GlobalSize(data);
+    if (size == 0 || size > remaining || items_.size() >= maxItems) return false;
+
+    std::vector<Entry> incoming;
+    if (type == CF_HDROP) {
+        if (size < sizeof(DROPFILES)) return false;
+        const auto files = reinterpret_cast<HDROP>(data);
+        const auto count = DragQueryFileW(files, 0xffffffff, nullptr, 0);
+        if (count == 0 || count > maxItems - items_.size()) return false;
+        incoming.reserve(count);
+        for (UINT index = 0; index < count; ++index) {
+            const auto length = DragQueryFileW(files, index, nullptr, 0);
+            if (length == 0 || length >= size) return false;
+            std::wstring path(length + 1, L'\0');
+            if (DragQueryFileW(files, index, path.data(), length + 1) != length) return false;
+            path.resize(length);
+            const size_t bytes = sizeof(DROPFILES) + (path.size() + 2) * sizeof(wchar_t);
+            if (bytes > remaining) return false;
+            const auto slash = path.find_last_of(L"\\/");
+            auto label = slash == std::wstring::npos ? path : path.substr(slash + 1);
+            if (label.empty()) label = path;
+            incoming.push_back({fileItem(path, bytes), {std::move(label), false}, bytes});
+            remaining -= bytes;
+        }
+    } else {
+        auto label = textPreview(data);
+        if (label.empty()) return false;
+        auto item = takeItem(type, OleDuplicateData(data, type, GMEM_MOVEABLE));
+        incoming.push_back({std::move(item), {std::move(label), true}, size});
+    }
+    items_.reserve(items_.size() + incoming.size());
+    for (auto& item : incoming) items_.push_back(std::move(item));
+    publish();
+    return true;
+}
+
+void DropZone::publish() const {
+    if (!changed_) return;
+    std::vector<DropPreview> previews;
+    previews.reserve(items_.size());
+    for (const auto& item : items_) previews.push_back(item.preview);
+    changed_(std::move(previews));
+}
+
+void DropZone::drag(size_t index) {
+    if (index >= items_.size() || dragging_) return;
+    auto source = winrt::make<Source>();
+    const auto item = items_[index].data;
+    DWORD effect{};
+    dragging_ = true;
+    DoDragDrop(item.get(), source.get(), DROPEFFECT_COPY, &effect);
+    dragging_ = false;
+}
+
+void DropZone::remove(size_t index) {
+    if (index >= items_.size()) return;
+    items_.erase(items_.begin() + static_cast<std::ptrdiff_t>(index));
+    publish();
+}
+
+void DropZone::clear() {
+    items_.clear();
+    publish();
+}
+
+}

@@ -11,8 +11,11 @@ Serah terima untuk agent berikutnya (Codex). Isinya posisi kerja terakhir, cara 
 
 ## Lanjut dari sini
 
-- Paket Release lokal ada di `out/ZenithDot-Panel-State.zip`. Isinya executable, installer, script setup browser bridge, dan ekstensi unpacked. Preview panel ada di `experiments/zenith-dot-scratchpad.html`.
+- Paket terbaru ada di `out/ZenithDot-ClipboardFix.zip`. Clipboard memproses event Windows langsung meski nomor urut format belum berubah. Tes simulasi event dan clipboard yang sempat terkunci lulus. Aktivasi perangkat, perpindahan output, dan brightness masih perlu dicek di desktop interaktif.
+- Paket Release lokal ada di `out/ZenithDot-Timers-Unified.zip`. Isinya executable, installer, script setup browser bridge, dan ekstensi unpacked. Preview panel ada di `experiments/zenith-dot-scratchpad.html`.
 - Build Release, simpan catatan UTF-8, pemilihan dua tab dari snapshot, dan routing command extension lulus tes lokal.
+- Cache cover, navigasi scroll, preview fitur, dan timing pill lirik lulus tes lokal. Verifikasi cover yang sesekali hilang di Spotify dan rasa animasi saat playback masih perlu dilakukan di desktop.
+- Focus, Break, dan Quick Timer ada dalam satu tab Timers. Countdown dan render lokal lulus tes. API mode notifikasi Windows bisa dibaca dan event-nya berhasil diregistrasi. Uji perubahan DND dan output audio langsung masih terbuka.
 - Tes interaktif berikutnya: pin Scratchpad lalu pindah ke app lain, unpin dan cek klik luar, lalu tes simpan/restart dan fokus setelah `Esc`; pasang ekstensi lalu uji play/pause dan seek ke dua tab dari browser yang sama; coba Hide/Show saat musik jalan; cek startup dan ukur RAM idle/playback (termasuk proses companion jika ekstensi aktif).
 
 ## Progres port V7 ke native
@@ -23,6 +26,7 @@ Serah terima untuk agent berikutnya (Codex). Isinya posisi kerja terakhir, cara 
 | 2 | Bubble split liquid: Copy, charger, baterai lemah, Focus done; alert inline saat panel terbuka | Selesai, `4f9d681` |
 | 3 | Sembunyi saat fullscreen, indikator mic dan kamera, HUD volume dan brightness | Sudah diimplementasikan dan build Release lulus. Verifikasi di desktop interaktif masih terbuka. |
 | 4 | Scratchpad dan lirik | Panel lirik penuh dan Scratchpad native dengan simpan lokal. |
+| 5 | Focus & Break, Quick Timer, Audio Output, notifikasi Windows | Sudah diimplementasikan. |
 
 Sebelumnya juga sudah selesai: island tidak mencuri fokus (`WS_EX_NOACTIVATE` + `MA_NOACTIVATE`) dan warna aksen ikut cover (`6efa8bf`).
 

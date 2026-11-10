@@ -3,6 +3,8 @@
 #include "media.hpp"
 #include "lyrics.hpp"
 #include "scratchpad.hpp"
+#include "countdown.hpp"
+#include "drop_zone.hpp"
 #include "power.hpp"
 #include "system.hpp"
 
@@ -24,15 +26,18 @@ namespace zenith {
 
 // Something a click on the island asks the app to do.
 struct IslandCommand {
-    enum class Kind { none, previous, toggle, next, seek, selectSource, retryLyrics, editScratchpad };
+    enum class Kind { none, previous, toggle, next, seek, selectSource, retryLyrics, editScratchpad,
+                      audioPicker, notificationSettings, removeDrop, clearDrop };
     Kind kind = Kind::none;
     double seconds = 0;
     std::wstring appId;
+    size_t index = 0;
 };
 
 // A short notice that splits off the pill as a liquid bubble (or shows inside the open panel).
 struct IslandAlert {
-    enum class Kind { copy, charging, battery, lowBattery, focusDone, microphone, camera, volume, brightness };
+    enum class Kind { copy, charging, battery, lowBattery, focusDone, breakDone, timerDone,
+                      microphone, camera, volume, brightness };
     Kind kind = Kind::copy;
     std::wstring title;
     std::wstring value;
@@ -57,11 +62,19 @@ public:
     void setMedia(MediaState const& media);
     void setPower(PowerState const& power);
     void setSystem(SystemStats const& stats);
+    void setAudioOutput(std::wstring const& output);
+    bool setNotificationsQuiet(std::optional<bool> quiet);
+    bool notificationsQuiet() const;
     void setSuppressed(bool suppressed);
-    void setCaptureColor(std::optional<unsigned> color);
+    void setCaptureColors(std::optional<unsigned> microphone, std::optional<unsigned> camera);
     void setLyrics(LyricsView const& lyrics);
     void setScratchpad(ScratchpadView const& scratchpad);
     void setScratchEditing(bool editing);
+    void setDropItems(std::vector<DropPreview> items);
+    void setDropHover(bool hovering);
+    void setPopupOpen(bool open);
+    void showDropZone();
+    std::optional<size_t> dropItemAt(POINT client) const;
     void closePanel();
     bool panelPinned() const;
     std::optional<RECT> scratchEditorRect() const;
@@ -80,17 +93,20 @@ public:
     // Pointer input in window client pixels. The bool results say whether a redraw is needed.
     bool pointerMove(POINT client);
     bool pointerLeave();
-    bool scrollLyrics(POINT client, int delta);
+    bool scroll(POINT client, int delta);
     bool pointerDown(POINT client);   // true: capture the mouse until pointerUp
     IslandCommand pointerUp(POINT client);
     void pointerCancel();
     bool overControl() const;
 
 private:
-    enum class Hit { none, pill, previous, toggle, next, timeline, source, navMedia, navFocus, navSystem,
-                     navScratch, focusToggle, focusReset, lyrics, lyricLine, retryLyrics, scratchEdit, panelPin };
-    enum class Screen { media, focus, scratch, system };
-    enum class PillMode { dot, media, focus };
+    enum class Hit { none, pill, previous, toggle, next, timeline, source, navMedia, navTimers,
+                     navScratch, navSystem, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
+                     timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, scratchEdit,
+                     navDrop, dropItem, removeDrop, clearDrop, panelPin, audioPicker, notificationSettings };
+    enum class Screen { media, timers, scratch, drop, system };
+    static constexpr Screen screens[]{Screen::media, Screen::timers, Screen::scratch, Screen::drop, Screen::system};
+    enum class PillMode { dot, media, focus, timer, preview, privacy, idle };
     struct Target {
         D2D1_RECT_F rect;
         Hit hit;
@@ -109,19 +125,23 @@ private:
     };
 
     float pillAmount(Clock::time_point now) const;
-    float pillLyricBlend(Clock::time_point now) const;
+    float pillLyricProgress(Clock::time_point now) const;
+    bool pillLyricGrowing() const;
+    float pillLyricOut(float progress) const;
+    float pillLyricIn(float progress) const;
     D2D1_SIZE_F pillSize(Clock::time_point now) const;
+    float captureWidth() const;
     D2D1_RECT_F compactShape(Clock::time_point now, float amount) const;
     float visibility(Clock::time_point now) const;
     float panelValue(Clock::time_point now) const;
     float panelHeight(Clock::time_point now) const;
     float panelWidthAt(Clock::time_point now) const;
     float lyricScroll(Clock::time_point now) const;
+    bool scrollLyrics(int delta);
     void moveLyricScroll(float offset, Clock::time_point now);
     void updateLyricVisibility(bool wasVisible, Clock::time_point now);
     float screenHeight(Screen screen) const;
     D2D1_RECT_F panelRect(Clock::time_point now) const;
-    int focusRemaining(Clock::time_point now) const;
     bool moving(Clock::time_point now) const;
     void updatePill(Clock::time_point now);
     void updatePillLyric(Clock::time_point now, float workWidth);
@@ -129,12 +149,16 @@ private:
     void setOpen(bool open, Clock::time_point now);
     void showScreen(Screen screen, Clock::time_point now);
     void toggleFocus(Clock::time_point now);
+    void selectTimerView(size_t index);
+    void selectFocusPhase(bool resting);
+    void adjustFocus(int direction);
     D2D1_POINT_2F stagePoint(POINT client) const;
     std::optional<Target> targetAt(D2D1_POINT_2F point) const;
     float timelineFraction(D2D1_POINT_2F point) const;
     std::wstring title() const;
     void startAlert(IslandAlert alert, Clock::time_point now, bool update);
     void finishAlert(Clock::time_point now);
+    void clearAlerts();
     float alertValue(Clock::time_point now) const;
     bool bubbleShowing() const;
     float inlineInset() const;
@@ -145,21 +169,28 @@ private:
     void releaseDeviceResources();
     void drawCompact(Clock::time_point now, float amount, bool hideShared);
     void drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideShared);
+    void drawLyricsGlyph(D2D1_POINT_2F origin, D2D1_COLOR_F color);
     void drawPillContent(Clock::time_point now, bool hideShared);
     void drawPanel(Clock::time_point now, float value, float amount);
     void drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, bool hideShared, bool record);
     void drawMedia(D2D1_RECT_F panel, Clock::time_point now, bool hideShared, bool record);
     void drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double position);
     void prepareLyricLayout(float width);
-    void drawFocus(D2D1_RECT_F panel, Clock::time_point now, bool record);
+    void drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record);
     void drawScratchpad(D2D1_RECT_F panel, bool record);
-    void drawSystem(D2D1_RECT_F panel);
+    void drawDropZone(D2D1_RECT_F panel, bool record);
+    void drawCaptureIndicators(D2D1_POINT_2F right);
+    void drawSystem(D2D1_RECT_F panel, bool record);
     void drawNav(D2D1_RECT_F panel, bool record);
+    void drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color);
+    static std::wstring_view screenLabel(Screen screen);
     void drawShared(D2D1_RECT_F panel, Clock::time_point now, float value, float amount);
     void drawArt(D2D1_RECT_F rect, float radius);
     void drawFocusGlyph(D2D1_POINT_2F center, float size, D2D1_COLOR_F color);
+    void drawTimerGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color);
     void drawChipGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color);
-    void drawButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record);
+    void drawButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record,
+                    size_t index = 0, bool selected = false);
     void fillShell(D2D1_ROUNDED_RECT shape);
     void fillShell(ID2D1Geometry* shape);
     void drawSplit(Clock::time_point now, float amount);
@@ -182,11 +213,14 @@ private:
     MediaState media_;
     PowerState power_;
     SystemStats system_;
+    std::wstring audioOutput_;
+    std::optional<bool> notificationsQuiet_;
     bool animate_ = true;
     bool suppressed_ = false;
     float visibilityFrom_ = 1;
     Clock::time_point visibilityStart_{};
-    std::optional<unsigned> captureColor_;
+    std::optional<unsigned> microphoneColor_;
+    std::optional<unsigned> cameraColor_;
 
     // Cover colours cross-fade from the *From_ values to theme_, starting at themeStart_.
     CoverTheme theme_;
@@ -207,8 +241,12 @@ private:
     Clock::time_point pillStart_{};
     Clock::duration pillLength_{};
     Clock::time_point lastActive_{};
+    Clock::time_point previewUntil_{};
+    Clock::time_point idlePillUntil_{};
     PillLyric pillLyric_;
     PillLyric previousPillLyric_;
+    float previousPillAlpha_ = 1;
+    float previousPillOffset_ = 0;
     D2D1_SIZE_F pillSizeFrom_{};
     D2D1_SIZE_F pillSizeTarget_{};
     Clock::time_point pillLyricStart_{};
@@ -228,6 +266,12 @@ private:
     Clock::time_point widthStart_{};
     bool lyricsOpen_ = false;
     bool scratchEditing_ = false;
+    bool dropHover_ = false;
+    bool popupOpen_ = false;
+    std::vector<DropPreview> dropItems_;
+    size_t dropOffset_ = 0;
+    int dropWheelRemainder_ = 0;
+    D2D1_RECT_F dropViewport_{};
     bool panelPinned_ = false;
     ScratchpadView const* scratchpad_ = nullptr;
     std::optional<D2D1_RECT_F> scratchEditor_;
@@ -263,10 +307,17 @@ private:
     bool dragging_ = false;
     float dragFraction_ = 0;
     bool buttonWasDown_ = false;
+    int wheelRemainder_ = 0;
+    Clock::time_point wheelAt_{};
+    D2D1_RECT_F panelWheel_{};
 
     // Focus timer.
-    int focusLeft_ = 25 * 60;
-    std::optional<Clock::time_point> focusUntil_;
+    int focusMinutes_ = 25;
+    int breakMinutes_ = 5;
+    bool breakPhase_ = false;
+    bool quickView_ = false;
+    Countdown focus_{25 * 60};
+    Countdown quick_{60};
 
     // Alerts. A bubble opens (alertTo_ = 1), holds, then closes (alertTo_ = 0); while the panel is
     // open the alert shows inline instead until alertUntil_.

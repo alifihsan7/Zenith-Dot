@@ -1,14 +1,22 @@
 #include "desktop.hpp"
 
 #include <dwmapi.h>
+#include <audiopolicy.h>
 #include <endpointvolume.h>
+#include <mfapi.h>
+#include <mfidl.h>
 #include <mmdeviceapi.h>
 #include <oleauto.h>
 #include <shellapi.h>
 #include <wbemidl.h>
-#include <winrt/base.h>
+#include <mmreg.h>
+#include <initguid.h>
+#include <functiondiscoverykeys_devpkey.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.UI.Notifications.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <iterator>
 #include <optional>
@@ -20,6 +28,38 @@ namespace zenith {
 namespace {
 
 constexpr wchar_t consentStore[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore";
+
+// The Windows audio policy COM class sets defaults. MMDevice exposes only queries.
+struct __declspec(uuid("870af99c-171d-4f9e-af0d-e63df40c2bc9")) PolicyConfigClient;
+struct __declspec(uuid("f8679f50-850a-41cf-9c72-430f290290c8")) IPolicyConfig : IUnknown {
+    virtual HRESULT STDMETHODCALLTYPE GetMixFormat(PCWSTR, WAVEFORMATEX**) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetDeviceFormat(PCWSTR, INT, WAVEFORMATEX**) = 0;
+    virtual HRESULT STDMETHODCALLTYPE ResetDeviceFormat(PCWSTR) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetDeviceFormat(PCWSTR, WAVEFORMATEX*, WAVEFORMATEX*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetProcessingPeriod(PCWSTR, INT, PINT64, PINT64) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetProcessingPeriod(PCWSTR, PINT64) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetShareMode(PCWSTR, void*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetShareMode(PCWSTR, void*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetPropertyValue(PCWSTR, INT, PROPERTYKEY const&, PROPVARIANT*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetPropertyValue(PCWSTR, INT, PROPERTYKEY const&, PROPVARIANT const*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetDefaultEndpoint(PCWSTR, ERole) = 0;
+};
+
+std::wstring deviceId(IMMDevice& device) {
+    LPWSTR value = nullptr;
+    if (FAILED(device.GetId(&value))) return {};
+    const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> id(value, CoTaskMemFree);
+    return id ? id.get() : L"";
+}
+
+std::wstring deviceName(IMMDevice& device) {
+    winrt::com_ptr<IPropertyStore> properties;
+    if (FAILED(device.OpenPropertyStore(STGM_READ, properties.put()))) return {};
+    PROPVARIANT name{};
+    struct Clear { PROPVARIANT& value; ~Clear() { PropVariantClear(&value); } } clear{name};
+    if (FAILED(properties->GetValue(PKEY_Device_FriendlyName, &name)) || name.vt != VT_LPWSTR || !name.pwszVal) return {};
+    return name.pwszVal;
+}
 
 struct RegistryKey {
     HKEY value = nullptr;
@@ -83,6 +123,77 @@ std::wstring captureApp(HKEY root, wchar_t const* device) {
     return app;
 }
 
+std::wstring processLabel(DWORD pid, wchar_t const* fallback) {
+    if (!pid || pid == MAXDWORD) return fallback;
+    const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process) return fallback;
+    wchar_t path[MAX_PATH]{};
+    DWORD length = static_cast<DWORD>(std::size(path));
+    const BOOL found = QueryFullProcessImageNameW(process, 0, path, &length);
+    CloseHandle(process);
+    if (!found) return fallback;
+    return captureName({path, length}, true);
+}
+
+DWORD microphoneProcess(IMMDeviceEnumerator& devices) {
+    winrt::com_ptr<IMMDeviceCollection> inputs;
+    UINT count = 0;
+    if (FAILED(devices.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, inputs.put())) ||
+        FAILED(inputs->GetCount(&count))) return 0;
+    for (UINT index = 0; index < count; ++index) {
+        winrt::com_ptr<IMMDevice> input;
+        winrt::com_ptr<IAudioSessionManager2> manager;
+        winrt::com_ptr<IAudioSessionEnumerator> sessions;
+        int sessionCount = 0;
+        if (FAILED(inputs->Item(index, input.put())) ||
+            FAILED(input->Activate(__uuidof(IAudioSessionManager2), CLSCTX_INPROC_SERVER, nullptr, manager.put_void())) ||
+            FAILED(manager->GetSessionEnumerator(sessions.put())) || FAILED(sessions->GetCount(&sessionCount))) continue;
+        for (int i = 0; i < sessionCount; ++i) {
+            winrt::com_ptr<IAudioSessionControl> session;
+            AudioSessionState state{};
+            if (FAILED(sessions->GetSession(i, session.put())) ||
+                FAILED(session->GetState(&state)) || state != AudioSessionStateActive) continue;
+            const auto details = session.try_as<IAudioSessionControl2>();
+            DWORD pid = 0;
+            if (details && SUCCEEDED(details->GetProcessId(&pid)) && pid && pid != GetCurrentProcessId()) return pid;
+        }
+    }
+    return 0;
+}
+
+struct CameraActivity : winrt::implements<CameraActivity, IMFSensorActivitiesReportCallback> {
+    explicit CameraActivity(HWND window) : window_(window) {}
+    DWORD process() const { return pid_.load(); }
+
+    HRESULT STDMETHODCALLTYPE OnActivitiesReport(IMFSensorActivitiesReport* reports) noexcept override {
+        ULONG count = 0;
+        if (FAILED(reports->GetCount(&count))) return S_OK;
+        DWORD active = 0;
+        for (ULONG index = 0; index < count && active == 0; ++index) {
+            winrt::com_ptr<IMFSensorActivityReport> report;
+            ULONG processes = 0;
+            if (FAILED(reports->GetActivityReport(index, report.put())) ||
+                FAILED(report->GetProcessCount(&processes))) continue;
+            for (ULONG i = 0; i < processes; ++i) {
+                winrt::com_ptr<IMFSensorProcessActivity> process;
+                BOOL streaming = FALSE;
+                if (FAILED(report->GetProcessActivity(i, process.put())) ||
+                    FAILED(process->GetStreamingState(&streaming)) || !streaming) continue;
+                ULONG pid = 0;
+                process->GetProcessId(&pid);
+                active = pid ? pid : MAXDWORD;
+                break;
+            }
+        }
+        if (pid_.exchange(active) != active) PostMessageW(window_, DesktopMonitor::captureChanged, 0, 0);
+        return S_OK;
+    }
+
+private:
+    HWND window_;
+    std::atomic<DWORD> pid_ = 0;
+};
+
 HWND foregroundListener = nullptr;   // Out-of-context events are delivered on the registering UI thread.
 
 void CALLBACK foregroundEvent(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWORD) {
@@ -127,24 +238,53 @@ Bstr bstr(wchar_t const* value) {
     return {SysAllocString(value), SysFreeString};
 }
 
-winrt::com_ptr<IEnumWbemClassObject> subscribeBrightness() {
+winrt::com_ptr<IWbemServices> brightnessService() {
     winrt::com_ptr<IWbemLocator> locator;
     if (FAILED(CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
                                 IID_PPV_ARGS(locator.put())))) return {};
     const auto name = bstr(L"ROOT\\WMI");
-    const auto language = bstr(L"WQL");
-    const auto query = bstr(L"SELECT Brightness FROM WmiMonitorBrightnessEvent WHERE Active = TRUE");
-    if (!name || !language || !query) return {};
+    if (!name) return {};
 
     winrt::com_ptr<IWbemServices> service;
     if (FAILED(locator->ConnectServer(name.get(), nullptr, nullptr, nullptr, WBEM_FLAG_CONNECT_USE_MAX_WAIT,
                                       nullptr, nullptr, service.put()))) return {};
     if (FAILED(CoSetProxyBlanket(service.get(), RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
                                 RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE))) return {};
+    return service;
+}
+
+winrt::com_ptr<IEnumWbemClassObject> subscribeBrightness(IWbemServices& service) {
+    const auto language = bstr(L"WQL");
+    const auto query = bstr(L"SELECT Brightness FROM WmiMonitorBrightnessEvent WHERE Active = TRUE");
+    if (!language || !query) return {};
     winrt::com_ptr<IEnumWbemClassObject> events;
-    if (FAILED(service->ExecNotificationQuery(language.get(), query.get(),
+    if (FAILED(service.ExecNotificationQuery(language.get(), query.get(),
                  WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, nullptr, events.put()))) return {};
     return events;
+}
+
+std::optional<unsigned> brightnessValue(IWbemClassObject& object, wchar_t const* property) {
+    std::optional<unsigned> level;
+    VARIANT value{};
+    if (SUCCEEDED(object.Get(property, 0, &value, nullptr, nullptr))) {
+        if (value.vt == VT_UI1 && value.bVal <= 100) level = value.bVal;
+        if (value.vt == VT_I4 && value.lVal >= 0 && value.lVal <= 100) level = static_cast<unsigned>(value.lVal);
+    }
+    VariantClear(&value);
+    return level;
+}
+
+std::optional<unsigned> readBrightness(IWbemServices& service) {
+    const auto language = bstr(L"WQL");
+    const auto query = bstr(L"SELECT CurrentBrightness FROM WmiMonitorBrightness WHERE Active = TRUE");
+    if (!language || !query) return std::nullopt;
+    winrt::com_ptr<IEnumWbemClassObject> rows;
+    if (FAILED(service.ExecQuery(language.get(), query.get(), WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+                                 nullptr, rows.put()))) return std::nullopt;
+    winrt::com_ptr<IWbemClassObject> row;
+    ULONG count = 0;
+    if (FAILED(rows->Next(250, 1, row.put(), &count)) || !count) return std::nullopt;
+    return brightnessValue(*row, L"CurrentBrightness");
 }
 
 std::optional<unsigned> nextBrightness(winrt::com_ptr<IEnumWbemClassObject>& events) {
@@ -159,14 +299,7 @@ std::optional<unsigned> nextBrightness(winrt::com_ptr<IEnumWbemClassObject>& eve
             break;
         }
         if (returned == 0) break;
-        VARIANT value{};
-        if (SUCCEEDED(event->Get(L"Brightness", 0, &value, nullptr, nullptr))) {
-            if (value.vt == VT_UI1 && value.bVal <= 100) level = value.bVal;
-            if (value.vt == VT_I4 && value.lVal >= 0 && value.lVal <= 100) {
-                level = static_cast<unsigned>(value.lVal);
-            }
-        }
-        VariantClear(&value);
+        if (const auto value = brightnessValue(*event, L"Brightness")) level = value;
     }
     return level;
 }
@@ -183,24 +316,29 @@ void watchRegistryAndBrightness(HWND window, HANDLE stop) {
     if (watching) PostMessageW(window, DesktopMonitor::captureChanged, 0, 0);
 
     const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
-    auto brightness = com ? subscribeBrightness() : nullptr;
+    auto service = com ? brightnessService() : nullptr;
+    auto brightness = service ? subscribeBrightness(*service) : nullptr;
     const HANDLE handles[]{stop, changed};
-    std::optional<unsigned> lastLevel;
+    auto lastLevel = service ? readBrightness(*service) : std::nullopt;
+    bool polling = lastLevel.has_value();
     for (;;) {
-        const auto signaled = WaitForMultipleObjects(watching ? 2 : 1, handles, FALSE, brightness ? 250 : INFINITE);
+        const DWORD wait = brightness ? 250 : polling ? 1000 : INFINITE;
+        const auto signaled = WaitForMultipleObjects(watching ? 2 : 1, handles, FALSE, wait);
         if (signaled == WAIT_OBJECT_0 || signaled == WAIT_FAILED) break;
         if (signaled == WAIT_OBJECT_0 + 1) {
             watching = arm();
             PostMessageW(window, DesktopMonitor::captureChanged, 0, 0);
         }
-        if (brightness) {
-            if (const auto level = nextBrightness(brightness); level && level != lastLevel) {
-                lastLevel = level;
-                PostMessageW(window, DesktopMonitor::brightnessChanged, *level, 0);
-            }
+        std::optional<unsigned> level;
+        if (brightness) level = nextBrightness(brightness);
+        else if (polling && signaled == WAIT_TIMEOUT) level = readBrightness(*service);
+        if (level && level != lastLevel) {
+            lastLevel = level;
+            PostMessageW(window, DesktopMonitor::brightnessChanged, *level, 0);
         }
     }
     brightness = nullptr;
+    service = nullptr;
     if (com) CoUninitialize();
     if (key.value) RegCloseKey(std::exchange(key.value, nullptr));
     if (changed) CloseHandle(changed);
@@ -222,8 +360,7 @@ bool fullscreenOnPrimary(HWND overlay) {
 
     QUERY_USER_NOTIFICATION_STATE notification{};
     if (SUCCEEDED(SHQueryUserNotificationState(&notification)) &&
-        (notification == QUNS_BUSY || notification == QUNS_RUNNING_D3D_FULL_SCREEN ||
-         notification == QUNS_PRESENTATION_MODE)) return true;
+        (notification == QUNS_RUNNING_D3D_FULL_SCREEN || notification == QUNS_PRESENTATION_MODE)) return true;
 
     MONITORINFO monitor{sizeof(MONITORINFO)};
     RECT bounds{};
@@ -251,6 +388,12 @@ struct DesktopMonitor::State {
     winrt::com_ptr<IMMNotificationClient> devices;
     winrt::com_ptr<IAudioEndpointVolume> endpoint;
     winrt::com_ptr<IAudioEndpointVolumeCallback> volume;
+    bool mediaFoundation = false;
+    winrt::com_ptr<CameraActivity> cameraActivity;
+    winrt::com_ptr<IMFSensorActivityMonitor> cameraMonitor;
+    std::wstring audioOutput;
+    winrt::Windows::UI::Notifications::ToastNotificationManagerForUser notifications{nullptr};
+    winrt::Windows::UI::Notifications::ToastNotificationManagerForUser::NotificationModeChanged_revoker notificationMode;
     LPARAM generation = 0;
 };
 
@@ -270,6 +413,22 @@ void DesktopMonitor::start(HWND window) {
         }
         refreshAudioDevice();
     }
+    state_->mediaFoundation = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE));
+    if (state_->mediaFoundation) {
+        state_->cameraActivity = winrt::make_self<CameraActivity>(window);
+        if (SUCCEEDED(MFCreateSensorActivityMonitor(state_->cameraActivity.get(), state_->cameraMonitor.put()))) {
+            state_->cameraMonitor->Start();
+        }
+    }
+    try {
+        state_->notifications = winrt::Windows::UI::Notifications::ToastNotificationManager::GetDefault();
+        if (state_->notifications) {
+            state_->notificationMode = state_->notifications.NotificationModeChanged(winrt::auto_revoke,
+                [window](auto const&, auto const&) { PostMessageW(window, notificationModeChanged, 0, 0); });
+        }
+    } catch (winrt::hresult_error const&) {
+        // Older Windows builds may expose the manager without notification-mode events.
+    }
     state_->stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (state_->stop) {
         state_->worker = std::thread(watchRegistryAndBrightness, window, state_->stop);
@@ -281,13 +440,90 @@ void DesktopMonitor::refreshAudioDevice() {
     if (state_->endpoint && state_->volume) state_->endpoint->UnregisterControlChangeNotify(state_->volume.get());
     state_->volume = nullptr;
     state_->endpoint = nullptr;
+    state_->audioOutput.clear();
     if (!state_->enumerator) return;
     winrt::com_ptr<IMMDevice> device;
     if (FAILED(state_->enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, device.put()))) return;
+    state_->audioOutput = deviceName(*device);
     if (FAILED(device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_INPROC_SERVER, nullptr,
                                 state_->endpoint.put_void()))) return;
     state_->volume = winrt::make<VolumeNotifications>(state_->window, state_->generation);
     if (FAILED(state_->endpoint->RegisterControlChangeNotify(state_->volume.get()))) state_->volume = nullptr;
+}
+
+std::wstring const& DesktopMonitor::audioOutput() const { return state_->audioOutput; }
+
+CaptureActivity DesktopMonitor::captureActivity() const {
+    auto activity = readCaptureActivity();
+    if (activity.microphone.empty() && state_->enumerator) {
+        if (const auto pid = microphoneProcess(*state_->enumerator)) {
+            activity.microphone = processLabel(pid, L"Audio input");
+        }
+    }
+    if (activity.camera.empty() && state_->cameraActivity) {
+        if (const auto pid = state_->cameraActivity->process()) {
+            activity.camera = processLabel(pid, L"Camera in use");
+        }
+    }
+    return activity;
+}
+
+std::vector<AudioOutput> DesktopMonitor::audioOutputs() const {
+    if (!state_->enumerator) return {};
+    winrt::com_ptr<IMMDeviceCollection> devices;
+    if (FAILED(state_->enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, devices.put()))) return {};
+    winrt::com_ptr<IMMDevice> current;
+    state_->enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, current.put());
+    const auto active = current ? deviceId(*current) : std::wstring{};
+    UINT count = 0;
+    if (FAILED(devices->GetCount(&count))) return {};
+    std::vector<AudioOutput> outputs;
+    for (UINT i = 0; i < count; ++i) {
+        winrt::com_ptr<IMMDevice> device;
+        if (FAILED(devices->Item(i, device.put()))) continue;
+        auto id = deviceId(*device);
+        if (id.empty()) continue;
+        auto name = deviceName(*device);
+        const bool selected = id == active;
+        outputs.push_back({std::move(id), name.empty() ? L"Audio device " + std::to_wstring(i + 1) : std::move(name), selected});
+    }
+    return outputs;
+}
+
+bool DesktopMonitor::selectAudioOutput(std::wstring const& id) {
+    if (!state_->enumerator) return false;
+    winrt::com_ptr<IMMDevice> device;
+    DWORD status = 0;
+    if (FAILED(state_->enumerator->GetDevice(id.c_str(), device.put())) ||
+        FAILED(device->GetState(&status)) || status != DEVICE_STATE_ACTIVE) return false;
+    winrt::com_ptr<IPolicyConfig> policy;
+    if (FAILED(CoCreateInstance(__uuidof(PolicyConfigClient), nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(policy.put())))) return false;
+    winrt::com_ptr<IMMDevice> previous;
+    state_->enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, previous.put());
+    const auto previousId = previous ? deviceId(*previous) : std::wstring{};
+    if (FAILED(policy->SetDefaultEndpoint(id.c_str(), eMultimedia))) return false;
+    if (FAILED(policy->SetDefaultEndpoint(id.c_str(), eConsole))) {
+        if (!previousId.empty()) policy->SetDefaultEndpoint(previousId.c_str(), eMultimedia);
+        return false;
+    }
+    return true;
+}
+
+std::optional<bool> DesktopMonitor::notificationsQuiet() const {
+    using namespace winrt::Windows::UI::Notifications;
+    try {
+        if (state_->notifications) {
+            switch (state_->notifications.NotificationMode()) {
+            case ToastNotificationMode::Unrestricted: return false;
+            case ToastNotificationMode::PriorityOnly:
+            case ToastNotificationMode::AlarmsOnly: return true;
+            }
+        }
+    } catch (winrt::hresult_error const&) {
+        // The notification-mode API is optional on Windows 11.
+    }
+    return std::nullopt;
 }
 
 bool DesktopMonitor::isCurrentVolume(LPARAM generation) const {
@@ -295,6 +531,15 @@ bool DesktopMonitor::isCurrentVolume(LPARAM generation) const {
 }
 
 void DesktopMonitor::stop() {
+    if (state_->cameraMonitor) {
+        state_->cameraMonitor->Stop();
+        if (const auto shutdown = state_->cameraMonitor.try_as<IMFShutdown>()) shutdown->Shutdown();
+    }
+    state_->cameraMonitor = nullptr;
+    state_->cameraActivity = nullptr;
+    if (std::exchange(state_->mediaFoundation, false)) MFShutdown();
+    state_->notificationMode.revoke();
+    state_->notifications = nullptr;
     if (state_->foreground) UnhookWinEvent(state_->foreground);
     state_->foreground = nullptr;
     if (foregroundListener == state_->window) foregroundListener = nullptr;

@@ -4,6 +4,7 @@ const edge = navigator.userAgentData?.brands?.some(({ brand }) => brand === "Mic
 const browser = edge ? "msedge.exe" : "chrome.exe";
 let host = null;
 let heartbeat = null;
+let reconnect = null;
 
 function tabs() {
   const byTab = new Map();
@@ -21,6 +22,8 @@ function tabs() {
 function publish() {
   const live = tabs();
   if (live.size === 0) {
+    clearTimeout(reconnect);
+    reconnect = null;
     if (host) host.postMessage({ browser, tabs: [] });
     clearInterval(heartbeat);
     heartbeat = null;
@@ -29,6 +32,7 @@ function publish() {
     return;
   }
   if (!host) {
+    if (reconnect !== null) return;
     host = chrome.runtime.connectNative("com.zenith_dot.browser");
     const connected = host;
     host.onDisconnect.addListener(() => {
@@ -38,6 +42,10 @@ function publish() {
       host = null;
       clearInterval(heartbeat);
       heartbeat = null;
+      reconnect = setTimeout(() => {
+        reconnect = null;
+        publish();
+      }, 5000);
     });
     host.onMessage.addListener((command) => {
       if (!["toggle", "seek"].includes(command?.action)) return;

@@ -61,11 +61,13 @@ struct MediaState {
 class MediaMonitor : public std::enable_shared_from_this<MediaMonitor> {
 public:
     static constexpr UINT notification = WM_APP + 1;
+    static constexpr UINT_PTR artworkTimer = 4;
 
     MediaMonitor(HWND window, std::function<void(MediaState const&)> changed);
     winrt::Windows::Foundation::IAsyncAction start();
     void stop();
     void refresh(WPARAM reason);
+    void retryArtwork();
     winrt::Windows::Foundation::IAsyncAction control(MediaCommand command);
     winrt::Windows::Foundation::IAsyncAction seek(double seconds);
     // Shows and controls this app's session until another app starts playing.
@@ -79,12 +81,20 @@ private:
         Session session;
         Session::PlaybackInfoChanged_revoker playback;
     };
+    struct Artwork {
+        std::wstring appId, title, artist, album;
+        CoverTheme theme;
+        std::shared_ptr<const Cover> cover;
+        bool matches(MediaState const& state) const;
+    };
 
     void updateSessions();
     bool selectSession();
     void updateState();
     void requestMetadata();
     winrt::Windows::Foundation::IAsyncAction readMetadata();
+    void restoreArtwork();
+    void rememberArtwork();
 
     HWND window_;
     std::function<void(MediaState const&)> changed_;
@@ -100,6 +110,8 @@ private:
     winrt::Windows::Foundation::TimeSpan timelineStart_{};
     winrt::Windows::Foundation::DateTime timelineUpdated_{};
     unsigned metadataRevision_ = 0;
+    unsigned artworkRetries_ = 0;
+    std::vector<Artwork> artwork_;
     bool readingMetadata_ = false;
     bool stopped_ = false;
 };

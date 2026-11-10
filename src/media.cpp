@@ -131,6 +131,7 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::start() {
 
 void MediaMonitor::stop() {
     stopped_ = true;
+    KillTimer(window_, artworkTimer);
     sessionsChanged_.revoke();
     currentChanged_.revoke();
     metadataChanged_.revoke();
@@ -260,8 +261,32 @@ void MediaMonitor::refresh(WPARAM reason) {
 }
 
 void MediaMonitor::requestMetadata() {
+    KillTimer(window_, artworkTimer);
+    artworkRetries_ = 0;
     ++metadataRevision_;
     if (selected_ && !readingMetadata_) readMetadata();
+}
+
+void MediaMonitor::retryArtwork() {
+    KillTimer(window_, artworkTimer);
+    if (!stopped_ && selected_ && !readingMetadata_ && !state_.cover) readMetadata();
+}
+
+bool MediaMonitor::Artwork::matches(MediaState const& state) const {
+    return appId == state.appId && title == state.title && artist == state.artist && album == state.album;
+}
+
+void MediaMonitor::restoreArtwork() {
+    const auto found = std::ranges::find_if(artwork_, [this](Artwork const& item) { return item.matches(state_); });
+    state_.theme = found != artwork_.end() ? found->theme : CoverTheme{};
+    state_.cover = found != artwork_.end() ? found->cover : nullptr;
+}
+
+void MediaMonitor::rememberArtwork() {
+    if (state_.title.empty()) return;
+    std::erase_if(artwork_, [this](Artwork const& item) { return item.matches(state_); });
+    if (artwork_.size() == 6) artwork_.erase(artwork_.begin());
+    artwork_.push_back({state_.appId, state_.title, state_.artist, state_.album, state_.theme, state_.cover});
 }
 
 winrt::Windows::Foundation::IAsyncAction MediaMonitor::readMetadata() {
@@ -274,9 +299,15 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::readMetadata() {
             const auto properties = co_await session.TryGetMediaPropertiesAsync();
             const auto current = [&] { return !stopped_ && session == selected_ && revision == metadataRevision_; };
             if (properties && current()) {
-                state_.title = properties.Title().c_str();
-                state_.artist = properties.Artist().c_str();
-                state_.album = properties.AlbumTitle().c_str();
+                const auto title = properties.Title();
+                const auto artist = properties.Artist();
+                const auto album = properties.AlbumTitle();
+                if (state_.title != title.c_str() || state_.artist != artist.c_str() || state_.album != album.c_str()) {
+                    state_.title = title.c_str();
+                    state_.artist = artist.c_str();
+                    state_.album = album.c_str();
+                    restoreArtwork();
+                }
                 changed_(state_);
 
                 // The text shows right away; the cover and its colours follow once decoded.
@@ -309,18 +340,25 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::readMetadata() {
                         }
                     }
                 } catch (winrt::hresult_error const&) {
-                    // A missing or unreadable cover keeps the default colours and the app logo.
+                    // Keep the current track's cover if a refresh returns an unreadable thumbnail.
                 }
-                if (current()) {
+                if (cover && current()) {
                     state_.theme = theme;
                     state_.cover = std::move(cover);
+                    rememberArtwork();
                     changed_(state_);
                 }
             }
         } catch (winrt::hresult_error const&) {
             // Some players stop exposing metadata as their session closes.
         }
-        if (revision == metadataRevision_) break;
+        if (revision == metadataRevision_) {
+            constexpr UINT retryDelays[]{250, 750, 2000, 5000};
+            if (!stopped_ && selected_ == session && !state_.cover && artworkRetries_ < std::size(retryDelays)) {
+                SetTimer(window_, artworkTimer, retryDelays[artworkRetries_++], nullptr);
+            }
+            break;
+        }
     }
     readingMetadata_ = false;
 }
