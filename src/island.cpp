@@ -851,6 +851,7 @@ IslandCommand Island::pointerUp(POINT client) {
         command.seconds = lyrics_->lines[index].seconds;
         lyricFollowAt_ = now + 500ms;
         break;
+    case Hit::retryLyrics: command.kind = IslandCommand::Kind::retryLyrics; break;
     case Hit::focusToggle: toggleFocus(now); break;
     case Hit::focusReset:
         focusUntil_.reset();
@@ -1380,7 +1381,7 @@ void Island::prepareLyricLayout(float width) {
     if (lyricLayout_ && lyricLayoutRevision_ == lyrics_->revision && lyricLayoutWidth_ == width) return;
     if (pressed_ == Hit::lyricLine) pressed_ = Hit::none;
 
-    std::wstring joined;
+    std::wstring joined = lyrics_->plain;
     lyricRanges_.clear();
     for (const auto& line : lyrics_->lines) {
         if (!lyricRanges_.empty()) joined += L'\n';
@@ -1412,17 +1413,24 @@ void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double positio
     const float width = lyricsWidth_ - padX - 8;
     constexpr float viewportHeight = mediaPanelHeight - 16 - 34 - padX;
     text(L"Lyrics", titleFont_.get(), box(x, y, width, 22), rgb(inkColor));
-    if (lyrics_->status != LyricsStatus::ready || media_.duration <= 0) {
+    const bool synced = lyrics_->status == LyricsStatus::ready;
+    const bool plain = lyrics_->status == LyricsStatus::plain;
+    if (!plain && (!synced || media_.duration <= 0)) {
         auto status = L"Finding lyrics…";
         if (media_.duration <= 0) status = L"Playback timing unavailable";
-        else if (lyrics_->status == LyricsStatus::unavailable) status = L"No synced lyrics";
+        else if (lyrics_->status == LyricsStatus::unavailable) status = L"No lyrics found";
         else if (lyrics_->status == LyricsStatus::error) status = L"Couldn’t load lyrics";
         text(status, bodyFont_.get(), box(x, y + 34, width, 20), rgb(mutedColor));
+        if (lyrics_->status == LyricsStatus::error && media_.duration > 0) {
+            drawButton(box(x, y + 61, 64, 27), L"Retry", Hit::retryLyrics, recordPanel_ && wantsLyrics());
+        }
         return;
     }
 
     prepareLyricLayout(width);
-    if (media_.canSeek && width >= 170) {
+    if (plain && width >= 130) {
+        text(L"Unsynced", bodyEndFont_.get(), box(x + 57, y, width - 57, 22), rgb(mutedColor));
+    } else if (synced && media_.canSeek && width >= 170) {
         text(L"Click a line to seek", bodyEndFont_.get(), box(x + 57, y, width - 57, 22), rgb(mutedColor));
     }
     const auto& lines = lyrics_->lines;
@@ -1452,7 +1460,7 @@ void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double positio
         }
     }
 
-    if (now >= lyricFollowAt_ && pressed_ != Hit::lyricLine) {
+    if (synced && now >= lyricFollowAt_ && pressed_ != Hit::lyricLine) {
         const float lead = std::max(0.0f, (viewportHeight - activeLyricHeight_) * 0.36f);
         const float limit = std::max(0.0f, lyricContentHeight_ - viewportHeight);
         moveLyricScroll(std::clamp(activeLyricTop_ - lead, 0.0f, limit), now);
@@ -1460,7 +1468,8 @@ void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double positio
     lyricViewport_ = box(x, y + 34, width, viewportHeight);
     lyricScrollShown_ = lyricScroll(now);
     target_->PushAxisAlignedClip(lyricViewport_, D2D1_ANTIALIAS_MODE_ALIASED);
-    target_->DrawTextLayout(pt(x, lyricViewport_.top - lyricScrollShown_), lyricLayout_.get(), ink(rgb(mutedColor)));
+    target_->DrawTextLayout(pt(x, lyricViewport_.top - lyricScrollShown_), lyricLayout_.get(),
+                            ink(rgb(plain ? inkColor : mutedColor)));
     target_->PopAxisAlignedClip();
 }
 

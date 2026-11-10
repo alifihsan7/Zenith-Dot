@@ -23,7 +23,7 @@ namespace zenith {
 
 // Something a click on the island asks the app to do.
 struct IslandCommand {
-    enum class Kind { none, previous, toggle, next, seek, selectSource };
+    enum class Kind { none, previous, toggle, next, seek, selectSource, retryLyrics };
     Kind kind = Kind::none;
     double seconds = 0;
     std::wstring appId;
@@ -81,7 +81,7 @@ public:
 
 private:
     enum class Hit { none, pill, previous, toggle, next, timeline, source, navMedia, navFocus, navSystem,
-                     focusToggle, focusReset, lyrics, lyricLine };
+                     focusToggle, focusReset, lyrics, lyricLine, retryLyrics };
     enum class Screen { media, focus, system };
     enum class PillMode { dot, media, focus };
     struct Target {

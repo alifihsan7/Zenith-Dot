@@ -134,6 +134,7 @@ void App::run(IslandCommand const& command) {
     case IslandCommand::Kind::next: monitor_->control(MediaCommand::next); break;
     case IslandCommand::Kind::seek: monitor_->seek(command.seconds); break;
     case IslandCommand::Kind::selectSource: monitor_->select(command.appId); break;
+    case IslandCommand::Kind::retryLyrics: if (lyrics_) lyrics_->retry(); break;
     case IslandCommand::Kind::none: break;
     }
 }
