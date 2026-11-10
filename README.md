@@ -1,6 +1,12 @@
 # Zenith Dot
 
-A Windows 11 overlay that sits as a dot at the top center of the primary display. When a Windows media session starts playing, the dot expands to show the track, playback controls, and progress. Click the dot to check battery status, or open the tray menu for media controls and Exit.
+A Windows 11 overlay that sits as a dot at the top center of the primary display. When a Windows media session plays, the dot grows into a pill with the track title and a waveform. After five seconds paused, it shrinks back to the dot. Hover the pill or the dot to open the panel:
+
+- **Now Playing:** cover, title, artist, a seekable timeline, playback controls, and one button per app with a media session.
+- **Focus:** a 25-minute timer. While it runs, the pill shows the time left.
+- **System:** CPU, memory, and power status.
+
+The accent colour follows the current cover. The tray menu has media controls and Exit.
 
 The app uses C++20, Win32, Direct2D, DirectWrite, and C++/WinRT. It runs as one desktop process. The frame timer stops when the dot settles. Windows media events drive session updates, and the app reads power status every ten seconds and when Windows reports a change.
 
@@ -25,9 +31,10 @@ In the extracted build package or `dist` directory, run `.\install.ps1` from Pow
 | Module | Responsibility |
 | --- | --- |
 | `src/main.cpp` | Window lifecycle, single instance, tray, timers, and input |
-| `src/island.*` | Transparent rendering, transitions, progress, and power display |
+| `src/island.*` | The dot, pill, and panel: rendering, animations, hover, and hit testing |
 | `src/media.*` | Windows GSMTC sessions, metadata, timeline, and transport controls |
 | `src/power.*` | Native battery and AC telemetry |
+| `src/system.*` | CPU and memory use for the System screen |
 | `scripts/` | Per-user installation and removal |
 
 ## Verify on Windows 11
@@ -35,6 +42,9 @@ In the extracted build package or `dist` directory, run `.\install.ps1` from Pow
 - Start Spotify or YouTube in a browser that publishes a Windows media session. Check track metadata and playback progress where the player provides them. Try Previous, Pause, and Next, then resume from the tray. If one player pauses while another is still playing, verify the island switches to the playing session.
 - Play tracks with differently coloured covers. The waveform and progress bar should fade to a colour from each cover, with a faint tint in the panel's lower-right corner. A greyscale cover or a player without artwork should fall back to light blue.
 - Type in another app, then hover and click the island (including Previous, Pause, and Next). Focus and the caret must stay in that app. Right-click the island, close the menu, and confirm focus returns to the app.
-- Click the idle dot to check battery percentage and AC status. Unplug and reconnect the charger. On a desktop without a battery, confirm the panel reports that state.
+- Hover the pill: the panel opens after a short delay, and the cover and title move into place. Move a little past the panel's edge and it should stay open, then close once the pointer is well away. Click outside it to close it right away.
+- Switch between Now Playing, Focus, and System. Drag the timeline to seek where the player allows it. With two players open, click the other app's logo to show it.
+- Pause playback: the pill should show a pause glyph, then shrink to the dot after five seconds.
+- Open System and check the battery percentage and AC status. Unplug and reconnect the charger. On a desktop without a battery, confirm the panel reports that state.
 - Install, sign out, sign back in, and confirm there is one Zenith Dot process. Launch it again from Start and check that the process count stays at one.
 - Compare private working set after a minute at idle and during playback. For an Electron baseline, include its renderer and helper processes.

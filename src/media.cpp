@@ -20,6 +20,14 @@ using Session = GlobalSystemMediaTransportControlsSession;
 
 enum Update : WPARAM { sessions, playback, timeline, metadata };
 
+std::wstring appIdOf(Session const& session) {
+    try {
+        return session.SourceAppUserModelId().c_str();
+    } catch (winrt::hresult_error const&) {
+        return {};
+    }
+}
+
 bool isPlaying(Session const& session) {
     try {
         const auto info = session.GetPlaybackInfo();
@@ -146,13 +154,26 @@ void MediaMonitor::updateSessions() {
 }
 
 bool MediaMonitor::selectSession() {
-    const auto current = manager_.GetCurrentSession();
-    auto next = current;
-    if (!next || !isPlaying(next)) {
-        const auto playing = std::ranges::find_if(sessions_, [](WatchedSession const& entry) {
-            return isPlaying(entry.session);
-        });
-        if (playing != sessions_.end()) next = playing->session;
+    const auto playing = std::ranges::find_if(sessions_, [](WatchedSession const& entry) {
+        return isPlaying(entry.session);
+    });
+    Session next{nullptr};
+    // A source the user picked stays shown until another app starts playing.
+    if (!preferred_.empty()) {
+        Session picked{nullptr};
+        for (const auto& entry : sessions_) {
+            if (appIdOf(entry.session) != preferred_) continue;
+            if (!picked || isPlaying(entry.session)) picked = entry.session;
+        }
+        if (picked && (isPlaying(picked) || playing == sessions_.end())) {
+            next = picked;
+        } else {
+            preferred_.clear();
+        }
+    }
+    if (!next) {
+        next = manager_.GetCurrentSession();
+        if ((!next || !isPlaying(next)) && playing != sessions_.end()) next = playing->session;
     }
     if (selected_ == next) return false;
 
@@ -176,19 +197,35 @@ void MediaMonitor::updateState() {
     const auto now = std::chrono::steady_clock::now();
     const auto previousPosition = state_.positionAt(now);
     state_.hasSession = static_cast<bool>(selected_);
+    state_.appId = selected_ ? appIdOf(selected_) : std::wstring{};
     state_.playing = false;
+    state_.canSeek = false;
     state_.sampledAt = now;
+    // One entry per app: two browser tabs from the same browser share one source.
+    state_.sources.clear();
+    for (const auto& entry : sessions_) {
+        const auto id = appIdOf(entry.session);
+        if (id.empty()) continue;
+        const auto known = std::ranges::find(state_.sources, id, &MediaSource::appId);
+        if (known == state_.sources.end()) {
+            state_.sources.push_back({id, isPlaying(entry.session)});
+        } else {
+            known->playing = known->playing || isPlaying(entry.session);
+        }
+    }
     if (selected_) {
         try {
             const auto info = selected_.GetPlaybackInfo();
             const auto properties = selected_.GetTimelineProperties();
             state_.playing = info && info.PlaybackStatus() == Status::Playing;
+            state_.canSeek = info && info.Controls().IsPlaybackPositionEnabled();
             const auto rate = info ? info.PlaybackRate() : nullptr;
             state_.rate = rate ? rate.Value() : 1.0;
             if (!std::isfinite(state_.rate)) state_.rate = 1.0;
             if (properties) {
                 const auto start = properties.StartTime();
                 const auto updated = properties.LastUpdatedTime();
+                timelineStart_ = start;
                 state_.duration = std::max(0.0, std::chrono::duration<double>(properties.EndTime() - start).count());
                 state_.position = std::chrono::duration<double>(properties.Position() - start).count();
                 if (timelineUpdated_ == updated && updated.time_since_epoch().count() != 0) {
@@ -242,28 +279,41 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::readMetadata() {
                 state_.album = properties.AlbumTitle().c_str();
                 changed_(state_);
 
-                // The text shows right away; the colours follow once the cover has been decoded.
+                // The text shows right away; the cover and its colours follow once decoded.
                 CoverTheme theme;
+                std::shared_ptr<Cover> cover;
                 try {
                     if (const auto thumbnail = properties.Thumbnail()) {
                         using namespace winrt::Windows::Graphics::Imaging;
+                        constexpr unsigned side = 96;
                         const auto stream = co_await thumbnail.OpenReadAsync();
                         const auto decoder = co_await BitmapDecoder::CreateAsync(stream);
+                        // Scale the short side to `side`, then crop the middle square (video thumbnails are wide).
+                        const auto width = std::max(1u, decoder.PixelWidth());
+                        const auto height = std::max(1u, decoder.PixelHeight());
+                        const double scale = static_cast<double>(side) / std::min(width, height);
+                        const auto scaledWidth = std::max(side, static_cast<unsigned>(std::lround(width * scale)));
+                        const auto scaledHeight = std::max(side, static_cast<unsigned>(std::lround(height * scale)));
                         const BitmapTransform transform;
-                        transform.ScaledWidth(16);
-                        transform.ScaledHeight(16);
+                        transform.ScaledWidth(scaledWidth);
+                        transform.ScaledHeight(scaledHeight);
+                        transform.Bounds({(scaledWidth - side) / 2, (scaledHeight - side) / 2, side, side});
                         transform.InterpolationMode(BitmapInterpolationMode::Fant);
                         const auto pixels = co_await decoder.GetPixelDataAsync(BitmapPixelFormat::Bgra8,
-                            BitmapAlphaMode::Ignore, transform, ExifOrientationMode::IgnoreExifOrientation,
+                            BitmapAlphaMode::Premultiplied, transform, ExifOrientationMode::IgnoreExifOrientation,
                             ColorManagementMode::DoNotColorManage);
                         const auto bytes = pixels.DetachPixelData();
-                        theme = coverTheme({bytes.data(), bytes.size()});
+                        if (bytes.size() == side * side * 4) {
+                            cover = std::make_shared<Cover>(Cover{side, {bytes.begin(), bytes.end()}});
+                            theme = coverTheme({bytes.data(), bytes.size()});
+                        }
                     }
                 } catch (winrt::hresult_error const&) {
-                    // A missing or unreadable cover keeps the default colours.
+                    // A missing or unreadable cover keeps the default colours and the app logo.
                 }
-                if (current() && state_.theme != theme) {
+                if (current()) {
                     state_.theme = theme;
+                    state_.cover = std::move(cover);
                     changed_(state_);
                 }
             }
@@ -273,6 +323,24 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::readMetadata() {
         if (revision == metadataRevision_) break;
     }
     readingMetadata_ = false;
+}
+
+void MediaMonitor::select(std::wstring const& appId) {
+    preferred_ = appId;
+    PostMessageW(window_, notification, playback, 0);
+}
+
+winrt::Windows::Foundation::IAsyncAction MediaMonitor::seek(double seconds) {
+    const auto lifetime = shared_from_this();
+    const auto session = selected_;
+    if (!session || !state_.canSeek) co_return;
+    const auto target = timelineStart_ + std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
+        std::chrono::duration<double>(std::clamp(seconds, 0.0, state_.duration)));
+    try {
+        co_await session.TryChangePlaybackPositionAsync(target.count());
+    } catch (winrt::hresult_error const&) {
+        // The player rejected the new position; the next timeline update shows where it really is.
+    }
 }
 
 winrt::Windows::Foundation::IAsyncAction MediaMonitor::control(MediaCommand command) {

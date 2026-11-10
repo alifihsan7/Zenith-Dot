@@ -7,14 +7,16 @@
 namespace zenith {
 namespace {
 
+using namespace std::chrono_literals;
+
 constexpr wchar_t appName[] = L"Zenith Dot";
 constexpr wchar_t windowClass[] = L"ZenithDot.Overlay";
 constexpr UINT trayMessage = WM_APP + 2;
 constexpr UINT redrawMessage = WM_APP + 3;
 constexpr UINT_PTR powerTimer = 1;
-constexpr UINT_PTR renderTimer = 2;
+constexpr UINT_PTR frameTimer = 2;
 
-enum Menu { showBattery = 1, previousTrack, togglePlayback, nextTrack, exitApp };
+enum Menu { previousTrack = 1, togglePlayback, nextTrack, exitApp };
 constexpr MediaCommand controls[] = {MediaCommand::previous, MediaCommand::toggle, MediaCommand::next};
 
 class App {
@@ -24,8 +26,8 @@ public:
 private:
     static LRESULT CALLBACK dispatch(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
     LRESULT handle(UINT message, WPARAM wparam, LPARAM lparam);
-    void draw();
-    void setMode();
+    void frame();
+    void run(IslandCommand const& command);
     void refreshPower();
     void refreshMotion();
     void addTray();
@@ -34,18 +36,15 @@ private:
     HWND window_ = nullptr;
     HPOWERNOTIFY powerNotification_ = nullptr;
     UINT taskbarCreated_ = 0;
-    UINT renderInterval_ = 0;
+    UINT frameInterval_ = 0;
     NOTIFYICONDATAW tray_{};
     std::shared_ptr<MediaMonitor> monitor_;
     MediaState media_;
     PowerState power_;
+    SystemMonitor system_;
+    std::chrono::steady_clock::time_point systemSampled_{};
     Island island_;
-    IslandMode mode_ = IslandMode::dot;
-    bool showPower_ = false;
-    bool animate_ = true;
     bool tracking_ = false;
-    int hovered_ = -1;
-    int pressed_ = -1;
 };
 
 int App::run(HINSTANCE instance) {
@@ -63,16 +62,18 @@ int App::run(HINSTANCE instance) {
     taskbarCreated_ = RegisterWindowMessageW(L"TaskbarCreated");
     refreshMotion();
     power_ = readPower();
+    island_.setPower(power_);
+    island_.setSystem(system_.sample());
     powerNotification_ = RegisterPowerSettingNotification(window_, &GUID_ACDC_POWER_SOURCE,
                                                            DEVICE_NOTIFY_WINDOW_HANDLE);
     SetTimer(window_, powerTimer, 10'000, nullptr);
     addTray();
-    draw();
+    frame();
     ShowWindow(window_, SW_SHOWNOACTIVATE);
     monitor_ = std::make_shared<MediaMonitor>(window_, [this](MediaState const& state) {
-        if (state.playing && !media_.playing) showPower_ = false;
         media_ = state;
-        setMode();
+        island_.setMedia(state);
+        frame();
     });
     monitor_->start();
 
@@ -86,41 +87,45 @@ int App::run(HINSTANCE instance) {
     return static_cast<int>(message.wParam);
 }
 
-void App::draw() {
-    island_.draw(window_, media_, power_, animate_, hovered_, pressed_);
-    UINT interval = 0;
-    if (animate_ && (island_.animating() || (mode_ == IslandMode::media && media_.playing))) {
-        interval = 33;
-    } else if (mode_ == IslandMode::media && media_.duration > 0) {
-        interval = 1000;
+void App::frame() {
+    island_.tick();
+    const auto now = std::chrono::steady_clock::now();
+    if (island_.wantsSystemStats() && now - systemSampled_ >= 1s) {
+        island_.setSystem(system_.sample());
+        systemSampled_ = now;
     }
-    if (interval == renderInterval_) return;
-    if (renderInterval_ != 0) KillTimer(window_, renderTimer);
-    renderInterval_ = interval;
-    if (renderInterval_ != 0) SetTimer(window_, renderTimer, renderInterval_, nullptr);
+    island_.draw(window_);
+    const UINT interval = island_.frameInterval();
+    if (interval == frameInterval_) return;
+    if (frameInterval_ != 0) KillTimer(window_, frameTimer);
+    frameInterval_ = interval;
+    if (frameInterval_ != 0) SetTimer(window_, frameTimer, frameInterval_, nullptr);
 }
 
-void App::setMode() {
-    const auto next = showPower_ ? IslandMode::power : (media_.playing ? IslandMode::media : IslandMode::dot);
-    if (next != mode_) {
-        mode_ = next;
-        hovered_ = pressed_ = -1;
-        island_.setMode(mode_, animate_);
+void App::run(IslandCommand const& command) {
+    if (!monitor_) return;
+    switch (command.kind) {
+    case IslandCommand::Kind::previous: monitor_->control(MediaCommand::previous); break;
+    case IslandCommand::Kind::toggle: monitor_->control(MediaCommand::toggle); break;
+    case IslandCommand::Kind::next: monitor_->control(MediaCommand::next); break;
+    case IslandCommand::Kind::seek: monitor_->seek(command.seconds); break;
+    case IslandCommand::Kind::selectSource: monitor_->select(command.appId); break;
+    case IslandCommand::Kind::none: break;
     }
-    draw();
 }
 
 void App::refreshPower() {
     const auto state = readPower();
     if (power_ == state) return;
     power_ = state;
-    if (mode_ == IslandMode::power) draw();
+    island_.setPower(power_);
+    frame();
 }
 
 void App::refreshMotion() {
     BOOL animations = TRUE;
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0);
-    animate_ = animations != FALSE;
+    island_.setAnimate(animations != FALSE);
 }
 
 void App::addTray() {
@@ -140,8 +145,6 @@ void App::addTray() {
 void App::showMenu(POINT point) {
     const auto menu = CreatePopupMenu();
     if (!menu) return;
-    AppendMenuW(menu, MF_STRING, showBattery, showPower_ ? L"Hide &battery status" : L"Show &battery status");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | (media_.hasSession ? MF_ENABLED : MF_GRAYED), previousTrack, L"&Previous track");
     AppendMenuW(menu, MF_STRING, togglePlayback, media_.playing ? L"P&ause" : L"&Play");
     AppendMenuW(menu, MF_STRING | (media_.hasSession ? MF_ENABLED : MF_GRAYED), nextTrack, L"&Next track");
@@ -157,9 +160,6 @@ void App::showMenu(POINT point) {
     if (previous && previous != window_ && IsWindow(previous)) SetForegroundWindow(previous);
     if (selected == exitApp) {
         DestroyWindow(window_);
-    } else if (selected == showBattery) {
-        showPower_ = !showPower_;
-        setMode();
     } else if (selected >= previousTrack && selected <= nextTrack && monitor_) {
         monitor_->control(controls[selected - previousTrack]);
     }
@@ -192,7 +192,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         PAINTSTRUCT paint{};
         BeginPaint(window_, &paint);
         EndPaint(window_, &paint);
-        draw();
+        frame();
         return 0;
     }
     case WM_SETTINGCHANGE:
@@ -203,60 +203,54 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         PostMessageW(window_, redrawMessage, 0, 0);
         return 0;
     case redrawMessage:
-        draw();
+        frame();
         return 0;
     case WM_POWERBROADCAST:
         refreshPower();
         return TRUE;
     case WM_TIMER:
         if (wparam == powerTimer) refreshPower();
-        if (wparam == renderTimer) draw();
+        if (wparam == frameTimer) frame();
         return 0;
     case MediaMonitor::notification:
         if (monitor_) monitor_->refresh(wparam);
         return 0;
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;
-    case WM_MOUSEMOVE: {
+    case WM_SETCURSOR:
+        if (LOWORD(lparam) == HTCLIENT) {
+            SetCursor(LoadCursorW(nullptr, island_.overControl() ? IDC_HAND : IDC_ARROW));
+            return TRUE;
+        }
+        break;
+    case WM_MOUSEMOVE:
         if (!tracking_) {
             TRACKMOUSEEVENT tracking{sizeof(TRACKMOUSEEVENT), TME_LEAVE, window_, 0};
             tracking_ = TrackMouseEvent(&tracking) != FALSE;
         }
-        const int hit = island_.buttonAt(window_, {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
-        if (hovered_ != hit) {
-            hovered_ = hit;
-            draw();
+        if (island_.pointerMove({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)})) {
+            SetCursor(LoadCursorW(nullptr, island_.overControl() ? IDC_HAND : IDC_ARROW));
+            frame();
         }
-        SetCursor(LoadCursorW(nullptr, hit >= 0 || mode_ != IslandMode::media ? IDC_HAND : IDC_ARROW));
         return 0;
-    }
     case WM_MOUSELEAVE:
         tracking_ = false;
-        hovered_ = -1;
-        draw();
+        if (island_.pointerLeave()) frame();
         return 0;
     case WM_LBUTTONDOWN:
-        pressed_ = island_.buttonAt(window_, {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
-        if (pressed_ >= 0) {
-            SetCapture(window_);
-            draw();
-        }
+        if (island_.pointerDown({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)})) SetCapture(window_);
+        frame();
         return 0;
     case WM_LBUTTONUP: {
-        const int pressed = pressed_;
+        const auto command = island_.pointerUp({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
         if (GetCapture() == window_) ReleaseCapture();
-        if (mode_ != IslandMode::media) {
-            showPower_ = !showPower_;
-            setMode();
-        } else if (pressed >= 0 && monitor_ &&
-                   pressed == island_.buttonAt(window_, {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)})) {
-            monitor_->control(controls[pressed]);
-        }
+        run(command);
+        frame();
         return 0;
     }
     case WM_CAPTURECHANGED:
-        pressed_ = -1;
-        draw();
+        island_.pointerCancel();
+        frame();
         return 0;
     case WM_CONTEXTMENU: {
         POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
@@ -272,7 +266,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     case WM_DESTROY:
         KillTimer(window_, powerTimer);
-        KillTimer(window_, renderTimer);
+        KillTimer(window_, frameTimer);
         if (monitor_) monitor_->stop();
         if (powerNotification_) UnregisterPowerSettingNotification(powerNotification_);
         Shell_NotifyIconW(NIM_DELETE, &tray_);

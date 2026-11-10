@@ -10,6 +10,7 @@ add_executable(ZenithDot WIN32
     src/island.cpp
     src/media.cpp
     src/power.cpp
+    src/system.cpp
     src/zenith.rc
 )
 target_compile_features(ZenithDot PRIVATE cxx_std_20)
@@ -21,6 +22,6 @@ target_include_directories(ZenithDot PRIVATE src)
 target_compile_options(ZenithDot PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:/W4;/permissive-;/utf-8;/EHsc>")
 target_link_options(ZenithDot PRIVATE /MANIFEST:NO)
 set_property(TARGET ZenithDot PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-target_link_libraries(ZenithDot PRIVATE d2d1 dwrite gdi32 user32 shell32 windowsapp)
+target_link_libraries(ZenithDot PRIVATE d2d1 dwrite gdi32 user32 shell32 ole32 windowsapp)
 install(TARGETS ZenithDot RUNTIME DESTINATION .)
 install(FILES scripts/install.ps1 scripts/uninstall.ps1 DESTINATION .)

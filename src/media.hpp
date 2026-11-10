@@ -5,6 +5,7 @@
 #include <winrt/Windows.Media.Control.h>
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -22,13 +23,29 @@ struct CoverTheme {
     bool operator==(CoverTheme const&) const = default;
 };
 
+// The current cover, center-cropped to a square, as premultiplied BGRA.
+struct Cover {
+    unsigned size = 0;
+    std::vector<uint8_t> pixels;
+};
+
+// One app that publishes a Windows media session (Spotify, a browser, ...).
+struct MediaSource {
+    std::wstring appId;
+    bool playing = false;
+};
+
 struct MediaState {
     bool hasSession = false;
     bool playing = false;
+    std::wstring appId;
     std::wstring title;
     std::wstring artist;
     std::wstring album;
     CoverTheme theme;
+    std::shared_ptr<const Cover> cover;
+    std::vector<MediaSource> sources;
+    bool canSeek = false;
     double duration = 0;
     double position = 0;
     double rate = 1;
@@ -46,6 +63,9 @@ public:
     void stop();
     void refresh(WPARAM reason);
     winrt::Windows::Foundation::IAsyncAction control(MediaCommand command);
+    winrt::Windows::Foundation::IAsyncAction seek(double seconds);
+    // Shows and controls this app's session until another app starts playing.
+    void select(std::wstring const& appId);
 
 private:
     using Manager = winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
@@ -72,6 +92,8 @@ private:
     Session::MediaPropertiesChanged_revoker metadataChanged_;
     Session::TimelinePropertiesChanged_revoker timelineChanged_;
     MediaState state_;
+    std::wstring preferred_;
+    winrt::Windows::Foundation::TimeSpan timelineStart_{};
     winrt::Windows::Foundation::DateTime timelineUpdated_{};
     unsigned metadataRevision_ = 0;
     bool readingMetadata_ = false;

@@ -1,38 +1,212 @@
 #include "island.hpp"
 
+#include <shobjidl.h>
+#include <tlhelp32.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cwchar>
+#include <iterator>
 
 namespace zenith {
 namespace {
 
-constexpr float panelWidth = 360;
-constexpr float panelHeight = 108;
-constexpr float dotSize = 14;
-constexpr float buttonY = 46;
-constexpr float buttonX[] = {252, 289, 326};
-constexpr auto animationTime = std::chrono::milliseconds(280);
-constexpr auto themeTime = std::chrono::milliseconds(700);
+using namespace std::chrono_literals;
 
-D2D1_COLOR_F color(unsigned rgb, float opacity = 1.0f) {
-    return D2D1::ColorF(rgb, opacity);
+// Geometry in DIPs, taken from preview V7.
+constexpr float pillTop = 8;
+constexpr float pillWidth = 147;
+constexpr float pillHeight = 40;
+constexpr float pillCenterY = pillTop + pillHeight / 2;
+constexpr float pillLeft = -pillWidth / 2;
+constexpr float dotSize = 12;
+constexpr float panelWidth = 369;
+constexpr float panelRadius = 22;
+constexpr float padTop = 13;
+constexpr float padX = 14;
+constexpr float padBottom = 8;
+constexpr float innerWidth = panelWidth - 2 * padX;
+constexpr float navHeight = 31;
+constexpr float shadowReach = 30;
+constexpr float keepOpenMargin = 28;
+
+constexpr auto openDelay = 50ms;
+constexpr auto closeDelay = 185ms;
+constexpr auto parkDelay = 5s;
+constexpr auto pillGrowTime = 280ms;
+constexpr auto pillShrinkTime = 320ms;
+constexpr auto panelTime = 220ms;
+constexpr auto themeTime = 700ms;
+constexpr auto focusDoneTime = 2600ms;
+constexpr int focusLength = 25 * 60;
+
+constexpr unsigned inkColor = 0xf5f6f8;
+constexpr unsigned mutedColor = 0xa4aab4;
+constexpr unsigned readoutColor = 0xc2e0ff;
+
+D2D1_COLOR_F rgb(unsigned value, float alpha = 1) {
+    return D2D1::ColorF(value, alpha);
 }
 
-D2D1_COLOR_F mix(D2D1_COLOR_F const& from, D2D1_COLOR_F const& to, float t) {
-    return D2D1::ColorF(std::lerp(from.r, to.r, t), std::lerp(from.g, to.g, t), std::lerp(from.b, to.b, t));
+D2D1_COLOR_F white(float alpha) {
+    return D2D1::ColorF(1, 1, 1, alpha);
 }
 
-D2D1_COLOR_F faded(D2D1_COLOR_F value, float opacity) {
-    value.a = opacity;
-    return value;
+D2D1_COLOR_F withAlpha(D2D1_COLOR_F color, float alpha) {
+    color.a = alpha;
+    return color;
+}
+
+D2D1_COLOR_F mixColor(D2D1_COLOR_F from, D2D1_COLOR_F to, float t) {
+    return D2D1::ColorF(std::lerp(from.r, to.r, t), std::lerp(from.g, to.g, t), std::lerp(from.b, to.b, t),
+                        std::lerp(from.a, to.a, t));
+}
+
+D2D1_RECT_F box(float x, float y, float width, float height) {
+    return D2D1::RectF(x, y, x + width, y + height);
+}
+
+D2D1_RECT_F grow(D2D1_RECT_F rect, float x, float y) {
+    return D2D1::RectF(rect.left - x, rect.top - y, rect.right + x, rect.bottom + y);
+}
+
+D2D1_RECT_F unite(D2D1_RECT_F a, D2D1_RECT_F b) {
+    return D2D1::RectF(std::min(a.left, b.left), std::min(a.top, b.top), std::max(a.right, b.right),
+                       std::max(a.bottom, b.bottom));
+}
+
+D2D1_RECT_F mixRect(D2D1_RECT_F a, D2D1_RECT_F b, float t) {
+    return D2D1::RectF(std::lerp(a.left, b.left, t), std::lerp(a.top, b.top, t), std::lerp(a.right, b.right, t),
+                       std::lerp(a.bottom, b.bottom, t));
+}
+
+bool inside(D2D1_RECT_F rect, D2D1_POINT_2F point) {
+    return point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom;
+}
+
+D2D1_ROUNDED_RECT rounded(D2D1_RECT_F rect, float radius) {
+    return D2D1::RoundedRect(rect, radius, radius);
+}
+
+float clamp01(float value) {
+    return std::clamp(value, 0.0f, 1.0f);
+}
+
+float lin(float from, float to, float value) {
+    return clamp01((value - from) / (to - from));
+}
+
+float easeInOut(float t) {
+    return t < 0.5f ? 4 * t * t * t : 1 - std::pow(-2 * t + 2, 3.0f) / 2;
+}
+
+float easeOut(float t) {
+    return 1 - std::pow(1 - t, 3.0f);
+}
+
+// CSS cubic-bezier(x1, y1, x2, y2) evaluated at x.
+float bezier(float x1, float y1, float x2, float y2, float x) {
+    const auto sample = [](float a, float b, float t) {
+        return 3 * a * (1 - t) * (1 - t) * t + 3 * b * (1 - t) * t * t + t * t * t;
+    };
+    float low = 0, high = 1, t = x;
+    for (int step = 0; step < 24; ++step) {
+        if (sample(x1, x2, t) < x) low = t; else high = t;
+        t = (low + high) / 2;
+    }
+    return sample(y1, y2, t);
+}
+
+float panelEase(float t) {
+    return bezier(0.22f, 0.78f, 0.23f, 1, clamp01(t));
+}
+
+float progress(Island::Clock::time_point start, Island::Clock::duration length, Island::Clock::time_point now) {
+    if (length.count() <= 0 || now - start >= length) return 1;
+    return clamp01(std::chrono::duration<float>(now - start).count() / std::chrono::duration<float>(length).count());
+}
+
+float elapsedMs(Island::Clock::time_point start, Island::Clock::time_point now) {
+    return std::chrono::duration<float, std::milli>(now - start).count();
 }
 
 std::wstring timestamp(double seconds) {
-    const auto total = static_cast<long long>(seconds);
-    const auto minutes = total / 60;
+    const auto total = static_cast<long long>(std::max(0.0, seconds));
     const auto remainder = total % 60;
-    return std::to_wstring(minutes) + (remainder < 10 ? L":0" : L":") + std::to_wstring(remainder);
+    return std::to_wstring(total / 60) + (remainder < 10 ? L":0" : L":") + std::to_wstring(remainder);
+}
+
+// "SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify" -> "Spotify", "Spotify.exe" -> "Spotify".
+std::wstring appName(std::wstring_view id) {
+    std::wstring name(id);
+    if (const auto bang = name.rfind(L'!'); bang != std::wstring::npos) name.erase(0, bang + 1);
+    if (const auto slash = name.find_last_of(L"\\/"); slash != std::wstring::npos) name.erase(0, slash + 1);
+    if (name.size() > 4 && _wcsicmp(name.c_str() + name.size() - 4, L".exe") == 0) name.resize(name.size() - 4);
+    return name;
+}
+
+std::wstring processPath(std::wstring const& exe) {
+    const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return {};
+    std::wstring path;
+    PROCESSENTRY32W entry{sizeof(PROCESSENTRY32W)};
+    for (BOOL more = Process32FirstW(snapshot, &entry); more && path.empty(); more = Process32NextW(snapshot, &entry)) {
+        if (_wcsicmp(entry.szExeFile, exe.c_str()) != 0) continue;
+        if (const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID)) {
+            wchar_t buffer[MAX_PATH * 2];
+            DWORD size = static_cast<DWORD>(std::size(buffer));
+            if (QueryFullProcessImageNameW(process, 0, buffer, &size)) path.assign(buffer, size);
+            CloseHandle(process);
+        }
+    }
+    CloseHandle(snapshot);
+    return path;
+}
+
+// The app's logo: from its Start menu entry, or else from its running executable.
+bool loadIcon(std::wstring const& appId, int side, std::vector<uint8_t>& pixels, unsigned& width, unsigned& height) {
+    winrt::com_ptr<IShellItemImageFactory> factory;
+    const auto open = [&](std::wstring const& path) {
+        factory = nullptr;
+        return !path.empty() && SUCCEEDED(SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(factory.put())));
+    };
+    if (!open(L"shell:AppsFolder\\" + appId)) {
+        auto exe = appName(appId) + L".exe";
+        if (!open(processPath(exe))) return false;
+    }
+    HBITMAP handle = nullptr;
+    if (FAILED(factory->GetImage(SIZE{side, side}, SIIGBF_ICONONLY, &handle)) || !handle) return false;
+    BITMAP info{};
+    GetObjectW(handle, sizeof(info), &info);
+    width = static_cast<unsigned>(info.bmWidth);
+    height = static_cast<unsigned>(std::abs(info.bmHeight));
+    BITMAPINFO header{};
+    header.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    header.bmiHeader.biWidth = info.bmWidth;
+    header.bmiHeader.biHeight = -static_cast<LONG>(height);
+    header.bmiHeader.biPlanes = 1;
+    header.bmiHeader.biBitCount = 32;
+    header.bmiHeader.biCompression = BI_RGB;
+    pixels.assign(static_cast<size_t>(width) * height * 4, 0);
+    const auto screen = GetDC(nullptr);
+    const int rows = GetDIBits(screen, handle, 0, height, pixels.data(), &header, DIB_RGB_COLORS);
+    ReleaseDC(nullptr, screen);
+    DeleteObject(handle);
+    if (rows != static_cast<int>(height) || width == 0) return false;
+    // Shell images are usually premultiplied. Fix the ones that are not, or that carry no alpha at all.
+    bool anyAlpha = false, straight = false;
+    for (size_t i = 0; i < pixels.size(); i += 4) {
+        anyAlpha = anyAlpha || pixels[i + 3] != 0;
+        straight = straight || std::max({pixels[i], pixels[i + 1], pixels[i + 2]}) > pixels[i + 3];
+    }
+    for (size_t i = 0; i < pixels.size(); i += 4) {
+        if (!anyAlpha) {
+            pixels[i + 3] = 255;
+        } else if (straight) {
+            for (int c = 0; c < 3; ++c) pixels[i + c] = static_cast<uint8_t>(pixels[i + c] * pixels[i + 3] / 255);
+        }
+    }
+    return true;
 }
 
 }
@@ -43,48 +217,342 @@ Island::~Island() {
     if (surface_) DeleteDC(surface_);
 }
 
-float Island::extent(Clock::time_point now) const {
-    const float target = mode_ == IslandMode::dot ? 0.0f : 1.0f;
-    if (now - start_ >= animationTime || startExtent_ == target) return target;
-    const float t = std::chrono::duration<float>(now - start_).count() /
-                    std::chrono::duration<float>(animationTime).count();
-    const float spring = (1.0f - (1.0f + 8.0f * t) * std::exp(-8.0f * t)) / 0.99698084f;
-    return std::lerp(startExtent_, target, spring);
+// ---- State ---------------------------------------------------------------------------------------
+
+void Island::setAnimate(bool animate) {
+    animate_ = animate;
 }
 
-void Island::setMode(IslandMode mode, bool animate) {
-    if (mode == mode_) return;
+void Island::setMedia(MediaState const& media) {
     const auto now = Clock::now();
-    startExtent_ = animate ? extent(now) : (mode == IslandMode::dot ? 0.0f : 1.0f);
-    start_ = now;
-    mode_ = mode;
-    if (mode != IslandMode::dot) content_ = mode;
+    // The media screen changes height when a session comes or goes; animate that like a screen change.
+    if (open_ && screen_ == Screen::media && media.hasSession != media_.hasSession) {
+        heightFrom_ = panelHeight(now);
+        screenFrom_ = screen_;
+        screenStart_ = animate_ ? now : Clock::time_point{};
+    }
+    if (media.cover != coverSource_) {
+        coverSource_ = media.cover;
+        cover_ = {};
+        if (coverSource_) cover_ = {coverSource_->size, coverSource_->size, coverSource_->pixels, nullptr};
+    }
+    media_ = media;
+    if (media_.playing) lastActive_ = now;
+    updatePill(now);
 }
 
-bool Island::transitioning() const {
-    return extent(Clock::now()) != (mode_ == IslandMode::dot ? 0.0f : 1.0f);
+void Island::setPower(PowerState const& power) {
+    power_ = power;
 }
 
-bool Island::animating() const {
-    return transitioning() || Clock::now() - themeStart_ < themeTime;
+void Island::setSystem(SystemStats const& stats) {
+    system_ = stats;
 }
 
-float Island::themeProgress(Clock::time_point now) const {
-    if (now - themeStart_ >= themeTime) return 1;
-    const float t = std::chrono::duration<float>(now - themeStart_).count() /
-                    std::chrono::duration<float>(themeTime).count();
-    return t * t * (3 - 2 * t);
+float Island::pillAmount(Clock::time_point now) const {
+    if (!animate_) return pillTarget_;
+    return std::lerp(pillFrom_, pillTarget_, progress(pillStart_, pillLength_, now));
 }
 
-void Island::updateTheme(CoverTheme const& theme, Clock::time_point now, bool animate) {
-    if (theme == theme_) return;
-    // Start from whatever is on screen now, so a track change mid-fade doesn't jump.
-    const float progress = themeProgress(now);
-    accentFrom_ = animate ? mix(accentFrom_, color(theme_.accent), progress) : color(theme.accent);
-    tintFrom_ = animate ? mix(tintFrom_, color(theme_.tint), progress) : color(theme.tint);
-    theme_ = theme;
-    themeStart_ = animate ? now : Clock::time_point{};
+float Island::panelValue(Clock::time_point now) const {
+    const float target = open_ ? 1.0f : 0.0f;
+    if (!animate_) return target;
+    return std::lerp(panelFrom_, target, panelEase(progress(panelStart_, panelTime, now)));
 }
+
+float Island::screenHeight(Screen screen) const {
+    switch (screen) {
+    case Screen::media: return media_.hasSession ? 236.0f : 146.0f;
+    case Screen::focus: return 183.0f;
+    case Screen::system: return 169.5f;
+    }
+    return 146.0f;
+}
+
+float Island::panelHeight(Clock::time_point now) const {
+    return std::lerp(heightFrom_, screenHeight(screen_), panelEase(progress(screenStart_, panelTime, now)));
+}
+
+D2D1_RECT_F Island::panelRect(Clock::time_point now) const {
+    return box(-panelWidth / 2, pillTop, panelWidth, panelHeight(now));
+}
+
+int Island::focusRemaining(Clock::time_point now) const {
+    if (!focusUntil_) return focusLeft_;
+    const float left = std::chrono::duration<float>(*focusUntil_ - now).count();
+    return std::max(0, static_cast<int>(std::ceil(left)));
+}
+
+bool Island::moving(Clock::time_point now) const {
+    if (!animate_) return false;
+    return now - pillStart_ < pillLength_ || now - panelStart_ < panelTime || now - screenStart_ < panelTime ||
+           now - themeStart_ < themeTime;
+}
+
+std::wstring Island::title() const {
+    if (!media_.title.empty()) return media_.title;
+    const auto name = appName(media_.appId);
+    return name.empty() ? L"Media playing" : name;
+}
+
+void Island::updatePill(Clock::time_point now) {
+    auto mode = PillMode::dot;
+    if (media_.hasSession && (media_.playing || open_ || now - lastActive_ < parkDelay)) {
+        mode = PillMode::media;
+    } else if (focusUntil_ || now < focusDoneUntil_) {
+        mode = PillMode::focus;
+    }
+    pillMode_ = mode;
+    if (mode != PillMode::dot) {
+        pillContent_ = mode;
+        pillTitle_ = mode == PillMode::media ? title() : L"Focus";
+        pillPlaying_ = media_.playing;
+    }
+    const float target = mode == PillMode::dot ? 0.0f : 1.0f;
+    if (target != pillTarget_) {
+        pillFrom_ = pillAmount(now);
+        pillTarget_ = target;
+        pillStart_ = now;
+        pillLength_ = target > 0 ? Clock::duration(pillGrowTime) : Clock::duration(pillShrinkTime);
+    }
+}
+
+void Island::updateTheme(Clock::time_point now) {
+    const auto target = media_.hasSession ? media_.theme : CoverTheme{};
+    const auto fade = [&] {
+        const float t = progress(themeStart_, themeTime, now);
+        return t * t * (3 - 2 * t);
+    };
+    if (target != theme_) {
+        // Start from whatever is on screen, so a track change mid-fade doesn't jump.
+        const float shown = fade();
+        accentFrom_ = animate_ ? mixColor(accentFrom_, rgb(theme_.accent), shown) : rgb(target.accent);
+        tintFrom_ = animate_ ? mixColor(tintFrom_, rgb(theme_.tint), shown) : rgb(target.tint);
+        theme_ = target;
+        themeStart_ = animate_ ? now : Clock::time_point{};
+    }
+    const float t = fade();
+    accent_ = mixColor(accentFrom_, rgb(theme_.accent), t);
+    tint_ = mixColor(tintFrom_, rgb(theme_.tint), t);
+}
+
+void Island::setOpen(bool open, Clock::time_point now) {
+    openAt_.reset();
+    closeAt_.reset();
+    if (open_ == open) return;
+    const float shown = panelValue(now);
+    // The cover and title travel between the pill and the panel when both show the track.
+    const bool trackVisible = media_.hasSession && (open || screen_ == Screen::media);
+    if (open) {
+        screen_ = screenFrom_ = Screen::media;
+        screenStart_ = {};
+        heightFrom_ = screenHeight(Screen::media);
+    }
+    const bool pill = pillAmount(now) >= 1;
+    shareCover_ = trackVisible && pillMode_ != PillMode::focus && (pillContent_ == PillMode::media || !pill);
+    shareTitle_ = shareCover_ && pill && pillContent_ == PillMode::media;
+    open_ = open;
+    keepHeight_ = 0;
+    panelFrom_ = shown;
+    panelStart_ = now;
+    hovered_ = pressed_ = Hit::none;
+    dragging_ = false;
+    buttonWasDown_ = true;
+    if (open) lastActive_ = now;
+    updatePill(now);
+}
+
+void Island::showScreen(Screen screen, Clock::time_point now) {
+    if (screen == screen_) return;
+    heightFrom_ = panelHeight(now);
+    keepHeight_ = std::max(keepHeight_, heightFrom_);
+    screenFrom_ = screen_;
+    screen_ = screen;
+    screenStart_ = animate_ ? now : Clock::time_point{};
+}
+
+void Island::toggleFocus(Clock::time_point now) {
+    if (focusUntil_) {
+        focusLeft_ = focusRemaining(now);
+        focusUntil_.reset();
+    } else {
+        focusUntil_ = now + std::chrono::seconds(focusLeft_ > 0 ? focusLeft_ : focusLength);
+    }
+    updatePill(now);
+}
+
+void Island::tick() {
+    const auto now = Clock::now();
+    if (open_) {
+        // Hover hysteresis: entering needs the real pill, but the open panel stays while the pointer
+        // is within keepOpenMargin of it. A click outside closes it at once.
+        POINT cursor{};
+        GetCursorPos(&cursor);
+        const D2D1_POINT_2F point{(cursor.x - anchor_.x) / scale_, (cursor.y - anchor_.y) / scale_};
+        const auto panel = panelRect(now);
+        if (inside(box(panel.left, panel.top, panelWidth, screenHeight(screen_)), point)) keepHeight_ = 0;
+        auto keep = panel;
+        keep.bottom = std::max(keep.bottom, keep.top + keepHeight_);
+        if (inside(grow(keep, keepOpenMargin, keepOpenMargin), point) || dragging_) {
+            closeAt_.reset();
+        } else if (!closeAt_) {
+            closeAt_ = now + closeDelay;
+        }
+        const int button = GetSystemMetrics(SM_SWAPBUTTON) ? VK_RBUTTON : VK_LBUTTON;
+        const bool down = (GetAsyncKeyState(button) & 0x8000) != 0;
+        if (down && !buttonWasDown_ && !inside(panel, point)) setOpen(false, now);
+        buttonWasDown_ = down;
+    }
+    if (openAt_ && now >= *openAt_) setOpen(true, now);
+    if (closeAt_ && now >= *closeAt_) setOpen(false, now);
+    if (focusUntil_ && now >= *focusUntil_) {
+        focusUntil_.reset();
+        focusLeft_ = focusLength;
+        focusDoneUntil_ = now + focusDoneTime;
+    }
+    if (media_.playing || open_) lastActive_ = now;
+    updatePill(now);
+    updateTheme(now);
+}
+
+unsigned Island::frameInterval() const {
+    const auto now = Clock::now();
+    if (moving(now) || openAt_ || closeAt_ || dragging_) return 10;
+    if (open_) return 50;
+    if (pillMode_ == PillMode::media && media_.playing && animate_) return 33;
+    if (pillMode_ != PillMode::dot) return 250;
+    return 0;
+}
+
+bool Island::wantsSystemStats() const {
+    return open_ && screen_ == Screen::system;
+}
+
+// ---- Input ---------------------------------------------------------------------------------------
+
+D2D1_POINT_2F Island::stagePoint(POINT client) const {
+    return {(client.x + origin_.x) / scale_, (client.y + origin_.y) / scale_};
+}
+
+Island::Target const* Island::targetAt(D2D1_POINT_2F point) const {
+    for (auto it = targets_.rbegin(); it != targets_.rend(); ++it) {
+        if (inside(it->rect, point)) return &*it;
+    }
+    return nullptr;
+}
+
+float Island::timelineFraction(D2D1_POINT_2F point) const {
+    return clamp01((point.x - timelineRect_.left) / std::max(1.0f, timelineRect_.right - timelineRect_.left));
+}
+
+bool Island::pointerMove(POINT client) {
+    const auto point = stagePoint(client);
+    if (dragging_) {
+        dragFraction_ = timelineFraction(point);
+        return true;
+    }
+    const auto* target = targetAt(point);
+    const auto hit = target ? target->hit : Hit::none;
+    const auto index = target ? target->index : 0;
+    if (!open_) {
+        if (hit == Hit::pill) {
+            if (!openAt_) openAt_ = Clock::now() + openDelay;
+        } else {
+            openAt_.reset();
+        }
+    }
+    if (hit == hovered_ && index == hoveredIndex_) return openAt_.has_value();
+    hovered_ = hit;
+    hoveredIndex_ = index;
+    return true;
+}
+
+bool Island::pointerLeave() {
+    openAt_.reset();
+    if (hovered_ == Hit::none) return false;
+    hovered_ = Hit::none;
+    return true;
+}
+
+bool Island::pointerDown(POINT client) {
+    const auto point = stagePoint(client);
+    const auto* target = targetAt(point);
+    if (!target) return false;
+    if (target->hit == Hit::pill) {
+        setOpen(true, Clock::now());
+        return false;
+    }
+    if (target->hit == Hit::timeline) {
+        dragging_ = true;
+        dragFraction_ = timelineFraction(point);
+        return true;
+    }
+    pressed_ = target->hit;
+    pressedIndex_ = target->index;
+    return true;
+}
+
+IslandCommand Island::pointerUp(POINT client) {
+    const auto now = Clock::now();
+    IslandCommand command;
+    if (dragging_) {
+        dragging_ = false;
+        dragFraction_ = timelineFraction(stagePoint(client));
+        command.kind = IslandCommand::Kind::seek;
+        command.seconds = dragFraction_ * media_.duration;
+        return command;
+    }
+    const auto* target = targetAt(stagePoint(client));
+    const auto hit = pressed_;
+    const auto index = pressedIndex_;
+    pressed_ = Hit::none;
+    if (!target || target->hit != hit || target->index != index) return command;
+    switch (hit) {
+    case Hit::previous: command.kind = IslandCommand::Kind::previous; break;
+    case Hit::toggle: command.kind = IslandCommand::Kind::toggle; break;
+    case Hit::next: command.kind = IslandCommand::Kind::next; break;
+    case Hit::source:
+        if (index < media_.sources.size()) {
+            command.kind = IslandCommand::Kind::selectSource;
+            command.appId = media_.sources[index].appId;
+        }
+        break;
+    case Hit::navMedia: showScreen(Screen::media, now); break;
+    case Hit::navFocus: showScreen(Screen::focus, now); break;
+    case Hit::navSystem: showScreen(Screen::system, now); break;
+    case Hit::focusToggle: toggleFocus(now); break;
+    case Hit::focusReset:
+        focusUntil_.reset();
+        focusLeft_ = focusLength;
+        updatePill(now);
+        break;
+    default: break;
+    }
+    return command;
+}
+
+void Island::pointerCancel() {
+    pressed_ = Hit::none;
+    dragging_ = false;
+}
+
+bool Island::overControl() const {
+    return hovered_ != Hit::none;
+}
+
+bool Island::hovered(Hit hit, size_t index) const {
+    return hovered_ == hit && hoveredIndex_ == index && pressed_ == Hit::none;
+}
+
+bool Island::pressed(Hit hit, size_t index) const {
+    return pressed_ == hit && pressedIndex_ == index;
+}
+
+void Island::addTarget(D2D1_RECT_F rect, Hit hit, size_t index) {
+    targets_.push_back({rect, hit, index});
+}
+
+// ---- Device resources ----------------------------------------------------------------------------
 
 void Island::prepareSurface(int width, int height) {
     if (!surface_) {
@@ -110,204 +578,541 @@ void Island::prepareSurface(int width, int height) {
     }
     if (!graphics_) {
         winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, graphics_.put()));
+        const auto round = D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                                                       D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND);
+        winrt::check_hresult(graphics_->CreateStrokeStyle(round, nullptr, 0, roundStroke_.put()));
     }
     if (!target_) {
         const auto properties = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE,
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
         winrt::check_hresult(graphics_->CreateDCRenderTarget(&properties, target_.put()));
         target_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-        winrt::check_hresult(target_->CreateSolidColorBrush(color(0xffffff), brush_.put()));
+        winrt::check_hresult(target_->CreateSolidColorBrush(rgb(0xffffff), brush_.put()));
     }
 }
 
+void Island::releaseDeviceResources() {
+    brush_ = nullptr;
+    target_ = nullptr;
+    for (auto& layer : layers_) layer = nullptr;
+    cover_.bitmap = nullptr;
+    for (auto& [id, image] : icons_) image.bitmap = nullptr;
+}
+
 void Island::prepareText() {
-    if (ellipsis_) return;
+    if (titleFont_) return;
     if (!fonts_) {
         winrt::check_hresult(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
             reinterpret_cast<IUnknown**>(fonts_.put())));
     }
-    const auto create = [this](auto& font, DWRITE_FONT_WEIGHT weight, float size) {
-        if (font) return;
-        winrt::check_hresult(fonts_->CreateTextFormat(L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
+    const auto create = [this](winrt::com_ptr<IDWriteTextFormat>& font, wchar_t const* family, float size,
+                               DWRITE_FONT_WEIGHT weight, DWRITE_TEXT_ALIGNMENT alignment) {
+        winrt::check_hresult(fonts_->CreateTextFormat(family, nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL, size, L"", font.put()));
         font->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         font->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        font->SetTextAlignment(alignment);
+        winrt::com_ptr<IDWriteInlineObject> ellipsis;
+        winrt::check_hresult(fonts_->CreateEllipsisTrimmingSign(font.get(), ellipsis.put()));
+        const DWRITE_TRIMMING trim{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
+        font->SetTrimming(&trim, ellipsis.get());
+        ellipses_.push_back(ellipsis);
     };
-    create(titleFont_, DWRITE_FONT_WEIGHT_SEMI_BOLD, 17);
-    create(detailFont_, DWRITE_FONT_WEIGHT_NORMAL, 12);
-    winrt::check_hresult(fonts_->CreateEllipsisTrimmingSign(detailFont_.get(), ellipsis_.put()));
-    const DWRITE_TRIMMING trim{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
-    titleFont_->SetTrimming(&trim, ellipsis_.get());
-    detailFont_->SetTrimming(&trim, ellipsis_.get());
+    constexpr auto normal = DWRITE_FONT_WEIGHT_NORMAL;
+    constexpr auto strong = DWRITE_FONT_WEIGHT_SEMI_BOLD;
+    constexpr auto start = DWRITE_TEXT_ALIGNMENT_LEADING;
+    constexpr auto end = DWRITE_TEXT_ALIGNMENT_TRAILING;
+    constexpr auto center = DWRITE_TEXT_ALIGNMENT_CENTER;
+    create(pillTitleFont_, L"Segoe UI", 12, strong, start);
+    create(timerFont_, L"Segoe UI", 12, strong, end);
+    create(titleFont_, L"Segoe UI", 16, strong, start);
+    create(headingCenterFont_, L"Segoe UI", 16, strong, center);
+    create(bodyFont_, L"Segoe UI", 12, normal, start);
+    create(bodyEndFont_, L"Segoe UI", 12, normal, end);
+    create(strongEndFont_, L"Segoe UI", 12, DWRITE_FONT_WEIGHT_BOLD, end);
+    create(monoFont_, L"Consolas", 10, normal, start);
+    create(monoEndFont_, L"Consolas", 10, normal, end);
+    create(clockFont_, L"Segoe UI", 32, normal, center);
+    create(buttonFont_, L"Segoe UI", 11, normal, center);
+    create(glyphFont_, L"Segoe UI Symbol", 17, normal, center);
+    create(letterFont_, L"Segoe UI", 10, strong, center);
 }
 
-ID2D1SolidColorBrush* Island::ink(D2D1_COLOR_F value) {
-    brush_->SetColor(value);
+ID2D1SolidColorBrush* Island::ink(D2D1_COLOR_F color) {
+    brush_->SetColor(color);
     return brush_.get();
 }
 
-void Island::text(std::wstring_view value, IDWriteTextFormat* format, D2D1_RECT_F rect, D2D1_COLOR_F tint) {
+ID2D1Bitmap* Island::bitmap(Image& image) {
+    if (image.pixels.empty()) return nullptr;
+    if (!image.bitmap) {
+        const auto properties = D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        if (FAILED(target_->CreateBitmap(D2D1::SizeU(image.width, image.height), image.pixels.data(),
+                                         image.width * 4, properties, image.bitmap.put()))) {
+            return nullptr;
+        }
+    }
+    return image.bitmap.get();
+}
+
+Island::Image* Island::icon(std::wstring const& appId) {
+    if (appId.empty()) return nullptr;
+    auto [entry, added] = icons_.try_emplace(appId);
+    if (added && !loadIcon(appId, 48, entry->second.pixels, entry->second.width, entry->second.height)) {
+        entry->second.pixels.clear();
+    }
+    return entry->second.pixels.empty() ? nullptr : &entry->second;
+}
+
+void Island::pushLayer(ID2D1Geometry* mask, float opacity) {
+    auto& layer = layers_.at(layerDepth_++);
+    if (!layer) winrt::check_hresult(target_->CreateLayer(nullptr, layer.put()));
+    target_->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), mask, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                             D2D1::IdentityMatrix(), opacity), layer.get());
+}
+
+void Island::popLayer() {
+    target_->PopLayer();
+    --layerDepth_;
+}
+
+// ---- Drawing primitives --------------------------------------------------------------------------
+
+void Island::text(std::wstring_view value, IDWriteTextFormat* format, D2D1_RECT_F rect, D2D1_COLOR_F color) {
     if (!value.empty()) {
-        target_->DrawText(value.data(), static_cast<UINT32>(value.size()), format, rect, ink(tint),
-            D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        target_->DrawText(value.data(), static_cast<UINT32>(value.size()), format, rect, ink(color),
+                          D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 }
 
-void Island::drawMedia(MediaState const& media, Clock::time_point now, bool animate,
-                       int hovered, int pressed, float opacity) {
-    const auto primary = color(0xf7f7f8, opacity);
-    const auto secondary = color(0xc1c3ca, opacity);
-    const auto accent = faded(accent_, opacity);
-    const auto detail = media.artist.empty() ? media.album :
-        (media.album.empty() ? media.artist : media.artist + L"  /  " + media.album);
-    text(media.title.empty() ? L"Media playing" : media.title.c_str(), titleFont_.get(),
-         D2D1::RectF(51, 22, 230, 47), primary);
-    text(detail, detailFont_.get(), D2D1::RectF(51, 47, 230, 66), secondary);
-
-    const double phase = animate ? std::chrono::duration<double>(now.time_since_epoch()).count() : 0;
-    for (int bar = 0; bar < 4; ++bar) {
-        const float x = 20.0f + bar * 6.0f;
-        const float height = 7.0f + 13.0f * static_cast<float>(0.5 + 0.5 * std::sin(phase * 9 + bar * 1.7));
-        const auto bounds = D2D1::RectF(x, 44 - height / 2, x + 3, 44 + height / 2);
-        target_->FillRoundedRectangle(D2D1::RoundedRect(bounds, 1.5f, 1.5f), ink(accent));
-    }
-
-    for (int button = 0; button < 3; ++button) {
-        const float x = buttonX[button];
-        const auto circle = D2D1::Ellipse(D2D1::Point2F(x, buttonY), 16, 16);
-        if (button == pressed || button == hovered) {
-            target_->FillEllipse(circle, ink(color(button == pressed ? 0x51545b : 0x303237, opacity)));
-        }
-        auto* glyph = ink(primary);
-        if (button == 1) {
-            target_->FillRectangle(D2D1::RectF(x - 5, buttonY - 6, x - 1, buttonY + 6), glyph);
-            target_->FillRectangle(D2D1::RectF(x + 1, buttonY - 6, x + 5, buttonY + 6), glyph);
-        } else {
-            const float direction = button == 0 ? -1.0f : 1.0f;
-            const float edge = x + 5 * direction;
-            target_->DrawLine(D2D1::Point2F(edge, buttonY - 6), D2D1::Point2F(edge, buttonY + 6), glyph, 2);
-            target_->DrawLine(D2D1::Point2F(x - 5 * direction, buttonY - 5), D2D1::Point2F(edge - direction, buttonY),
-                              glyph, 2);
-            target_->DrawLine(D2D1::Point2F(x - 5 * direction, buttonY + 5), D2D1::Point2F(edge - direction, buttonY),
-                              glyph, 2);
-        }
-    }
-
-    if (media.duration > 0) {
-        const auto position = media.positionAt(now);
-        const float end = 20 + 320 * static_cast<float>(position / media.duration);
-        target_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(20, 75, 340, 78), 1.5f, 1.5f),
-                                      ink(color(0x62666e, opacity)));
-        target_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(20, 75, end, 78), 1.5f, 1.5f), ink(accent));
-        text(timestamp(position) + L" / " + timestamp(media.duration), detailFont_.get(),
-             D2D1::RectF(20, 80, 340, 100), secondary);
-    } else {
-        text(L"Playback time unavailable", detailFont_.get(), D2D1::RectF(20, 77, 340, 100), secondary);
-    }
-}
-
-void Island::drawPower(PowerState const& power, float opacity) {
-    const auto primary = color(0xf7f7f8, opacity);
-    const auto secondary = color(0xc1c3ca, opacity);
-    const auto accent = faded(accent_, opacity);
-    std::wstring title = L"Battery unavailable";
-    std::wstring detail = L"Windows couldn't read battery status";
-    if (power.available && !power.hasBattery) {
-        title = L"No battery detected";
-        detail = power.pluggedIn == true ? L"Connected to AC power" : L"Battery information unavailable";
-    } else if (power.available) {
-        title = power.percent ? std::to_wstring(*power.percent) + L"% battery" : L"Battery level unknown";
-        detail = L"Power source unknown";
-        if (power.pluggedIn == true) detail = power.charging ? L"Charging on AC power" : L"Plugged in";
-        if (power.pluggedIn == false) detail = L"On battery";
-        if (power.remaining) {
-            const auto minutes = std::chrono::duration_cast<std::chrono::minutes>(*power.remaining).count();
-            detail += L"  /  " + std::to_wstring(minutes / 60) + L"h " +
-                std::to_wstring(minutes % 60) + L"m remaining";
-        }
-    }
-    text(title, titleFont_.get(), D2D1::RectF(20, 20, 340, 46), primary);
-    text(detail, detailFont_.get(), D2D1::RectF(20, 47, 340, 70), secondary);
-    if (power.percent) {
-        const float end = 20 + 320 * static_cast<float>(*power.percent) / 100;
-        target_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(20, 79, 340, 82), 1.5f, 1.5f),
-                                      ink(color(0x62666e, opacity)));
-        target_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(20, 79, end, 82), 1.5f, 1.5f), ink(accent));
-    }
-}
-
-void Island::draw(HWND window, MediaState const& media, PowerState const& power, bool animate,
-                  int hovered, int pressed) {
-    const auto now = Clock::now();
-    updateTheme(media.theme, now, animate);
-    const float themed = themeProgress(now);
-    accent_ = mix(accentFrom_, color(theme_.accent), themed);
-    const auto tint = faded(mix(tintFrom_, color(theme_.tint), themed), 0.9f);
-    const float openness = animate ? extent(now) : (mode_ == IslandMode::dot ? 0.0f : 1.0f);
-    const bool compact = openness == 0 && mode_ == IslandMode::dot;
-    const float width = compact ? dotSize + 2 : panelWidth + 2;
-    const float height = compact ? dotSize + 2 : panelHeight + 2;
-    const float dpiScale = GetDpiForWindow(window) / 96.0f;
-    prepareSurface(static_cast<int>(std::ceil(width * dpiScale)), static_cast<int>(std::ceil(height * dpiScale)));
-    const float opacity = std::clamp((openness - 0.88f) / 0.12f, 0.0f, 1.0f);
-    if (opacity > 0) prepareText();
-    const RECT pixels{0, 0, surfaceSize_.cx, surfaceSize_.cy};
-    winrt::check_hresult(target_->BindDC(surface_, &pixels));
-
-    const float bodyWidth = std::lerp(dotSize, panelWidth, openness);
-    const float bodyHeight = std::lerp(dotSize, panelHeight, openness);
-    const float left = (width - bodyWidth) / 2;
-    const float radius = std::lerp(dotSize / 2, 26.0f, openness);
-    const auto body = D2D1::RoundedRect(D2D1::RectF(left, 1, left + bodyWidth, 1 + bodyHeight), radius, radius);
-    // Black-dominant shell: the cover only tints the far corner of the gradient.
-    const D2D1_GRADIENT_STOP stops[]{{0, color(0, 0.92f)}, {1, tint}};
-    winrt::com_ptr<ID2D1GradientStopCollection> gradient;
-    winrt::check_hresult(target_->CreateGradientStopCollection(stops, 2, gradient.put()));
-    winrt::com_ptr<ID2D1LinearGradientBrush> shell;
+// Black-dominant glass; the cover only tints the far corner of the gradient.
+void Island::fillShell(D2D1_ROUNDED_RECT shape) {
+    const D2D1_GRADIENT_STOP stops[]{{0, D2D1::ColorF(0, 0, 0, 0.94f)}, {1, withAlpha(tint_, 0.9f)}};
+    winrt::com_ptr<ID2D1GradientStopCollection> collection;
+    winrt::check_hresult(target_->CreateGradientStopCollection(stops, 2, collection.put()));
+    winrt::com_ptr<ID2D1LinearGradientBrush> gradient;
     winrt::check_hresult(target_->CreateLinearGradientBrush(
-        D2D1::LinearGradientBrushProperties(D2D1::Point2F(left, 1), D2D1::Point2F(left + bodyWidth, 1 + bodyHeight)),
-        gradient.get(), shell.put()));
-    target_->BeginDraw();
-    target_->SetTransform(D2D1::Matrix3x2F::Scale(D2D1::SizeF(dpiScale, dpiScale)));
-    target_->Clear(color(0, 0));
-    target_->FillRoundedRectangle(body, shell.get());
-    target_->DrawRoundedRectangle(body, ink(color(0xffffff, 0.12f)), 1);
-    if (opacity > 0) {
-        if (content_ == IslandMode::media) drawMedia(media, now, animate && media.playing, hovered, pressed,
-                                                    opacity);
-        if (content_ == IslandMode::power) drawPower(power, opacity);
+        D2D1::LinearGradientBrushProperties(D2D1::Point2F(shape.rect.left, shape.rect.top),
+                                            D2D1::Point2F(shape.rect.right, shape.rect.bottom)),
+        collection.get(), gradient.put()));
+    target_->FillRoundedRectangle(shape, gradient.get());
+}
+
+void Island::fillPolygon(std::initializer_list<D2D1_POINT_2F> points, D2D1_COLOR_F color) {
+    winrt::com_ptr<ID2D1PathGeometry> path;
+    winrt::check_hresult(graphics_->CreatePathGeometry(path.put()));
+    winrt::com_ptr<ID2D1GeometrySink> sink;
+    winrt::check_hresult(path->Open(sink.put()));
+    auto point = points.begin();
+    sink->BeginFigure(*point, D2D1_FIGURE_BEGIN_FILLED);
+    for (++point; point != points.end(); ++point) sink->AddLine(*point);
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    winrt::check_hresult(sink->Close());
+    target_->FillGeometry(path.get(), ink(color));
+}
+
+void Island::drawFocusGlyph(D2D1_POINT_2F center, float size, D2D1_COLOR_F color) {
+    const float s = size / 16;
+    const float stroke = 1.5f * s;
+    const auto at = [&](float x, float y) { return D2D1::Point2F(center.x + (x - 8) * s, center.y + (y - 8) * s); };
+    target_->DrawEllipse(D2D1::Ellipse(center, 6.25f * s, 6.25f * s), ink(color), stroke);
+    target_->DrawLine(at(8, 4.5f), at(8, 8), ink(color), stroke, roundStroke_.get());
+    target_->DrawLine(at(8, 8), at(10.5f, 9.5f), ink(color), stroke, roundStroke_.get());
+}
+
+void Island::drawChipGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color) {
+    target_->DrawRoundedRectangle(rounded(box(center.x - 5, center.y - 5, 10, 10), 2), ink(color), 1.2f);
+    for (const float offset : {-2.5f, 2.5f}) {
+        target_->DrawLine({center.x + offset, center.y - 8}, {center.x + offset, center.y - 6}, ink(color), 1.2f);
+        target_->DrawLine({center.x + offset, center.y + 6}, {center.x + offset, center.y + 8}, ink(color), 1.2f);
+        target_->DrawLine({center.x - 8, center.y + offset}, {center.x - 6, center.y + offset}, ink(color), 1.2f);
+        target_->DrawLine({center.x + 6, center.y + offset}, {center.x + 8, center.y + offset}, ink(color), 1.2f);
     }
-    const HRESULT result = target_->EndDraw();
-    if (result == D2DERR_RECREATE_TARGET) {
-        brush_ = nullptr;
-        target_ = nullptr;
-        InvalidateRect(window, nullptr, FALSE);
+}
+
+void Island::drawButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record) {
+    const float fill = pressed(hit) ? 0.14f : hovered(hit) ? 0.08f : 0.04f;
+    target_->FillRoundedRectangle(rounded(rect, 8), ink(white(fill)));
+    target_->DrawRoundedRectangle(rounded(grow(rect, -0.5f, -0.5f), 7.5f), ink(white(0.12f)), 1);
+    text(label, buttonFont_.get(), rect, rgb(inkColor));
+    if (record) addTarget(rect, hit);
+}
+
+// The cover, or the app's logo on a dark tile when the player gives no cover.
+void Island::drawArt(D2D1_RECT_F rect, float radius) {
+    const float size = rect.right - rect.left;
+    if (auto* image = bitmap(cover_)) {
+        winrt::com_ptr<ID2D1BitmapBrush> fill;
+        winrt::check_hresult(target_->CreateBitmapBrush(image, fill.put()));
+        fill->SetInterpolationMode(D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        fill->SetTransform(D2D1::Matrix3x2F::Scale(size / cover_.width, (rect.bottom - rect.top) / cover_.height) *
+                           D2D1::Matrix3x2F::Translation(rect.left, rect.top));
+        target_->FillRoundedRectangle(rounded(rect, radius), fill.get());
         return;
     }
-    winrt::check_hresult(result);
+    target_->FillRoundedRectangle(rounded(rect, radius), ink(white(0.08f)));
+    const D2D1_POINT_2F center{(rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2};
+    if (auto* logo = icon(media_.appId); logo && bitmap(*logo)) {
+        const float side = size * 0.55f;
+        target_->DrawBitmap(logo->bitmap.get(), box(center.x - side / 2, center.y - side / 2, side, side), 1,
+                            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    } else if (size >= 24) {
+        text(L"♫", glyphFont_.get(), rect, rgb(mutedColor));
+    }
+}
 
+// ---- Compact: dot and pill -----------------------------------------------------------------------
+
+static D2D1_RECT_F compactShape(float amount) {
+    const float t = easeInOut(clamp01(amount));
+    const float width = std::lerp(dotSize, pillWidth, t);
+    const float height = std::lerp(dotSize, pillHeight, t);
+    return box(-width / 2, pillCenterY - height / 2, width, height);
+}
+
+void Island::drawCompact(Clock::time_point now, float amount, bool hideShared) {
+    // A nearly transparent hit area: layered windows only receive the pointer over painted pixels.
+    const auto hit = amount >= 1 ? box(pillLeft, pillTop - 3, pillWidth, 46) : box(-22, pillTop - 3, 44, 46);
+    target_->FillRectangle(hit, ink(D2D1::ColorF(0, 0, 0, 1.0f / 255)));
+    addTarget(hit, Hit::pill);
+
+    const auto shape = compactShape(amount);
+    const float radius = std::min(shape.right - shape.left, shape.bottom - shape.top) / 2;
+    fillShell(rounded(shape, radius));
+    target_->DrawRoundedRectangle(rounded(grow(shape, -0.5f, -0.5f), radius - 0.5f), ink(white(0.13f)), 1);
+
+    const float opacity = lin(0.55f, 1, amount);
+    if (opacity <= 0) return;
+    winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
+    winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(rounded(shape, radius), clip.put()));
+    pushLayer(clip.get(), opacity);
+    drawPillContent(now, hideShared);
+    popLayer();
+}
+
+void Island::drawPillContent(Clock::time_point now, bool hideShared) {
+    const float right = pillLeft + pillWidth - 12;
+    if (pillContent_ == PillMode::focus) {
+        drawFocusGlyph({pillLeft + 19, pillCenterY}, 14, accent_);
+        const bool done = !focusUntil_ && now < focusDoneUntil_;
+        text(done ? L"0:00" : timestamp(focusRemaining(now)), timerFont_.get(), box(right - 40, pillTop, 40, pillHeight),
+             accent_);
+        text(pillTitle_, pillTitleFont_.get(), box(pillLeft + 34, pillTop, right - 48 - (pillLeft + 34), pillHeight),
+             rgb(inkColor));
+        return;
+    }
+    if (!hideShared) target_->FillEllipse(D2D1::Ellipse({pillLeft + 16, pillCenterY}, 4, 4), ink(accent_));
+    float titleEnd = right;
+    if (pillPlaying_) {
+        // Four bars, each scaling between 40% and 100% (V7's 0.75s alternate ease-in-out loop).
+        constexpr float heights[]{8, 14, 10, 6};
+        constexpr float delays[]{0, -0.39f, -0.24f, -0.55f};
+        const float left = right - 17.5f;
+        const double seconds = std::chrono::duration<double>(now.time_since_epoch()).count();
+        for (int bar = 0; bar < 4; ++bar) {
+            float scale = 1;
+            if (animate_) {
+                const double phase = (seconds - delays[bar]) / 0.75;
+                float t = static_cast<float>(phase - std::floor(phase));
+                if (static_cast<long long>(std::floor(phase)) % 2 != 0) t = 1 - t;
+                scale = 0.4f + 0.6f * bezier(0.42f, 0, 0.58f, 1, t);
+            }
+            const float height = heights[bar] * scale;
+            target_->FillRoundedRectangle(
+                rounded(box(left + bar * 5, pillCenterY - height / 2, 2.5f, height), 1.25f), ink(accent_));
+        }
+        titleEnd = left - 8;
+    } else {
+        // Paused: the panel's pause glyph (two bars), scaled for the pill.
+        const float left = right - 10;
+        for (const float x : {left, left + 5.5f}) {
+            target_->FillRoundedRectangle(rounded(box(x, pillCenterY - 5, 2.5f, 10), 1), ink(rgb(mutedColor)));
+        }
+        titleEnd = left - 8;
+    }
+    if (!hideShared || !shareTitle_) {
+        text(pillTitle_, pillTitleFont_.get(), box(pillLeft + 28, pillTop, titleEnd - (pillLeft + 28), pillHeight),
+             rgb(inkColor));
+    }
+}
+
+// ---- Panel ---------------------------------------------------------------------------------------
+
+void Island::drawPanel(Clock::time_point now, float value, float amount) {
+    const auto full = panelRect(now);
+    const auto from = compactShape(amount);
+    const float fromRadius = std::min(from.right - from.left, from.bottom - from.top) / 2;
+    const auto clip = mixRect(from, full, value);
+    const float radius = std::lerp(fromRadius, panelRadius, value);
+    const float opacity = open_ ? std::lerp(0.68f, 1.0f, value) : value;
+
+    // Soft drop shadow (0 8px 22px at 35%), faded in as the panel settles.
+    const float shadow = lin(0.6f, 1, value) * opacity;
+    for (int ring = 0; ring < 8; ++ring) {
+        const float spread = -2.0f + ring * 3.0f;
+        const auto rect = grow(box(clip.left, clip.top + 8, clip.right - clip.left, clip.bottom - clip.top),
+                               spread, spread);
+        target_->FillRoundedRectangle(rounded(rect, radius + spread), ink(D2D1::ColorF(0, 0, 0, 0.045f * shadow)));
+    }
+
+    winrt::com_ptr<ID2D1RoundedRectangleGeometry> mask;
+    winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(rounded(clip, radius), mask.put()));
+    pushLayer(mask.get(), opacity);
+    fillShell(rounded(clip, radius));
+    target_->DrawRoundedRectangle(rounded(grow(clip, -0.5f, -0.5f), radius - 0.5f), ink(white(0.12f)), 1);
+
+    recordPanel_ = open_ && value >= 1;
+    const bool hideShared = shareCover_ && value < 1;
+    const float switching = progress(screenStart_, panelTime, now);
+    if (switching < 1 && screenFrom_ != screen_) {
+        // Cross-fade: the old screen fades out fast, the new one fades in slightly later and rises 3px.
+        const float ms = elapsedMs(screenStart_, now);
+        pushLayer(nullptr, 1 - easeOut(clamp01(ms / 120)));
+        drawScreen(screenFrom_, full, now, false, false);
+        popLayer();
+        const float enter = easeOut(clamp01((ms - 48) / 195));
+        if (enter > 0) {
+            target_->SetTransform(D2D1::Matrix3x2F::Translation(0, 3 * (1 - enter)) * base_);
+            pushLayer(nullptr, enter);
+            drawScreen(screen_, full, now, false, recordPanel_);
+            popLayer();
+            target_->SetTransform(base_);
+        }
+    } else {
+        drawScreen(screen_, full, now, hideShared, recordPanel_);
+    }
+    drawNav(full, recordPanel_);
+    popLayer();
+
+    if (shareCover_ && value < 1 && value > 0) drawShared(full, value, amount);
+}
+
+void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, bool hideShared, bool record) {
+    switch (screen) {
+    case Screen::media: drawMedia(panel, now, hideShared, record); break;
+    case Screen::focus: drawFocus(panel, now, record); break;
+    case Screen::system: drawSystem(panel); break;
+    }
+}
+
+void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, bool hideShared, bool record) {
+    const float x = panel.left;
+    const float y = panel.top;
+    if (!media_.hasSession) {
+        text(L"Not Playing", headingCenterFont_.get(), box(x + padX, y + padTop, innerWidth, 88), rgb(mutedColor));
+        return;
+    }
+    // Track: cover, title, artist.
+    if (!hideShared) drawArt(box(x + 14, y + 13, 44, 44), 8);
+    if (!hideShared || !shareTitle_) text(title(), titleFont_.get(), box(x + 68, y + 15.4f, 287, 22.4f), rgb(inkColor));
+    const auto& detail = media_.artist.empty() ? media_.album : media_.artist;
+    text(detail, bodyFont_.get(), box(x + 68, y + 37.8f, 287, 16.8f), rgb(mutedColor));
+
+    // Timeline.
+    const auto rail = box(x + 14, y + 69, innerWidth, 15);
+    timelineRect_ = rail;
+    const float middle = rail.top + 7.5f;
+    const bool timed = media_.duration > 0;
+    const double position = media_.positionAt(now);
+    const float fraction = dragging_ ? dragFraction_ : timed ? static_cast<float>(position / media_.duration) : 0;
+    target_->FillRoundedRectangle(rounded(box(rail.left, middle - 2, innerWidth, 4), 2), ink(white(0.18f)));
+    if (timed) {
+        const float end = rail.left + innerWidth * fraction;
+        target_->FillRoundedRectangle(rounded(D2D1::RectF(rail.left, middle - 2, end, middle + 2), 2), ink(accent_));
+        if (media_.canSeek) {
+            const float knob = dragging_ || hovered(Hit::timeline) ? 7.0f : 6.0f;
+            target_->FillEllipse(D2D1::Ellipse({end, middle}, knob, knob), ink(accent_));
+            if (record) addTarget(grow(rail, 0, 4), Hit::timeline);
+        }
+        const double shown = dragging_ ? fraction * media_.duration : position;
+        text(timestamp(shown), monoFont_.get(), box(x + 14, y + 84, 170, 14), rgb(mutedColor));
+        text(timestamp(media_.duration), monoEndFont_.get(), box(x + 185, y + 84, 170, 14), rgb(mutedColor));
+    } else {
+        text(L"Live", monoFont_.get(), box(x + 14, y + 84, 170, 14), rgb(mutedColor));
+    }
+
+    // Transport: previous, play/pause on an accent disc, next.
+    const float middleY = y + 122;
+    const float centerX = x + panelWidth / 2;
+    const Hit buttons[]{Hit::previous, Hit::toggle, Hit::next};
+    const auto onAccent = mixColor(accent_, D2D1::ColorF(0, 0, 0), 0.86f);
+    for (int i = 0; i < 3; ++i) {
+        const D2D1_POINT_2F c{centerX + (i - 1) * 45.0f, middleY};
+        const auto disc = D2D1::Ellipse(c, 18, 18);
+        if (buttons[i] == Hit::toggle) {
+            auto face = accent_;
+            if (pressed(Hit::toggle)) face = mixColor(face, D2D1::ColorF(0, 0, 0), 0.18f);
+            else if (hovered(Hit::toggle)) face = mixColor(face, D2D1::ColorF(1, 1, 1), 0.12f);
+            target_->FillEllipse(disc, ink(face));
+            if (media_.playing) {
+                target_->FillRectangle(box(c.x - 5, c.y - 6, 3.5f, 12), ink(onAccent));
+                target_->FillRectangle(box(c.x + 1.5f, c.y - 6, 3.5f, 12), ink(onAccent));
+            } else {
+                fillPolygon({{c.x - 4, c.y - 6}, {c.x + 6, c.y}, {c.x - 4, c.y + 6}}, onAccent);
+            }
+        } else {
+            if (pressed(buttons[i])) target_->FillEllipse(disc, ink(white(0.14f)));
+            else if (hovered(buttons[i])) target_->FillEllipse(disc, ink(white(0.08f)));
+            const float d = buttons[i] == Hit::next ? 1.0f : -1.0f;
+            fillPolygon({{c.x - 6 * d, c.y - 5.5f}, {c.x + 5 * d, c.y}, {c.x - 6 * d, c.y + 5.5f}}, rgb(inkColor));
+            const float bar = d > 0 ? c.x + 4 : c.x - 6;
+            target_->FillRectangle(box(bar, c.y - 5.5f, 2, 11), ink(rgb(inkColor)));
+        }
+        if (record) addTarget(box(c.x - 18, c.y - 18, 36, 36), buttons[i]);
+    }
+
+    // Sources: one round button per app with a media session, marked by its logo.
+    target_->FillRectangle(box(x + padX, y + 148, innerWidth, 1), ink(white(0.12f)));
+    for (size_t i = 0; i < media_.sources.size() && i < 10; ++i) {
+        const auto& source = media_.sources[i];
+        const auto rect = box(x + 14 + static_cast<float>(i) * 34, y + 155, 30, 30);
+        const D2D1_POINT_2F c{rect.left + 15, rect.top + 15};
+        if (pressed(Hit::source, i)) target_->FillEllipse(D2D1::Ellipse(c, 15, 15), ink(white(0.14f)));
+        else if (hovered(Hit::source, i)) target_->FillEllipse(D2D1::Ellipse(c, 15, 15), ink(white(0.08f)));
+        if (source.appId == media_.appId) target_->DrawEllipse(D2D1::Ellipse(c, 14.5f, 14.5f), ink(accent_), 1);
+        if (auto* logo = icon(source.appId); logo && bitmap(*logo)) {
+            target_->DrawBitmap(logo->bitmap.get(), box(c.x - 9, c.y - 9, 18, 18), 1,
+                                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        } else {
+            target_->FillEllipse(D2D1::Ellipse(c, 9, 9), ink(white(0.16f)));
+            const auto name = appName(source.appId);
+            text(name.substr(0, 1), letterFont_.get(), box(c.x - 9, c.y - 9, 18, 18), rgb(inkColor));
+        }
+        if (record) addTarget(rect, Hit::source, i);
+    }
+}
+
+void Island::drawFocus(D2D1_RECT_F panel, Clock::time_point now, bool record) {
+    const float x = panel.left;
+    const float y = panel.top;
+    text(L"Focus", titleFont_.get(), box(x + padX, y + padTop, innerWidth, 22.4f), rgb(inkColor));
+    const int left = focusRemaining(now);
+    text(timestamp(left), clockFont_.get(), box(x + padX, y + 43.4f, innerWidth, 44.8f), rgb(inkColor));
+    const auto label = focusUntil_ ? L"Pause" : (left == focusLength || left == 0) ? L"Start" : L"Resume";
+    const float centerX = x + panelWidth / 2;
+    drawButton(box(centerX - 68, y + 96.2f, 64, 30), label, Hit::focusToggle, record);
+    drawButton(box(centerX + 4, y + 96.2f, 64, 30), L"Reset", Hit::focusReset, record);
+}
+
+void Island::drawSystem(D2D1_RECT_F panel) {
+    const float x = panel.left;
+    const float y = panel.top;
+    text(L"System", titleFont_.get(), box(x + padX, y + padTop, innerWidth, 22.4f), rgb(inkColor));
+    const std::pair<wchar_t const*, unsigned> rows[]{{L"CPU", system_.cpu}, {L"RAM", system_.memory}};
+    float top = y + 44.4f;
+    for (const auto& [label, value] : rows) {
+        text(label, bodyFont_.get(), box(x + 14, top, 37, 17), rgb(inkColor));
+        const auto bar = box(x + 59, top + 5.5f, 248, 6);
+        target_->FillRoundedRectangle(rounded(bar, 3), ink(white(0.12f)));
+        target_->FillRoundedRectangle(rounded(D2D1::RectF(bar.left, bar.top, bar.left + 248 * std::min(value, 100u) / 100.0f,
+                                                          bar.bottom), 3), ink(accent_));
+        text(std::to_wstring(value) + L"%", bodyEndFont_.get(), box(x + 315, top, 40, 17), rgb(inkColor));
+        top += 26;
+    }
+    std::wstring status = L"Power status unavailable";
+    if (power_.available && !power_.hasBattery) {
+        status = L"No battery";
+    } else if (power_.available) {
+        status = power_.pluggedIn == true ? (power_.charging ? L"Charging" : L"Plugged in") :
+                 power_.pluggedIn == false ? L"On Battery" : L"Battery";
+    }
+    const auto level = power_.percent ? std::to_wstring(*power_.percent) + L"%" : std::wstring{};
+    text(status, bodyFont_.get(), box(x + 14, y + 96.4f, 260, 17), rgb(readoutColor));
+    text(level, strongEndFont_.get(), box(x + 275, y + 96.4f, 80, 17), rgb(readoutColor));
+}
+
+void Island::drawNav(D2D1_RECT_F panel, bool record) {
+    const float top = panel.bottom - padBottom - navHeight;
+    target_->FillRectangle(box(panel.left + padX, top - 6, innerWidth, 1), ink(white(0.12f)));
+    const float start = (panel.left + panel.right) / 2 - (3 * 35 + 2 * 8) / 2.0f;
+    const Hit hits[]{Hit::navMedia, Hit::navFocus, Hit::navSystem};
+    const Screen screens[]{Screen::media, Screen::focus, Screen::system};
+    for (int i = 0; i < 3; ++i) {
+        const auto rect = box(start + i * 43.0f, top, 35, navHeight);
+        const bool selected = screen_ == screens[i];
+        if (selected) target_->FillRoundedRectangle(rounded(rect, 7), ink(withAlpha(accent_, 0.14f)));
+        else if (hovered(hits[i])) target_->FillRoundedRectangle(rounded(rect, 7), ink(white(0.08f)));
+        const auto color = selected ? accent_ : rgb(mutedColor);
+        const D2D1_POINT_2F c{rect.left + 17.5f, rect.top + 15.5f};
+        if (i == 0) text(L"♫", glyphFont_.get(), rect, color);
+        if (i == 1) drawFocusGlyph(c, 15, color);
+        if (i == 2) drawChipGlyph(c, color);
+        if (record) addTarget(rect, hits[i]);
+    }
+}
+
+// The cover (and title) travel between their pill and panel spots while the panel opens or closes.
+void Island::drawShared(D2D1_RECT_F panel, float value, float amount) {
+    const bool pill = amount >= 1 && pillContent_ == PillMode::media;
+    const auto fromCover = pill ? box(pillLeft + 12, pillCenterY - 4, 8, 8) : compactShape(amount);
+    const auto toCover = box(panel.left + 14, panel.top + 13, 44, 44);
+    const float fromRadius = (fromCover.right - fromCover.left) / 2;
+    drawArt(mixRect(fromCover, toCover, value), std::lerp(fromRadius, 8.0f, value));
+    if (!shareTitle_) return;
+    // The title is drawn at its panel size and scaled down to the pill's 12px at the start.
+    const float scale = std::lerp(12.0f / 16.0f, 1.0f, value);
+    const float x = std::lerp(pillLeft + 28, panel.left + 68, value);
+    const float y = std::lerp(pillCenterY - 22.4f * 0.75f / 2, panel.top + 15.4f, value);
+    const float width = std::lerp(82.0f / 0.75f, 287.0f, value);
+    target_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) * D2D1::Matrix3x2F::Translation(x, y) * base_);
+    text(title(), titleFont_.get(), box(0, 0, width, 22.4f), rgb(inkColor));
+    target_->SetTransform(base_);
+}
+
+// ---- Frame ---------------------------------------------------------------------------------------
+
+void Island::draw(HWND window) {
+    const auto now = Clock::now();
+    updateTheme(now);
+    scale_ = GetDpiForWindow(window) / 96.0f;
     const auto monitor = MonitorFromPoint(POINT{}, MONITOR_DEFAULTTOPRIMARY);
     MONITORINFO monitorInfo{};
     monitorInfo.cbSize = sizeof(MONITORINFO);
     winrt::check_bool(GetMonitorInfoW(monitor, &monitorInfo));
     const auto work = monitorInfo.rcWork;
-    POINT position{work.left + (work.right - work.left - surfaceSize_.cx) / 2,
-                   work.top + static_cast<LONG>(8 * dpiScale)};
-    POINT origin{};
-    BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    winrt::check_bool(UpdateLayeredWindow(window, nullptr, &position, &surfaceSize_, surface_, &origin,
-                                         0, &blend, ULW_ALPHA));
-}
+    anchor_ = {work.left + (work.right - work.left) / 2, work.top};
 
-int Island::buttonAt(HWND window, POINT point) const {
-    if (mode_ != IslandMode::media || transitioning()) return -1;
-    const float scale = GetDpiForWindow(window) / 96.0f;
-    for (int button = 0; button < 3; ++button) {
-        if (std::abs(point.x / scale - buttonX[button]) <= 17 && std::abs(point.y / scale - buttonY) <= 18) {
-            return button;
-        }
+    const float amount = pillAmount(now);
+    const float value = panelValue(now);
+    const bool panelVisible = open_ || value > 0;
+    const bool compactVisible = !open_;
+
+    // The surface only covers what is drawn this frame.
+    auto bounds = grow(compactShape(amount), 2, 2);
+    bounds = unite(bounds, amount >= 1 ? box(pillLeft, pillTop - 3, pillWidth, 46) : box(-22, pillTop - 3, 44, 46));
+    if (panelVisible) bounds = unite(bounds, grow(panelRect(now), shadowReach, shadowReach));
+    bounds.top = std::max(bounds.top, 0.0f);
+    origin_ = {static_cast<LONG>(std::floor(bounds.left * scale_)), static_cast<LONG>(std::floor(bounds.top * scale_))};
+    const int width = static_cast<int>(std::ceil(bounds.right * scale_)) - origin_.x;
+    const int height = static_cast<int>(std::ceil(bounds.bottom * scale_)) - origin_.y;
+    prepareSurface(width, height);
+    prepareText();
+    const RECT pixels{0, 0, surfaceSize_.cx, surfaceSize_.cy};
+    winrt::check_hresult(target_->BindDC(surface_, &pixels));
+
+    base_ = D2D1::Matrix3x2F::Scale(scale_, scale_) *
+            D2D1::Matrix3x2F::Translation(static_cast<float>(-origin_.x), static_cast<float>(-origin_.y));
+    targets_.clear();
+    layerDepth_ = 0;
+    target_->BeginDraw();
+    target_->SetTransform(base_);
+    target_->Clear(D2D1::ColorF(0, 0));
+    if (compactVisible) drawCompact(now, amount, shareCover_ && value > 0);
+    if (panelVisible) drawPanel(now, value, amount);
+    const HRESULT result = target_->EndDraw();
+    if (result == D2DERR_RECREATE_TARGET) {
+        releaseDeviceResources();
+        InvalidateRect(window, nullptr, FALSE);
+        return;
     }
-    return -1;
+    winrt::check_hresult(result);
+
+    POINT position{anchor_.x + origin_.x, anchor_.y + origin_.y};
+    POINT source{};
+    BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    winrt::check_bool(UpdateLayeredWindow(window, nullptr, &position, &surfaceSize_, surface_, &source,
+                                         0, &blend, ULW_ALPHA));
 }
 
 }
