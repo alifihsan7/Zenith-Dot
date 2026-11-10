@@ -5,6 +5,7 @@
 #include "drop_zone.hpp"
 #include "island.hpp"
 #include "resource.h"
+#include "settings.hpp"
 #include <hidusage.h>
 #include <ole2.h>
 #include <set>
@@ -29,7 +30,8 @@ constexpr unsigned clipboardRetryLimit = 25;
 constexpr unsigned microphoneColor = 0xff9f0a;
 constexpr unsigned cameraColor = 0x30d158;
 
-enum Menu { previousTrack = 1, togglePlayback, nextTrack, toggleVisibility, openDropZone, exitApp };
+enum Menu { previousTrack = 1, togglePlayback, nextTrack, toggleVisibility, openDropZone, exitApp,
+            toggleCopiedText, toggleScreenshots, toggleClipboardPreviews, toggleStartup };
 constexpr MediaCommand controls[] = {MediaCommand::previous, MediaCommand::toggle, MediaCommand::next};
 
 struct LockKey {
@@ -64,7 +66,7 @@ private:
     void queueClipboard(bool listenerEvent = false);
     void refreshClipboard();
     void updateLockKey(RAWKEYBOARD const& keyboard, HANDLE device);
-    std::optional<IslandAlert> clipboardAlert(bool& busy, HBITMAP& image);
+    std::optional<IslandAlert> clipboardAlert(bool& busy, HBITMAP& image, std::wstring& stagedText);
 
     HWND window_ = nullptr;
     HPOWERNOTIFY powerNotification_ = nullptr;
@@ -84,6 +86,7 @@ private:
     SystemMonitor system_;
     Scratchpad scratchpad_;
     DropZone dropZone_;
+    Settings settings_;
     std::chrono::steady_clock::time_point systemSampled_{};
     Island island_;
     bool tracking_ = false;
@@ -92,6 +95,7 @@ private:
     bool clipboardListening_ = false;
     DWORD clipboardSequence_ = 0;
     DWORD stagedImageSequence_ = 0;
+    DWORD stagedTextSequence_ = 0;
     std::optional<unsigned> clipboardAttempts_;
     unsigned captureTick_ = 0;
     unsigned lowWarned_ = 0;   // the low-battery threshold (20 or 10) already announced this discharge
@@ -102,6 +106,7 @@ private:
 };
 
 int App::run(HINSTANCE instance) {
+    settings_ = Settings::load();
     WNDCLASSW type{};
     type.lpfnWndProc = dispatch;
     type.hInstance = instance;
@@ -344,6 +349,19 @@ void App::showMenu(POINT point) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, toggleVisibility, hidden_ ? L"&Show Zenith Dot" : L"&Hide Zenith Dot");
     AppendMenuW(menu, MF_STRING | (suppressed() ? MF_GRAYED : MF_ENABLED), openDropZone, L"&Drop Zone");
+    const auto startup = startupShortcut();
+    const bool startsWithWindows = startupEnabled(startup);
+    if (const auto settings = CreatePopupMenu()) {
+        const auto addToggle = [settings](UINT id, wchar_t const* label, bool checked, bool available = true) {
+            AppendMenuW(settings, MF_STRING | (checked ? MF_CHECKED : MF_UNCHECKED) |
+                (available ? MF_ENABLED : MF_GRAYED), id, label);
+        };
+        addToggle(toggleCopiedText, L"Add copied text to Drop Zone", settings_.autoAddText);
+        addToggle(toggleScreenshots, L"Auto-add screenshots", settings_.autoAddScreenshots);
+        addToggle(toggleClipboardPreviews, L"Show clipboard previews", settings_.showClipboardPreviews);
+        addToggle(toggleStartup, L"Start with Windows", startsWithWindows, !startup.empty());
+        if (!AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(settings), L"&Settings")) DestroyMenu(settings);
+    }
     AppendMenuW(menu, MF_STRING, exitApp, L"E&xit Zenith Dot");
     // TrackPopupMenu needs the owner in the foreground to dismiss correctly. Hand focus back afterwards.
     const auto previous = GetForegroundWindow();
@@ -362,6 +380,17 @@ void App::showMenu(POINT point) {
     } else if (selected == openDropZone) {
         island_.showDropZone();
         frame();
+    } else if (selected == toggleStartup) {
+        if (!setStartupEnabled(startup, !startsWithWindows)) {
+            MessageBoxW(window_, L"Couldn’t update the Windows startup shortcut.", appName, MB_OK | MB_ICONWARNING);
+        }
+    } else if (selected >= toggleCopiedText && selected <= toggleClipboardPreviews) {
+        auto updated = settings_;
+        if (selected == toggleCopiedText) updated.autoAddText = !updated.autoAddText;
+        else if (selected == toggleScreenshots) updated.autoAddScreenshots = !updated.autoAddScreenshots;
+        else updated.showClipboardPreviews = !updated.showClipboardPreviews;
+        if (updated.save()) settings_ = updated;
+        else MessageBoxW(window_, L"Couldn’t save clipboard settings.", appName, MB_OK | MB_ICONWARNING);
     } else if (selected >= previousTrack && selected <= nextTrack && monitor_) {
         control(controls[selected - previousTrack]);
     }
@@ -405,7 +434,7 @@ void App::showAudioPicker() {
 }
 
 // Private clipboard formats are excluded before either previewing text or staging an image.
-std::optional<IslandAlert> App::clipboardAlert(bool& busy, HBITMAP& image) {
+std::optional<IslandAlert> App::clipboardAlert(bool& busy, HBITMAP& image, std::wstring& stagedText) {
     static const UINT excluded = RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
     static const UINT history = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
     busy = !OpenClipboard(window_);
@@ -432,6 +461,8 @@ std::optional<IslandAlert> App::clipboardAlert(bool& busy, HBITMAP& image) {
     if (!IsClipboardFormatAvailable(CF_UNICODETEXT) && !IsClipboardFormatAvailable(CF_HDROP) &&
         (IsClipboardFormatAvailable(CF_BITMAP) || IsClipboardFormatAvailable(CF_DIB) ||
          IsClipboardFormatAvailable(CF_DIBV5))) {
+        alert.value = L"Image";
+        if (!settings_.autoAddScreenshots) return alert;
         const auto bitmap = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP));
         const DWORD sequence = GetClipboardSequenceNumber();
         if (sequence && sequence == stagedImageSequence_) return std::nullopt;
@@ -440,14 +471,23 @@ std::optional<IslandAlert> App::clipboardAlert(bool& busy, HBITMAP& image) {
             static_cast<uint64_t>(size.bmWidth) * size.bmHeight <= 32'000'000) {
             image = static_cast<HBITMAP>(CopyImage(bitmap, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION));
         }
-        alert.value = L"Image";
         return alert;
     }
-    if (suppressed()) return std::nullopt;
+    if (suppressed() && !settings_.autoAddText) return std::nullopt;
     if (const auto data = GetClipboardData(CF_UNICODETEXT)) {
+        if (!settings_.autoAddText && !settings_.showClipboardPreviews) return alert;
         if (const auto text = static_cast<wchar_t const*>(GlobalLock(data))) {
-            // First non-empty line, trimmed, at most 60 characters.
+            struct Unlock {
+                HGLOBAL data;
+                ~Unlock() { GlobalUnlock(data); }
+            } unlock{data};
             std::wstring_view all(text, wcsnlen(text, GlobalSize(data) / sizeof(wchar_t)));
+            const DWORD sequence = GetClipboardSequenceNumber();
+            if (settings_.autoAddText && (!sequence || sequence != stagedTextSequence_) && dropZone_.canAddText(all.size())) {
+                stagedText.assign(all);
+            }
+            if (suppressed() || !settings_.showClipboardPreviews) return alert;
+            // First non-empty line, trimmed, at most 60 characters.
             while (!all.empty()) {
                 const auto end = all.find_first_of(L"\r\n");
                 auto line = all.substr(0, end);
@@ -460,9 +500,8 @@ std::optional<IslandAlert> App::clipboardAlert(bool& busy, HBITMAP& image) {
                 if (end == std::wstring_view::npos) break;
                 all.remove_prefix(end + 1);
             }
-            GlobalUnlock(data);
         }
-    } else if (const auto drop = static_cast<HDROP>(GetClipboardData(CF_HDROP))) {
+    } else if (const auto drop = suppressed() ? nullptr : static_cast<HDROP>(GetClipboardData(CF_HDROP))) {
         const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
         wchar_t name[MAX_PATH]{};
         if (count == 1 && DragQueryFileW(drop, 0, name, MAX_PATH)) {
@@ -500,13 +539,15 @@ void App::refreshClipboard() {
         HBITMAP value = nullptr;
         ~Bitmap() { if (value) DeleteObject(value); }
     } image;
-    auto alert = clipboardAlert(busy, image.value);
+    std::wstring stagedText;
+    auto alert = clipboardAlert(busy, image.value, stagedText);
     if (busy && ++*clipboardAttempts_ < clipboardRetryLimit) {
         if (SetTimer(window_, clipboardTimer, clipboardRetryInterval, nullptr)) return;
     }
     KillTimer(window_, clipboardTimer);
     clipboardAttempts_.reset();
     if (alert) {
+        if (!stagedText.empty() && dropZone_.addText(stagedText)) stagedTextSequence_ = clipboardSequence_;
         if (image.value) {
             const auto result = dropZone_.addImage(image.value);
             if (result != DropZone::ImageResult::unavailable) stagedImageSequence_ = clipboardSequence_;

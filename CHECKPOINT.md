@@ -11,7 +11,8 @@ Serah terima untuk agent berikutnya (Codex). Isinya posisi kerja terakhir, cara 
 
 ## Lanjut dari sini
 
-- Paket terbaru ada di `out/ZenithDot-Wink-Icon.zip`. Ikon kucing kedip dengan latar gelap dari `assets/logos/zenith-dot.svg` dipakai untuk EXE, shortcut, dan tray. Ikon Windows dalam `src/zenith.ico` mencakup ukuran 16–256 px.
+- Paket terbaru ada di `out/ZenithDot-Settings.zip`. Settings di tray mengatur auto-add teks, auto-add screenshot, cuplikan clipboard, dan shortcut startup. Tes simulasi ekspor teks dengan cuplikan mati dan tes shortcut di folder sementara lulus.
+- Ikon kucing kedip dengan latar gelap dari `assets/logos/zenith-dot.svg` dipakai untuk EXE, shortcut, dan tray. Ikon Windows dalam `src/zenith.ico` mencakup ukuran 16–256 px.
 - Bubble Zenith tetap tampil saat DND Windows aktif. Status DND tetap bisa dilihat di System. Indikator mic memperhitungkan mute perangkat Windows. Tombol mute internal aplikasi bisa membiarkan sesi capture terbuka.
 - Ekstensi browser mendukung Brave dan membaca judul serta timeline dari player utama YouTube. Tes simulasi lulus; setup ekstensi masih perlu dicek di Brave.
 - Transisi tutup lebih pelan dan bisa berbalik saat kursor kembali. Cover fade di dalam panel dan ikon privasi muncul setelah pill melebar. Tes frame dan simulasi Caps Lock serta Num Lock lulus. Tombol fisik dan rasa animasi masih perlu dicek di desktop interaktif.

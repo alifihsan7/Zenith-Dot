@@ -14,6 +14,7 @@ add_executable(ZenithDot WIN32
     src/system.cpp
     src/desktop.cpp
     src/scratchpad.cpp
+    src/settings.cpp
     src/drop_zone.cpp
     src/browser_tabs.cpp
     src/zenith.rc

@@ -12,7 +12,9 @@ Click the pin icon beside the panel tabs to keep Zenith Dot open while you use a
 
 Scroll over the compact pill or anywhere in the open panel to move one tab at a time. Over the pill, the new tab's icon and name appear briefly before the panel opens. Lyrics, the Scratchpad editor, and a Drop Zone list with more than four rows use the wheel to scroll their own content.
 
-Short notices split off the pill as a liquid bubble, or grow out of the dot: plugging in or unplugging the charger, low battery at 20% and 10%, the end of a Focus session, and copying something (with a short preview). While the panel is open they show as a row at its top instead. Copied text only appears in the notice. Zenith ignores clipboard content marked as private by the source app.
+Short notices split off the pill as a liquid bubble, or grow out of the dot: plugging in or unplugging the charger, low battery at 20% and 10%, the end of a Focus session, and copying something (with a short preview). While the panel is open they show as a row at its top instead. Zenith ignores clipboard content marked as private by the source app.
+
+Right-click the tray icon and open **Settings**. **Add copied text to Drop Zone** is off by default. When enabled, the full text is available to drag out of Drop Zone until you remove it, clear the list, or exit. **Show clipboard previews** controls the copied text snippet separately. **Auto-add screenshots** controls whether clipboard images are staged. Both are on by default. **Start with Windows** manages the current user's Startup shortcut.
 
 When the panel closes, it shrinks to a pill. The pill stays visible while an activity is running and shrinks to the black dot when idle.
 
@@ -40,7 +42,7 @@ The [Windows workflow](.github/workflows/windows.yml) also builds a downloadable
 
 ## Install and start at sign-in
 
-In the extracted build package or `dist` directory, run `.\install.ps1` from PowerShell. The script installs for the current user and creates Start menu and Startup shortcuts. Open **Zenith Dot** from Start to launch immediately. To uninstall, exit from the tray menu and run `.\uninstall.ps1` from the same package.
+In the extracted build package or `dist` directory, run `.\install.ps1` from PowerShell. The script installs for the current user and creates Start menu and Startup shortcuts on a first install. Upgrades preserve whether the Startup shortcut is enabled. Open **Zenith Dot** from Start to launch immediately. To uninstall, exit from the tray menu and run `.\uninstall.ps1` from the same package.
 
 The Scratchpad note is stored in `%LOCALAPPDATA%\Zenith Dot\scratchpad.txt`.
 
@@ -99,6 +101,7 @@ Temporary connection or service failures are retried automatically. If the looku
 - Scroll over the compact pill and over the tab bar. Check the selected tab, the compact preview, and that scrolling inside Lyrics still moves the text.
 - Pause playback: the pill should show a pause glyph, then shrink to the dot after five seconds.
 - Copy some text: a "Copied" bubble should stretch out of the pill, pinch off, show the first line, and merge back after about two seconds. Copy with the panel open: the notice should appear as a row at the top of the panel. Copy a password from a password manager: no notice.
+- Enable **Add copied text to Drop Zone** and turn off **Show clipboard previews**. Copy two lines of text and verify that the bubble says **Copied** and that dragging the new item out of Drop Zone transfers both lines.
 - Capture a screenshot with Windows+Shift+S and open **Drop Zone**. Check that one thumbnail appears, click it to open the image, and close the preview to return to the list. Drag the row into Explorer. Add another file or text and check that they share the list. Clear the list and check that the dashed area returns to its empty layout.
 - Unplug and reconnect the charger: "On Battery" and then a green "Charging" bubble, each with the battery level.
 - Open System and check the battery percentage and AC status. Unplug and reconnect the charger. On a desktop without a battery, confirm the panel reports that state.

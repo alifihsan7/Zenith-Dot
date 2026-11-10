@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace zenith {
@@ -37,6 +38,8 @@ public:
     bool attach(HWND window, Hover hover, Changed changed);
     void detach();
     ImageResult addImage(HBITMAP bitmap);
+    bool canAddText(size_t length) const;
+    bool addText(std::wstring_view text);
     void drag(size_t index);
     bool openImage(size_t index, HWND owner);
     HWND previewWindow() const { return previewWindow_; }

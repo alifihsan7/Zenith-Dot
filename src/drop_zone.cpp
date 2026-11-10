@@ -85,20 +85,19 @@ CLIPFORMAT supported(IDataObject* data) {
     return 0;
 }
 
+std::wstring textPreview(std::wstring_view contents) {
+    const auto start = contents.find_first_not_of(L" \t\r\n");
+    if (start == std::wstring_view::npos) return contents.empty() ? L"" : L"Text";
+    const auto line = contents.substr(start);
+    return std::wstring(line.substr(0, std::min(line.find_first_of(L"\r\n"), size_t{100})));
+}
+
 std::wstring textPreview(HGLOBAL data) {
     const auto raw = static_cast<wchar_t const*>(GlobalLock(data));
     if (!raw) return {};
-    const std::wstring_view contents(raw, wcsnlen(raw, GlobalSize(data) / sizeof(wchar_t)));
-    const auto start = contents.find_first_not_of(L" \t\r\n");
-    std::wstring label;
-    if (start != std::wstring_view::npos) {
-        const auto line = contents.substr(start);
-        const auto length = std::min(line.find_first_of(L"\r\n"), size_t{100});
-        label = line.substr(0, length);
-    }
-    const bool empty = contents.empty();
+    const auto label = textPreview(std::wstring_view(raw, wcsnlen(raw, GlobalSize(data) / sizeof(wchar_t))));
     GlobalUnlock(data);
-    return label.empty() && !empty ? L"Text" : label;
+    return label;
 }
 
 winrt::com_ptr<IDataObject> takeItem(CLIPFORMAT type, HGLOBAL data) {
@@ -288,6 +287,28 @@ size_t DropZone::remainingBytes() const {
     size_t remaining = maxBytes;
     for (const auto& item : items_) remaining -= item.bytes;
     return remaining;
+}
+
+bool DropZone::canAddText(size_t length) const {
+    return length && items_.size() < maxItems && length < remainingBytes() / sizeof(wchar_t);
+}
+
+bool DropZone::addText(std::wstring_view text) {
+    if (!canAddText(text.size())) return false;
+    auto label = textPreview(text);
+    const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    const auto data = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
+    if (!data) return false;
+    const auto destination = GlobalLock(data);
+    if (!destination) {
+        GlobalFree(data);
+        return false;
+    }
+    std::memcpy(destination, text.data(), text.size() * sizeof(wchar_t));
+    GlobalUnlock(data);
+    items_.push_back({takeItem(CF_UNICODETEXT, data), {std::move(label), true, {}}, bytes, {}});
+    publish();
+    return true;
 }
 
 bool DropZone::prepareImageFolder() {
