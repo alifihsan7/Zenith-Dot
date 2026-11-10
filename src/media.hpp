@@ -14,12 +14,21 @@ namespace zenith {
 
 enum class MediaCommand { previous, toggle, next };
 
+// Colours taken from the current cover (0xRRGGBB). The defaults apply when there is no usable cover.
+struct CoverTheme {
+    unsigned accent = 0x91caff;
+    unsigned tint = 0x0c1422;
+
+    bool operator==(CoverTheme const&) const = default;
+};
+
 struct MediaState {
     bool hasSession = false;
     bool playing = false;
     std::wstring title;
     std::wstring artist;
     std::wstring album;
+    CoverTheme theme;
     double duration = 0;
     double position = 0;
     double rate = 1;

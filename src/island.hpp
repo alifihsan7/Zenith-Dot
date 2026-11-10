@@ -20,18 +20,21 @@ public:
 
     void setMode(IslandMode mode, bool animate);
     void draw(HWND window, MediaState const& media, PowerState const& power, bool animate,
-              int hovered, int pressed, int focused);
+              int hovered, int pressed);
     bool transitioning() const;
+    bool animating() const;
     int buttonAt(HWND window, POINT point) const;
 
 private:
     using Clock = std::chrono::steady_clock;
 
     float extent(Clock::time_point now) const;
+    float themeProgress(Clock::time_point now) const;
+    void updateTheme(CoverTheme const& theme, Clock::time_point now, bool animate);
     void prepareSurface(int width, int height);
     void prepareText();
     void drawMedia(MediaState const& media, Clock::time_point now, bool animate,
-                   int hovered, int pressed, int focused, float opacity);
+                   int hovered, int pressed, float opacity);
     void drawPower(PowerState const& power, float opacity);
     void text(std::wstring_view value, IDWriteTextFormat* format, D2D1_RECT_F rect, D2D1_COLOR_F color);
     ID2D1SolidColorBrush* ink(D2D1_COLOR_F color);
@@ -51,6 +54,12 @@ private:
     IslandMode content_ = IslandMode::dot;
     float startExtent_ = 0;
     Clock::time_point start_{};
+    // Cover colours cross-fade from the *From_ values to theme_, starting at themeStart_.
+    CoverTheme theme_;
+    D2D1_COLOR_F accentFrom_ = D2D1::ColorF(CoverTheme{}.accent);
+    D2D1_COLOR_F tintFrom_ = D2D1::ColorF(CoverTheme{}.tint);
+    D2D1_COLOR_F accent_ = accentFrom_;
+    Clock::time_point themeStart_{};
 };
 
 }

@@ -13,9 +13,19 @@ constexpr float dotSize = 14;
 constexpr float buttonY = 46;
 constexpr float buttonX[] = {252, 289, 326};
 constexpr auto animationTime = std::chrono::milliseconds(280);
+constexpr auto themeTime = std::chrono::milliseconds(700);
 
 D2D1_COLOR_F color(unsigned rgb, float opacity = 1.0f) {
     return D2D1::ColorF(rgb, opacity);
+}
+
+D2D1_COLOR_F mix(D2D1_COLOR_F const& from, D2D1_COLOR_F const& to, float t) {
+    return D2D1::ColorF(std::lerp(from.r, to.r, t), std::lerp(from.g, to.g, t), std::lerp(from.b, to.b, t));
+}
+
+D2D1_COLOR_F faded(D2D1_COLOR_F value, float opacity) {
+    value.a = opacity;
+    return value;
 }
 
 std::wstring timestamp(double seconds) {
@@ -53,6 +63,27 @@ void Island::setMode(IslandMode mode, bool animate) {
 
 bool Island::transitioning() const {
     return extent(Clock::now()) != (mode_ == IslandMode::dot ? 0.0f : 1.0f);
+}
+
+bool Island::animating() const {
+    return transitioning() || Clock::now() - themeStart_ < themeTime;
+}
+
+float Island::themeProgress(Clock::time_point now) const {
+    if (now - themeStart_ >= themeTime) return 1;
+    const float t = std::chrono::duration<float>(now - themeStart_).count() /
+                    std::chrono::duration<float>(themeTime).count();
+    return t * t * (3 - 2 * t);
+}
+
+void Island::updateTheme(CoverTheme const& theme, Clock::time_point now, bool animate) {
+    if (theme == theme_) return;
+    // Start from whatever is on screen now, so a track change mid-fade doesn't jump.
+    const float progress = themeProgress(now);
+    accentFrom_ = animate ? mix(accentFrom_, color(theme_.accent), progress) : color(theme.accent);
+    tintFrom_ = animate ? mix(tintFrom_, color(theme_.tint), progress) : color(theme.tint);
+    theme_ = theme;
+    themeStart_ = animate ? now : Clock::time_point{};
 }
 
 void Island::prepareSurface(int width, int height) {
@@ -123,10 +154,10 @@ void Island::text(std::wstring_view value, IDWriteTextFormat* format, D2D1_RECT_
 }
 
 void Island::drawMedia(MediaState const& media, Clock::time_point now, bool animate,
-                       int hovered, int pressed, int focused, float opacity) {
+                       int hovered, int pressed, float opacity) {
     const auto primary = color(0xf7f7f8, opacity);
     const auto secondary = color(0xc1c3ca, opacity);
-    const auto accent = color(0x9ff3cc, opacity);
+    const auto accent = faded(accent_, opacity);
     const auto detail = media.artist.empty() ? media.album :
         (media.album.empty() ? media.artist : media.artist + L"  /  " + media.album);
     text(media.title.empty() ? L"Media playing" : media.title.c_str(), titleFont_.get(),
@@ -147,7 +178,6 @@ void Island::drawMedia(MediaState const& media, Clock::time_point now, bool anim
         if (button == pressed || button == hovered) {
             target_->FillEllipse(circle, ink(color(button == pressed ? 0x51545b : 0x303237, opacity)));
         }
-        if (button == focused) target_->DrawEllipse(circle, ink(accent), 1.5f);
         auto* glyph = ink(primary);
         if (button == 1) {
             target_->FillRectangle(D2D1::RectF(x - 5, buttonY - 6, x - 1, buttonY + 6), glyph);
@@ -179,7 +209,7 @@ void Island::drawMedia(MediaState const& media, Clock::time_point now, bool anim
 void Island::drawPower(PowerState const& power, float opacity) {
     const auto primary = color(0xf7f7f8, opacity);
     const auto secondary = color(0xc1c3ca, opacity);
-    const auto accent = color(0x9ff3cc, opacity);
+    const auto accent = faded(accent_, opacity);
     std::wstring title = L"Battery unavailable";
     std::wstring detail = L"Windows couldn't read battery status";
     if (power.available && !power.hasBattery) {
@@ -207,8 +237,12 @@ void Island::drawPower(PowerState const& power, float opacity) {
 }
 
 void Island::draw(HWND window, MediaState const& media, PowerState const& power, bool animate,
-                  int hovered, int pressed, int focused) {
+                  int hovered, int pressed) {
     const auto now = Clock::now();
+    updateTheme(media.theme, now, animate);
+    const float themed = themeProgress(now);
+    accent_ = mix(accentFrom_, color(theme_.accent), themed);
+    const auto tint = faded(mix(tintFrom_, color(theme_.tint), themed), 0.9f);
     const float openness = animate ? extent(now) : (mode_ == IslandMode::dot ? 0.0f : 1.0f);
     const bool compact = openness == 0 && mode_ == IslandMode::dot;
     const float width = compact ? dotSize + 2 : panelWidth + 2;
@@ -225,14 +259,22 @@ void Island::draw(HWND window, MediaState const& media, PowerState const& power,
     const float left = (width - bodyWidth) / 2;
     const float radius = std::lerp(dotSize / 2, 26.0f, openness);
     const auto body = D2D1::RoundedRect(D2D1::RectF(left, 1, left + bodyWidth, 1 + bodyHeight), radius, radius);
+    // Black-dominant shell: the cover only tints the far corner of the gradient.
+    const D2D1_GRADIENT_STOP stops[]{{0, color(0, 0.92f)}, {1, tint}};
+    winrt::com_ptr<ID2D1GradientStopCollection> gradient;
+    winrt::check_hresult(target_->CreateGradientStopCollection(stops, 2, gradient.put()));
+    winrt::com_ptr<ID2D1LinearGradientBrush> shell;
+    winrt::check_hresult(target_->CreateLinearGradientBrush(
+        D2D1::LinearGradientBrushProperties(D2D1::Point2F(left, 1), D2D1::Point2F(left + bodyWidth, 1 + bodyHeight)),
+        gradient.get(), shell.put()));
     target_->BeginDraw();
     target_->SetTransform(D2D1::Matrix3x2F::Scale(D2D1::SizeF(dpiScale, dpiScale)));
     target_->Clear(color(0, 0));
-    target_->FillRoundedRectangle(body, ink(color(0, 0.92f)));
+    target_->FillRoundedRectangle(body, shell.get());
     target_->DrawRoundedRectangle(body, ink(color(0xffffff, 0.12f)), 1);
     if (opacity > 0) {
         if (content_ == IslandMode::media) drawMedia(media, now, animate && media.playing, hovered, pressed,
-                                                    focused, opacity);
+                                                    opacity);
         if (content_ == IslandMode::power) drawPower(power, opacity);
     }
     const HRESULT result = target_->EndDraw();

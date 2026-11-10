@@ -46,7 +46,6 @@ private:
     bool tracking_ = false;
     int hovered_ = -1;
     int pressed_ = -1;
-    int focused_ = -1;
 };
 
 int App::run(HINSTANCE instance) {
@@ -56,7 +55,8 @@ int App::run(HINSTANCE instance) {
     type.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     type.lpszClassName = windowClass;
     winrt::check_bool(RegisterClassW(&type));
-    window_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+    // WS_EX_NOACTIVATE: clicks and hover reach the island, but the app the user is working in keeps focus.
+    window_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
         windowClass, appName, WS_POPUP, 0, 0, 16, 16, nullptr, nullptr, instance, this);
     winrt::check_bool(window_ != nullptr);
 
@@ -87,9 +87,9 @@ int App::run(HINSTANCE instance) {
 }
 
 void App::draw() {
-    island_.draw(window_, media_, power_, animate_, hovered_, pressed_, focused_);
+    island_.draw(window_, media_, power_, animate_, hovered_, pressed_);
     UINT interval = 0;
-    if (animate_ && (island_.transitioning() || (mode_ == IslandMode::media && media_.playing))) {
+    if (animate_ && (island_.animating() || (mode_ == IslandMode::media && media_.playing))) {
         interval = 33;
     } else if (mode_ == IslandMode::media && media_.duration > 0) {
         interval = 1000;
@@ -104,7 +104,7 @@ void App::setMode() {
     const auto next = showPower_ ? IslandMode::power : (media_.playing ? IslandMode::media : IslandMode::dot);
     if (next != mode_) {
         mode_ = next;
-        hovered_ = pressed_ = focused_ = -1;
+        hovered_ = pressed_ = -1;
         island_.setMode(mode_, animate_);
     }
     draw();
@@ -147,11 +147,14 @@ void App::showMenu(POINT point) {
     AppendMenuW(menu, MF_STRING | (media_.hasSession ? MF_ENABLED : MF_GRAYED), nextTrack, L"&Next track");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, exitApp, L"E&xit Zenith Dot");
+    // TrackPopupMenu needs the owner in the foreground to dismiss correctly. Hand focus back afterwards.
+    const auto previous = GetForegroundWindow();
     SetForegroundWindow(window_);
     const auto selected = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
                                          point.x, point.y, 0, window_, nullptr);
     DestroyMenu(menu);
     PostMessageW(window_, WM_NULL, 0, 0);
+    if (previous && previous != window_ && IsWindow(previous)) SetForegroundWindow(previous);
     if (selected == exitApp) {
         DestroyWindow(window_);
     } else if (selected == showBattery) {
@@ -212,6 +215,8 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     case MediaMonitor::notification:
         if (monitor_) monitor_->refresh(wparam);
         return 0;
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
     case WM_MOUSEMOVE: {
         if (!tracking_) {
             TRACKMOUSEEVENT tracking{sizeof(TRACKMOUSEEVENT), TME_LEAVE, window_, 0};
@@ -253,27 +258,6 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         pressed_ = -1;
         draw();
         return 0;
-    case WM_KILLFOCUS:
-        focused_ = -1;
-        draw();
-        return 0;
-    case WM_KEYDOWN:
-        if (wparam == VK_ESCAPE && showPower_) {
-            showPower_ = false;
-            setMode();
-            return 0;
-        }
-        if (wparam == VK_TAB && mode_ == IslandMode::media) {
-            const bool backward = GetKeyState(VK_SHIFT) < 0;
-            focused_ = focused_ < 0 ? (backward ? 2 : 0) : (focused_ + (backward ? 2 : 1)) % 3;
-            draw();
-            return 0;
-        }
-        if ((wparam == VK_RETURN || wparam == VK_SPACE) && focused_ >= 0 && monitor_) {
-            if ((lparam & (1L << 30)) == 0) monitor_->control(controls[focused_]);
-            return 0;
-        }
-        break;
     case WM_CONTEXTMENU: {
         POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         if (point.x == -1 && point.y == -1) ClientToScreen(window_, &point);
