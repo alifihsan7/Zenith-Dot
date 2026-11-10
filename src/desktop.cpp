@@ -1,5 +1,6 @@
 #include "desktop.hpp"
 
+#include <appmodel.h>
 #include <dwmapi.h>
 #include <audiopolicy.h>
 #include <endpointvolume.h>
@@ -8,10 +9,12 @@
 #include <mmdeviceapi.h>
 #include <oleauto.h>
 #include <shellapi.h>
+#include <shobjidl.h>
 #include <wbemidl.h>
 #include <mmreg.h>
 #include <initguid.h>
 #include <functiondiscoverykeys_devpkey.h>
+#include <propkey.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.UI.Notifications.h>
 
@@ -409,6 +412,68 @@ bool fullscreenOnPrimary(HWND overlay) {
     const auto& screen = monitor.rcMonitor;
     return bounds.left <= screen.left + 1 && bounds.top <= screen.top + 1 &&
            bounds.right >= screen.right - 1 && bounds.bottom >= screen.bottom - 1;
+}
+
+bool activateMediaWindow(HWND overlay, std::wstring const& appId) {
+    if (appId.empty()) return false;
+    const auto tail = appId.find_last_of(L"\\/!");
+    auto executable = appId.substr(tail == std::wstring::npos ? 0 : tail + 1);
+    if (executable.size() < 4 || _wcsicmp(executable.c_str() + executable.size() - 4, L".exe") != 0)
+        executable += L".exe";
+
+    struct Search {
+        HWND overlay;
+        std::wstring const& appId;
+        std::wstring const& executable;
+        HWND exact = nullptr;
+        HWND fallback = nullptr;
+    } search{overlay, appId, executable};
+
+    EnumWindows([](HWND window, LPARAM context) -> BOOL {
+        auto& match = *reinterpret_cast<Search*>(context);
+        if (window == match.overlay || !IsWindowVisible(window) || GetWindow(window, GW_OWNER)) return TRUE;
+        DWORD cloaked = 0;
+        if (SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) return TRUE;
+
+        winrt::com_ptr<IPropertyStore> properties;
+        if (SUCCEEDED(SHGetPropertyStoreForWindow(window, IID_PPV_ARGS(properties.put())))) {
+            PROPVARIANT id{};
+            const bool same = SUCCEEDED(properties->GetValue(PKEY_AppUserModel_ID, &id)) &&
+                id.vt == VT_LPWSTR && id.pwszVal && _wcsicmp(id.pwszVal, match.appId.c_str()) == 0;
+            PropVariantClear(&id);
+            if (same) {
+                match.exact = window;
+                return FALSE;
+            }
+        }
+
+        DWORD pid = 0;
+        GetWindowThreadProcessId(window, &pid);
+        const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!process) return TRUE;
+        wchar_t id[APPLICATION_USER_MODEL_ID_MAX_LENGTH]{};
+        UINT32 idSize = static_cast<UINT32>(std::size(id));
+        const bool sameId = GetApplicationUserModelId(process, &idSize, id) == ERROR_SUCCESS &&
+            _wcsicmp(id, match.appId.c_str()) == 0;
+        wchar_t path[1024]{};
+        DWORD pathSize = static_cast<DWORD>(std::size(path));
+        const bool hasPath = QueryFullProcessImageNameW(process, 0, path, &pathSize) != FALSE;
+        CloseHandle(process);
+        if (sameId || (hasPath && _wcsicmp(path, match.appId.c_str()) == 0)) {
+            match.exact = window;
+            return FALSE;
+        }
+        if (hasPath && !match.fallback) {
+            const auto* slash = wcsrchr(path, L'\\');
+            if (_wcsicmp(slash ? slash + 1 : path, match.executable.c_str()) == 0) match.fallback = window;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&search));
+
+    const auto window = search.exact ? search.exact : search.fallback;
+    if (!window) return false;
+    if (IsIconic(window)) ShowWindowAsync(window, SW_RESTORE);
+    return SetForegroundWindow(window) != FALSE;
 }
 
 CaptureActivity readCaptureActivity() {

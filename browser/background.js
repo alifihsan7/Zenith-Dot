@@ -48,9 +48,16 @@ function publish() {
       }, 5000);
     });
     host.onMessage.addListener((command) => {
-      if (!["toggle", "seek"].includes(command?.action)) return;
+      if (!["toggle", "seek", "activate"].includes(command?.action)) return;
       const target = tabs().get(command.id);
-      if (target) target.port.postMessage(command);
+      if (!target) return;
+      if (command.action === "activate") {
+        chrome.tabs.update(target.id, { active: true })
+          .then(tab => chrome.windows.update(tab.windowId, { focused: true }))
+          .catch(() => {}); // The tab or window may have closed since the last snapshot.
+      } else {
+        target.port.postMessage(command);
+      }
     });
     heartbeat = setInterval(publish, 5000);
   }

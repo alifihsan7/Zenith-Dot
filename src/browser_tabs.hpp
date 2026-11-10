@@ -17,6 +17,7 @@ public:
     MediaState combine(MediaState const& native) const;
     void control(std::wstring const& source, MediaCommand command) const;
     void seek(std::wstring const& source, double seconds) const;
+    void activate(std::wstring const& source) const;
 
 private:
     struct Tab {

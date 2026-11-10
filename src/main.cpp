@@ -215,6 +215,10 @@ void App::run(IslandCommand const& command) {
         if (browserTabs_.select(command.appId)) updateMedia();
         else if (monitor_) monitor_->select(command.appId);
         break;
+    case IslandCommand::Kind::openSource:
+        if (!media_.sourceId.empty()) browserTabs_.activate(media_.sourceId);
+        else activateMediaWindow(window_, media_.appId);
+        break;
     case IslandCommand::Kind::retryLyrics: if (lyrics_) lyrics_->retry(); break;
     case IslandCommand::Kind::editScratchpad:
         if (const auto bounds = island_.scratchEditorRect()) {

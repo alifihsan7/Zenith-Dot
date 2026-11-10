@@ -25,7 +25,12 @@ constexpr float pillCenterY = pillTop + pillHeight / 2;
 constexpr float pillLeft = -pillWidth / 2;
 constexpr float dotSize = 12;
 constexpr float panelWidth = 369;
-constexpr float mediaPanelHeight = 236;
+constexpr float mediaPanelWidth = 344;
+constexpr float mediaPanelHeight = 181;
+constexpr float mediaIdleHeight = 88;
+constexpr float mediaTitleWidth = 182;
+constexpr size_t sourceColumns = 8;
+constexpr size_t visibleSources = 2 * sourceColumns;
 constexpr float maxLyricsWidth = 338;
 constexpr float panelRadius = 22;
 constexpr float padTop = 13;
@@ -348,10 +353,11 @@ void releasedPath(PathBuilder& path, float left, float bx, float q, float bubble
         .curve(flip(hB), flip(hT2), T2).curve(hT2, hB, B).close();
 }
 
-std::wstring timestamp(double seconds) {
+std::wstring timestamp(double seconds, bool showHours = false) {
     const auto total = static_cast<long long>(std::max(0.0, seconds));
-    const auto remainder = total % 60;
-    return std::to_wstring(total / 60) + (remainder < 10 ? L":0" : L":") + std::to_wstring(remainder);
+    const auto padded = [](long long value) { return (value < 10 ? L"0" : L"") + std::to_wstring(value); };
+    if (showHours) return std::to_wstring(total / 3600) + L":" + padded(total / 60 % 60) + L":" + padded(total % 60);
+    return std::to_wstring(total / 60) + L":" + padded(total % 60);
 }
 
 // "SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify" -> "Spotify", "Spotify.exe" -> "Spotify".
@@ -446,6 +452,8 @@ void Island::setMedia(MediaState const& media) {
     if (pressed_ == Hit::source && (pressedIndex_ >= media.sources.size() || pressedIndex_ >= media_.sources.size() ||
         media.sources[pressedIndex_].appId != media_.sources[pressedIndex_].appId ||
         media.sources[pressedIndex_].id != media_.sources[pressedIndex_].id)) pressed_ = Hit::none;
+    if (pressed_ == Hit::cover && (media_.appId != media.appId || media_.sourceId != media.sourceId)) pressed_ = Hit::none;
+    if (!media.hasSession || media.sources.size() < 2) sourcePickerOpen_ = false;
     // The media screen changes height when a session comes or goes; animate that like a screen change.
     if (open_ && screen_ == Screen::media && media.hasSession != media_.hasSession) {
         heightFrom_ = panelHeight(now);
@@ -598,7 +606,7 @@ float Island::panelValue(Clock::time_point now) const {
 
 float Island::screenHeight(Screen screen) const {
     switch (screen) {
-    case Screen::media: return media_.hasSession ? mediaPanelHeight : 146;
+    case Screen::media: return media_.hasSession ? mediaPanelHeight : mediaIdleHeight;
     case Screen::timers: return 238;
     case Screen::scratch: return 216.0f;
     case Screen::drop: return 249.0f;
@@ -612,7 +620,8 @@ float Island::panelHeight(Clock::time_point now) const {
 }
 
 float Island::panelWidthAt(Clock::time_point now) const {
-    const float width = screen_ == Screen::media && media_.hasSession && lyricsOpen_ ? panelWidth + lyricsWidth_ : panelWidth;
+    const float width = screen_ == Screen::media
+        ? mediaPanelWidth + (media_.hasSession && lyricsOpen_ ? lyricsWidth_ : 0) : panelWidth;
     return animate_ ? std::lerp(widthFrom_, width, panelEase(progress(widthStart_, panelTime, now))) : width;
 }
 
@@ -818,6 +827,7 @@ void Island::setOpen(bool open, Clock::time_point now) {
                   pillAmount(now) >= 1 && pillContent_ == PillMode::media &&
                   !pillLyric_.layout && !previousPillLyric_.layout;
     open_ = open;
+    sourcePickerOpen_ = false;
     if (!open && !suppressed_) idlePillUntil_ = now + idlePillHold + (animate_ ? panelCloseTime : 0ms);
     updateLyricVisibility(lyricsVisible, now);
     if (!open) panelPinned_ = false;
@@ -838,6 +848,7 @@ void Island::showScreen(Screen screen, Clock::time_point now) {
     keepHeight_ = std::max(keepHeight_, heightFrom_);
     screenFrom_ = screen_;
     screen_ = screen;
+    sourcePickerOpen_ = false;
     if (screen == Screen::media) preferredPill_ = PillMode::media;
     if (screen == Screen::timers) preferredPill_ = quickView_ ? PillMode::timer : PillMode::focus;
     updateLyricVisibility(lyricsVisible, now);
@@ -1061,6 +1072,16 @@ void Island::updateLyricVisibility(bool wasVisible, Clock::time_point now) {
 
 bool Island::scroll(POINT client, int delta) {
     const auto point = stagePoint(client);
+    if (sourcePickerOpen_ && inside(sourceMenuRect_, point)) {
+        const size_t rows = (media_.sources.size() + sourceColumns - 1) / sourceColumns;
+        const int limit = static_cast<int>(rows > 2 ? rows - 2 : 0);
+        sourceWheelRemainder_ += delta;
+        const int steps = sourceWheelRemainder_ / WHEEL_DELTA;
+        sourceWheelRemainder_ %= WHEEL_DELTA;
+        const int row = static_cast<int>(sourceOffset_ / sourceColumns);
+        sourceOffset_ = static_cast<size_t>(std::clamp(row - steps, 0, limit)) * sourceColumns;
+        return steps != 0;
+    }
     if (open_ && screen_ == Screen::drop && dropItems_.size() > visibleDropRows && inside(dropViewport_, point)) {
         wheelRemainder_ = 0;
         dropWheelRemainder_ += delta;
@@ -1123,6 +1144,8 @@ bool Island::scrollLyrics(int delta) {
 bool Island::pointerDown(POINT client) {
     const auto point = stagePoint(client);
     const auto target = targetAt(point);
+    if (sourcePickerOpen_ && (!target || (target->hit != Hit::sourcePicker &&
+        target->hit != Hit::source && target->hit != Hit::sourceMenu))) sourcePickerOpen_ = false;
     if (!target) return false;
     if (target->hit == Hit::pill) {
         setOpen(true, Clock::now());
@@ -1161,7 +1184,14 @@ IslandCommand Island::pointerUp(POINT client) {
     case Hit::previous: command.kind = IslandCommand::Kind::previous; break;
     case Hit::toggle: command.kind = IslandCommand::Kind::toggle; break;
     case Hit::next: command.kind = IslandCommand::Kind::next; break;
+    case Hit::cover: command.kind = IslandCommand::Kind::openSource; break;
+    case Hit::sourcePicker:
+        sourcePickerOpen_ = !sourcePickerOpen_;
+        sourceOffset_ = 0;
+        sourceWheelRemainder_ = 0;
+        break;
     case Hit::source:
+        sourcePickerOpen_ = false;
         if (index < media_.sources.size()) {
             command.kind = IslandCommand::Kind::selectSource;
             const auto& source = media_.sources[index];
@@ -1707,6 +1737,7 @@ void Island::drawPanel(Clock::time_point now, float value, float amount, bool mo
         drawScreen(screen_, content, now, artOpacity, morphTitle, recordPanel_);
     }
     drawNav(full, recordPanel_);
+    if (recordPanel_ && sourcePickerOpen_) drawSourceMenu(content);
     popLayer();
 
     if (morphTitle) drawSharedTitle(content, value);
@@ -1727,32 +1758,54 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
     const float x = panel.left;
     const float y = panel.top;
     if (!media_.hasSession) {
-        text(L"Not Playing", headingCenterFont_.get(), box(x + padX, y + padTop, innerWidth, 88), rgb(mutedColor));
+        text(L"Not Playing", bodyFont_.get(), box(x + padX, y + padTop, mediaPanelWidth - 2 * padX, 24), rgb(mutedColor));
         return;
     }
-    // Track: cover, title, artist.
-    drawArt(box(x + 14, y + 13, 44, 44), artOpacity);
-    if (!hideTitle) text(title(), titleFont_.get(), box(x + 68, y + 15.4f, 247, 22.4f), rgb(inkColor));
+    constexpr float mediaInnerWidth = mediaPanelWidth - 2 * padX;
+    const auto cover = box(x + 14, y + 12, 44, 44);
+    drawArt(cover, artOpacity);
+    if (!media_.appId.empty()) {
+        if (hovered(Hit::cover) || pressed(Hit::cover))
+            target_->DrawRoundedRectangle(rounded(cover, 8), ink(accent_), 1);
+        if (record) addTarget(cover, Hit::cover);
+    }
+    if (!hideTitle) text(title(), titleFont_.get(), box(x + 68, y + 14.4f, mediaTitleWidth, 22.4f), rgb(inkColor));
     const auto& detail = media_.artist.empty() ? media_.album : media_.artist;
-    text(detail, bodyFont_.get(), box(x + 68, y + 37.8f, 247, 16.8f), rgb(mutedColor));
+    text(detail, bodyFont_.get(), box(x + 68, y + 36.8f, mediaTitleWidth, 16.8f), rgb(mutedColor));
 
-    const auto lyricButton = box(x + 321, y + 17, 34, 34);
+    if (!media_.sources.empty()) {
+        const auto selected = std::ranges::find_if(media_.sources, [this](MediaSource const& source) {
+            return source.id == media_.sourceId && source.appId == media_.appId;
+        });
+        const auto& source = selected != media_.sources.end() ? *selected : media_.sources.front();
+        const auto picker = box(x + 258, y + 17, 38, 34);
+        const bool multiple = media_.sources.size() > 1;
+        if (multiple) {
+            drawButton(picker, L"", Hit::sourcePicker, record, 0, sourcePickerOpen_);
+            const auto color = ink(rgb(mutedColor));
+            target_->DrawLine(pt(picker.right - 12, y + 33), pt(picker.right - 8, y + 37), color, 1);
+            target_->DrawLine(pt(picker.right - 8, y + 37), pt(picker.right - 4, y + 33), color, 1);
+        }
+        drawSourceIcon(source, pt(picker.left + (multiple ? 11 : 19), y + 34));
+    }
+
+    const auto lyricButton = box(x + 302, y + 17, 28, 34);
     if (lyricsOpen_ || hovered(Hit::lyrics) || pressed(Hit::lyrics)) {
         target_->FillRoundedRectangle(rounded(lyricButton, 7), ink(white(0.10f)));
     }
-    drawLyricsGlyph(pt(lyricButton.left + 9, lyricButton.top + 9), lyricsOpen_ ? rgb(readoutColor) : rgb(inkColor));
+    drawLyricsGlyph(pt(lyricButton.left + 6, lyricButton.top + 9), lyricsOpen_ ? rgb(readoutColor) : rgb(inkColor));
     if (record) addTarget(lyricButton, Hit::lyrics);
 
     // Timeline.
-    const auto rail = box(x + 14, y + 69, innerWidth, 15);
+    const auto rail = box(x + padX, y + 61, mediaInnerWidth, 15);
     timelineRect_ = rail;
     const float middle = rail.top + 7.5f;
     const bool timed = media_.duration > 0;
     const double position = media_.positionAt(now);
     const float fraction = dragging_ ? dragFraction_ : timed ? static_cast<float>(position / media_.duration) : 0;
-    target_->FillRoundedRectangle(rounded(box(rail.left, middle - 2, innerWidth, 4), 2), ink(white(0.18f)));
+    target_->FillRoundedRectangle(rounded(box(rail.left, middle - 2, mediaInnerWidth, 4), 2), ink(white(0.18f)));
     if (timed) {
-        const float end = rail.left + innerWidth * fraction;
+        const float end = rail.left + mediaInnerWidth * fraction;
         target_->FillRoundedRectangle(rounded(D2D1::RectF(rail.left, middle - 2, end, middle + 2), 2), ink(accent_));
         if (media_.canSeek) {
             const float knob = dragging_ || hovered(Hit::timeline) ? 7.0f : 6.0f;
@@ -1760,15 +1813,17 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
             if (record) addTarget(grow(rail, 0, 4), Hit::timeline);
         }
         const double shown = dragging_ ? fraction * media_.duration : position;
-        text(timestamp(shown), monoFont_.get(), box(x + 14, y + 84, 170, 14), rgb(mutedColor));
-        text(timestamp(media_.duration), monoEndFont_.get(), box(x + 185, y + 84, 170, 14), rgb(mutedColor));
+        const bool showHours = media_.duration >= 3600;
+        text(timestamp(shown, showHours), monoFont_.get(), box(rail.left, y + 76, mediaInnerWidth / 2, 14), rgb(mutedColor));
+        text(timestamp(media_.duration, showHours), monoEndFont_.get(),
+             box(rail.left + mediaInnerWidth / 2, y + 76, mediaInnerWidth / 2, 14), rgb(mutedColor));
     } else {
-        text(L"Live", monoFont_.get(), box(x + 14, y + 84, 170, 14), rgb(mutedColor));
+        text(L"Live", monoFont_.get(), box(rail.left, y + 76, mediaInnerWidth / 2, 14), rgb(mutedColor));
     }
 
     // Transport: previous, play/pause on an accent disc, next.
-    const float middleY = y + 122;
-    const float centerX = x + panelWidth / 2;
+    const float middleY = y + 112;
+    const float centerX = x + mediaPanelWidth / 2;
     const Hit buttons[]{Hit::previous, Hit::toggle, Hit::next};
     const auto onAccent = mixColor(accent_, D2D1::ColorF(0, 0, 0), 0.86f);
     for (int i = 0; i < 3; ++i) {
@@ -1798,35 +1853,50 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
         if (record && enabled) addTarget(box(c.x - 18, c.y - 18, 36, 36), buttons[i]);
     }
 
-    // Sources: one round button per app with a media session, marked by its logo.
-    target_->FillRectangle(box(x + padX, y + 148, innerWidth, 1), ink(white(0.12f)));
-    for (size_t i = 0; i < media_.sources.size() && i < 10; ++i) {
+    if (panel.right - panel.left > mediaPanelWidth) {
+        drawLyrics(panel, now, dragging_ ? dragFraction_ * media_.duration : position);
+    }
+}
+
+void Island::drawSourceIcon(MediaSource const& source, D2D1_POINT_2F c) {
+    if (auto* logo = icon(source.appId); logo && bitmap(*logo)) {
+        target_->DrawBitmap(logo->bitmap.get(), box(c.x - 9, c.y - 9, 18, 18), 1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    } else {
+        target_->FillEllipse(D2D1::Ellipse(c, 9, 9), ink(white(0.16f)));
+        const auto name = appName(source.appId);
+        text(name.substr(0, 1), letterFont_.get(), box(c.x - 9, c.y - 9, 18, 18), rgb(inkColor));
+    }
+    if (source.tabNumber > 0) {
+        const auto badge = pt(c.x + 8, c.y + 8);
+        target_->FillEllipse(D2D1::Ellipse(badge, 6, 6), ink(rgb(0x253347)));
+        text(std::to_wstring(source.tabNumber), letterFont_.get(), box(badge.x - 6, badge.y - 6, 12, 12), rgb(inkColor));
+    }
+}
+
+void Island::drawSourceMenu(D2D1_RECT_F panel) {
+    const size_t total = media_.sources.size();
+    const size_t rows = (total + sourceColumns - 1) / sourceColumns;
+    sourceOffset_ = std::min(sourceOffset_, rows > 2 ? (rows - 2) * sourceColumns : 0);
+    const size_t count = std::min(visibleSources, total - sourceOffset_);
+    const float width = 12 + 34 * static_cast<float>(std::min(count, sourceColumns));
+    const float height = 12 + 34 * static_cast<float>((count + sourceColumns - 1) / sourceColumns);
+    sourceMenuRect_ = box(panel.left + 296 - width, panel.top + 55, width, height);
+    target_->FillRoundedRectangle(rounded(sourceMenuRect_, 9), ink(rgb(0x1c1b20)));
+    target_->DrawRoundedRectangle(rounded(sourceMenuRect_, 9), ink(white(0.18f)), 1);
+    addTarget(sourceMenuRect_, Hit::sourceMenu);
+    for (size_t slot = 0; slot < count; ++slot) {
+        const size_t i = sourceOffset_ + slot;
         const auto& source = media_.sources[i];
-        const auto rect = box(x + 14 + static_cast<float>(i) * 34, y + 155, 30, 30);
+        const auto rect = box(sourceMenuRect_.left + 8 + static_cast<float>(slot % sourceColumns) * 34,
+                              sourceMenuRect_.top + 8 + static_cast<float>(slot / sourceColumns) * 34, 30, 30);
         const D2D1_POINT_2F c{rect.left + 15, rect.top + 15};
         if (pressed(Hit::source, i)) target_->FillEllipse(D2D1::Ellipse(c, 15, 15), ink(white(0.14f)));
         else if (hovered(Hit::source, i)) target_->FillEllipse(D2D1::Ellipse(c, 15, 15), ink(white(0.08f)));
         const bool selected = source.id.empty() ? media_.sourceId.empty() && source.appId == media_.appId :
                                                  source.id == media_.sourceId;
         if (selected) target_->DrawEllipse(D2D1::Ellipse(c, 14.5f, 14.5f), ink(accent_), 1);
-        if (auto* logo = icon(source.appId); logo && bitmap(*logo)) {
-            target_->DrawBitmap(logo->bitmap.get(), box(c.x - 9, c.y - 9, 18, 18), 1,
-                                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        } else {
-            target_->FillEllipse(D2D1::Ellipse(c, 9, 9), ink(white(0.16f)));
-            const auto name = appName(source.appId);
-            text(name.substr(0, 1), letterFont_.get(), box(c.x - 9, c.y - 9, 18, 18), rgb(inkColor));
-        }
-        if (source.tabNumber > 0) {
-            const auto badge = pt(c.x + 10, c.y + 10);
-            target_->FillEllipse(D2D1::Ellipse(badge, 7, 7), ink(rgb(0x253347)));
-            text(std::to_wstring(source.tabNumber), letterFont_.get(), box(badge.x - 7, badge.y - 7, 14, 14),
-                 rgb(inkColor));
-        }
-        if (record) addTarget(rect, Hit::source, i);
-    }
-    if (panel.right - panel.left > panelWidth) {
-        drawLyrics(panel, now, dragging_ ? dragFraction_ * media_.duration : position);
+        drawSourceIcon(source, c);
+        addTarget(rect, Hit::source, i);
     }
 }
 
@@ -1866,7 +1936,7 @@ void Island::prepareLyricLayout(float width) {
 
 void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double position) {
     if (!lyrics_) return;
-    const float x = panel.left + panelWidth + 8, y = panel.top + 16;
+    const float x = panel.left + mediaPanelWidth + 8, y = panel.top + 16;
     const float width = lyricsWidth_ - padX - 8;
     constexpr float viewportHeight = mediaPanelHeight - 16 - 34 - padX;
     text(L"Lyrics", titleFont_.get(), box(x, y, width, 22), rgb(inkColor));
@@ -2105,11 +2175,12 @@ void Island::drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color
 }
 
 void Island::drawNav(D2D1_RECT_F panel, bool record) {
+    const float navWidth = screen_ == Screen::media ? mediaPanelWidth : panelWidth;
     const float top = panel.bottom - padBottom - navHeight;
     drawCaptureIndicators(pt(panel.left + padX + 26, top + navHeight / 2),
                           microphoneColor_ ? 1.0f : 0.0f, cameraColor_ ? 1.0f : 0.0f);
     constexpr auto count = std::size(screens);
-    const float start = panel.left + panelWidth / 2 - (count * 35 + (count - 1) * 8) / 2.0f;
+    const float start = panel.left + navWidth / 2 - (count * 35 + (count - 1) * 8) / 2.0f;
     const Hit hits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem};
     for (size_t i = 0; i < count; ++i) {
         const auto rect = box(start + static_cast<float>(i) * 43, top, 35, navHeight);
@@ -2120,7 +2191,7 @@ void Island::drawNav(D2D1_RECT_F panel, bool record) {
         drawScreenGlyph(screens[i], rect, color);
         if (record) addTarget(rect, hits[i]);
     }
-    const auto pin = box(panel.left + panelWidth - padX - 34, top + 1, 34, 29);
+    const auto pin = box(panel.left + navWidth - padX - 34, top + 1, 34, 29);
     drawButton(pin, L"", Hit::panelPin, record);
     const bool pinned = panelPinned();
     const auto color = pinned ? accent_ : rgb(inkColor);
@@ -2139,8 +2210,8 @@ void Island::drawSharedTitle(D2D1_RECT_F panel, float value) {
     // The title is drawn at its panel size and scaled down to the pill's 12px at the start.
     const float scale = std::lerp(12.0f / 16.0f, 1.0f, value);
     const float x = std::lerp(pillLeft + 28, panel.left + 68, value);
-    const float y = std::lerp(pillCenterY - 22.4f * 0.75f / 2, panel.top + 15.4f, value);
-    const float width = std::lerp(82.0f / 0.75f, 247.0f, value);
+    const float y = std::lerp(pillCenterY - 22.4f * 0.75f / 2, panel.top + 14.4f, value);
+    const float width = std::lerp(82.0f / 0.75f, mediaTitleWidth, value);
     target_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) * D2D1::Matrix3x2F::Translation(x, y) * base_);
     text(title(), titleFont_.get(), box(0, 0, width, 22.4f), rgb(inkColor));
     target_->SetTransform(base_);
@@ -2456,7 +2527,7 @@ void Island::draw(HWND window) {
     winrt::check_bool(GetMonitorInfoW(monitor, &monitorInfo));
     const auto work = monitorInfo.rcWork;
     const float workWidth = (work.right - work.left) / scale_;
-    lyricsWidth_ = std::clamp(workWidth - panelWidth - 2 * shadowReach,
+    lyricsWidth_ = std::clamp(workWidth - mediaPanelWidth - 2 * shadowReach,
                               130.0f, maxLyricsWidth);
     const float opacity = visibility(now);
     anchor_ = {work.left + (work.right - work.left) / 2, work.top - std::lround((1 - opacity) * 14 * scale_)};
@@ -2470,7 +2541,7 @@ void Island::draw(HWND window) {
     const bool switchingScreen = screenFrom_ != screen_ && progress(screenStart_, panelTime, now) < 1;
     const bool morphTitle = shareTitle_ && screen_ == Screen::media && media_.hasSession &&
                             !switchingScreen && value > 0 && value < 1;
-    if (!panelVisible || panelWidthAt(now) <= panelWidth) lyricLayout_ = nullptr;
+    if (!panelVisible || panelWidthAt(now) <= mediaPanelWidth) lyricLayout_ = nullptr;
 
     // The surface only covers what is drawn this frame.
     const auto compact = compactShape(now, amount);
@@ -2498,6 +2569,7 @@ void Island::draw(HWND window) {
     scratchEditor_.reset();
     lyricViewport_ = {};
     dropViewport_ = {};
+    sourceMenuRect_ = {};
     panelWheel_ = {};
     closingPanel_ = {};
     layerDepth_ = 0;

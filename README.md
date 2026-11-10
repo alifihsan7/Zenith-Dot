@@ -2,7 +2,7 @@
 
 A Windows 11 overlay that sits as a dot at the top center of the primary display. When a Windows media session plays, the dot grows into a pill with the track title and a waveform. After five seconds paused, it shrinks back to the dot. Hover the pill or the dot to open the panel:
 
-- **Now Playing:** cover, title, artist, a seekable timeline, playback controls, and one button per app with a media session. Open **Lyrics** with the music note beside the title.
+- **Now Playing:** cover, title, artist, a seekable timeline, and playback controls. Click the cover to return to the media app. Click the source logo beside **Lyrics** to switch between apps or browser tabs. The source picker opens over the panel. With no media session, the shorter **Not Playing** panel keeps the feature tabs available.
 - **Timers:** choose Focus, Break, or Quick Timer from one tab. Focus and Break start at 25 and 5 minutes. Quick Timer offers 1, 5, and 10 minute presets, or use − and + to set 1–120 minutes. It can run alongside a Focus or Break countdown. The pill shows the selected active timer.
 - **Scratchpad:** one note that saves locally as you type. While editing, press Esc to close the panel and return focus to the previous app.
 - **Drop Zone.** Drop files from Explorer or text from another app onto the island. Each file gets its own row, and new drops join the existing items. Drag a row to another app, use × to remove it, or choose **Clear all**. The list holds up to 64 items in memory until Zenith Dot exits.
@@ -52,7 +52,7 @@ Chrome, Edge, and Brave publish a shared Windows media session for ordinary tabs
 2. Open `chrome://extensions`, `edge://extensions`, or `brave://extensions`. Turn on Developer mode, choose **Load unpacked**, and select the package's `browser` folder. If the extension is already installed from another folder, replace it with the copy from this package.
 3. Reload existing media tabs. Play two HTML media streams and hover Zenith Dot. Click a numbered browser logo to select that tab, then use play/pause or the seek bar where the media supports it.
 
-The extension sends playback metadata and timing to the local native messaging host. It starts the companion when it has media to report. Previous and Next are available through Windows media sessions. Browser tab controls use the page's HTML audio or video element. If Windows reports different artwork metadata for a browser tab, Zenith Dot shows the browser icon until the track details match.
+The extension sends playback metadata and timing to the local native messaging host. It starts the companion when it has media to report. Clicking the cover activates the selected browser tab and its window. Without the extension, the cover can return to the browser window Windows reports as the media source. Previous and Next are available through Windows media sessions. Browser tab controls use the page's HTML audio or video element. If Windows reports different artwork metadata for a browser tab, Zenith Dot shows the browser icon until the track details match.
 
 ## Lyrics
 
@@ -87,7 +87,8 @@ Temporary connection or service failures are retried automatically. If the looku
 - Play tracks with differently coloured covers. The waveform and progress bar should fade to a colour from each cover, with a faint tint in the panel's lower-right corner. A greyscale cover or a player without artwork should fall back to light blue.
 - Type in another app, then hover and click the island (including Previous, Pause, and Next). Focus and the caret must stay in that app. Right-click the island, close the menu, and confirm focus returns to the app.
 - Hover the pill: the panel opens after a short delay. The title moves into place, while the cover fades in and out at its fixed position inside the panel. Move a little past the panel's edge and it should stay open, then close once the pointer is well away. Click outside it to close it right away.
-- Switch between Now Playing, Timers, and System. Drag the timeline to seek where the player allows it. With two players open, click the other app's logo to show it.
+- Switch between Now Playing, Timers, and System. With several players open, click the logo beside Lyrics and pick another source. Check that the panel stays the same height. Click the cover to return to the selected app or tab.
+- Check a video longer than an hour. Both timeline timestamps should use hours. Close all media sources and confirm that **Not Playing** still shows the feature tabs in a shorter panel.
 - Open Timers, adjust Focus and Break, then switch to Quick Timer while Focus is running and start a second countdown. Check each timer's pill, pause/resume, and completion bubble. Close and reopen the panel and check that the last timer view returns.
 - Open System and switch the Windows default audio output. Check the displayed name and the Sound Settings link. Turn on Windows Do Not Disturb, check the notification row, then copy ordinary text and verify that the **Copied** bubble still appears.
 - Open Scratchpad, click the pin icon, and type a note. Switch to another app and confirm Scratchpad stays visible. Switch to Focus and System and check that the pin stays on. Unpin, close the panel, and hover again to check that System returns. Repeat with Lyrics open and manually scrolled. Reopen the editor, press Esc, and check that focus returns to the previous app. Restart Zenith Dot and confirm the note reloads.

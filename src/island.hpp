@@ -26,7 +26,7 @@ namespace zenith {
 
 // Something a click on the island asks the app to do.
 struct IslandCommand {
-    enum class Kind { none, previous, toggle, next, seek, selectSource, retryLyrics, editScratchpad,
+    enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, editScratchpad,
                       audioPicker, notificationSettings, removeDrop, clearDrop };
     Kind kind = Kind::none;
     double seconds = 0;
@@ -99,7 +99,7 @@ public:
     bool overControl() const;
 
 private:
-    enum class Hit { none, pill, previous, toggle, next, timeline, source, navMedia, navTimers,
+    enum class Hit { none, pill, previous, toggle, next, timeline, cover, sourcePicker, sourceMenu, source, navMedia, navTimers,
                      navScratch, navSystem, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
                      timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, panelPin, audioPicker, notificationSettings };
@@ -174,6 +174,8 @@ private:
     void drawPanel(Clock::time_point now, float value, float amount, bool morphTitle);
     void drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record);
     void drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record);
+    void drawSourceIcon(MediaSource const& source, D2D1_POINT_2F center);
+    void drawSourceMenu(D2D1_RECT_F panel);
     void drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double position);
     void prepareLyricLayout(float width);
     void drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record);
@@ -268,6 +270,10 @@ private:
     float widthFrom_ = 0;
     Clock::time_point widthStart_{};
     bool lyricsOpen_ = false;
+    bool sourcePickerOpen_ = false;
+    size_t sourceOffset_ = 0;
+    int sourceWheelRemainder_ = 0;
+    D2D1_RECT_F sourceMenuRect_{};
     bool scratchEditing_ = false;
     bool dropHover_ = false;
     bool popupOpen_ = false;

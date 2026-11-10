@@ -22,6 +22,7 @@ struct AudioOutput {
 };
 
 bool fullscreenOnPrimary(HWND overlay);
+bool activateMediaWindow(HWND overlay, std::wstring const& appId);
 CaptureActivity readCaptureActivity();
 
 class DesktopMonitor {

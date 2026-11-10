@@ -262,4 +262,8 @@ void BrowserTabs::seek(std::wstring const& source, double seconds) const {
     send(source, L"seek", seconds);
 }
 
+void BrowserTabs::activate(std::wstring const& source) const {
+    send(source, L"activate", 0);
+}
+
 }
