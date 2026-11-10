@@ -70,7 +70,7 @@ public:
     void retryArtwork();
     winrt::Windows::Foundation::IAsyncAction control(MediaCommand command);
     winrt::Windows::Foundation::IAsyncAction seek(double seconds);
-    // Shows and controls this app's session until another app starts playing.
+    // Shows and controls this app's session until the user switches or the session closes.
     void select(std::wstring const& appId);
 
 private:

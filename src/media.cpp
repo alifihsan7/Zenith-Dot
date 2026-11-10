@@ -159,14 +159,14 @@ bool MediaMonitor::selectSession() {
         return isPlaying(entry.session);
     });
     Session next{nullptr};
-    // A source the user picked stays shown until another app starts playing.
+    // Keep the user's selection while its session exists, even if another app is playing.
     if (!preferred_.empty()) {
         Session picked{nullptr};
         for (const auto& entry : sessions_) {
             if (appIdOf(entry.session) != preferred_) continue;
             if (!picked || isPlaying(entry.session)) picked = entry.session;
         }
-        if (picked && (isPlaying(picked) || playing == sessions_.end())) {
+        if (picked) {
             next = picked;
         } else {
             preferred_.clear();

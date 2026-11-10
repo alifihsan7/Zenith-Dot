@@ -2,7 +2,7 @@
 
 A Windows 11 overlay that sits as a dot at the top center of the primary display. When a Windows media session plays, the dot grows into a pill with the track title and a waveform. After five seconds paused, it shrinks back to the dot. Hover the pill or the dot to open the panel:
 
-- **Now Playing:** cover, title, artist, a seekable timeline, and playback controls. Click the cover to return to the media app. Click the source logo beside **Lyrics** to switch between apps or browser tabs. The source picker opens over the panel. With no media session, the shorter **Not Playing** panel keeps the feature tabs available.
+- **Now Playing:** cover, title, artist, a seekable timeline, and playback controls. Click the cover to return to the media app. Click the source logo beside **Lyrics** to switch between apps or browser tabs. Your selected source stays visible while its session is open, even if another player is running. With no media session, the shorter **Not Playing** panel keeps the feature tabs available.
 - **Timers:** choose Focus, Break, or Quick Timer from one tab. Focus and Break start at 25 and 5 minutes. Quick Timer offers 1, 5, and 10 minute presets, or use − and + to set 1–120 minutes. It can run alongside a Focus or Break countdown. The pill shows the selected active timer.
 - **Scratchpad:** one note that saves locally as you type. While editing, press Esc to close the panel and return focus to the previous app.
 - **Drop Zone.** Drop files from Explorer or text from another app onto the island. Each file gets its own row, and new drops join the existing items. Drag a row to another app, use × to remove it, or choose **Clear all**. The list holds up to 64 items in memory until Zenith Dot exits.
@@ -81,7 +81,7 @@ Temporary connection or service failures are retried automatically. If the looku
 
 ## Verify on Windows 11
 
-- Start Spotify or YouTube in a browser that publishes a Windows media session. Check track metadata and playback progress where the player provides them. Try Previous, Pause, and Next, then resume from the tray. If one player pauses while another is still playing, verify the island switches to the playing session.
+- Start Spotify or YouTube in a browser that publishes a Windows media session. Check track metadata and playback progress where the player provides them. Try Previous, Pause, and Next, then resume from the tray. While one player is playing, manually select a paused source. Verify that Zenith stays on the selected source and directs playback controls to it. Close that source and check that automatic selection resumes.
 - Switch tracks in Spotify and return to a recent track. Its cached cover should appear again while Windows refreshes the thumbnail. Verify that a new track never displays the previous track's cover.
 - With the browser extension enabled, pause a YouTube video and hover a recommendation. The pill and panel should keep the main video's title and timeline. Then navigate to another video in the same tab and check that both update together.
 - Play tracks with differently coloured covers. The waveform and progress bar should fade to a colour from each cover, with a faint tint in the panel's lower-right corner. A greyscale cover or a player without artwork should fall back to light blue.
