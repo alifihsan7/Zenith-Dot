@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Zenith Dot Browser Tabs",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Send playback information and controls for individual media tabs to Zenith Dot.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxvKgosaRFU6EO6gq9ZqHWGFOfqAHl9hBz45+KyR6aQM0AVreTMMHp091Khd/ex5Fx8f6gRPW65n/13FpJ+w1BtTmOf/I8N60wWXoqZGFOMxXzP27itHaO2qGmxxuLHrXUYib2Vbc06wJ6MKPDNtxHcEWNyaMRoYwPJZHH/nBsl2+8+JV2Yv5VQ0vBsYlQ4uorFKL4jX3ZblHQ2T7ifxnkJvwZHPFtmh4xZdMF0yrtj/4Sy1y9atqhQ6s8EAflGqgckPmTE5WL+4s0Kuwy2MwPQ3UKQTvpUo7VX1iR629Hy9B+CPefBR28Ju/zBAeajIsZ5OVI7ZzB9SXpyg5xkAhmQIDAQAB",
   "permissions": [

@@ -17,7 +17,7 @@ $manifest = @{
 } | ConvertTo-Json
 [IO.File]::WriteAllText($manifestPath, $manifest, [Text.UTF8Encoding]::new($false))
 
-foreach ($vendor in @('Google\Chrome', 'Microsoft\Edge')) {
+foreach ($vendor in @('Google\Chrome', 'Microsoft\Edge', 'BraveSoftware\Brave-Browser')) {
     $location = "HKCU:\Software\$vendor\NativeMessagingHosts\$hostName"
     New-Item -Path $location -Force | Out-Null
     Set-Item -Path $location -Value $manifestPath

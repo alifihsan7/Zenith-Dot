@@ -11,7 +11,8 @@ Serah terima untuk agent berikutnya (Codex). Isinya posisi kerja terakhir, cara 
 
 ## Lanjut dari sini
 
-- Paket terbaru ada di `out/ZenithDot-ClipboardFix.zip`. Clipboard memproses event Windows langsung meski nomor urut format belum berubah. Tes simulasi event dan clipboard yang sempat terkunci lulus. Aktivasi perangkat, perpindahan output, dan brightness masih perlu dicek di desktop interaktif.
+- Paket terbaru ada di `out/ZenithDot-YouTubeSync.zip`. Ekstensi mendukung Brave dan membaca judul serta timeline dari player utama YouTube. Tes simulasi lulus; setup ekstensi masih perlu dicek di Brave.
+- Transisi tutup lebih pelan dan bisa berbalik saat kursor kembali. Cover fade di dalam panel dan ikon privasi muncul setelah pill melebar. Tes frame dan simulasi Caps Lock serta Num Lock lulus. Tombol fisik dan rasa animasi masih perlu dicek di desktop interaktif.
 - Paket Release lokal ada di `out/ZenithDot-Timers-Unified.zip`. Isinya executable, installer, script setup browser bridge, dan ekstensi unpacked. Preview panel ada di `experiments/zenith-dot-scratchpad.html`.
 - Build Release, simpan catatan UTF-8, pemilihan dua tab dari snapshot, dan routing command extension lulus tes lokal.
 - Cache cover, navigasi scroll, preview fitur, dan timing pill lirik lulus tes lokal. Verifikasi cover yang sesekali hilang di Spotify dan rasa animasi saat playback masih perlu dilakukan di desktop.
@@ -94,7 +95,7 @@ Tidak ada test otomatis. Verifikasi dilakukan langsung di layar user:
 ## Aturan main dari user
 
 - Ngobrol pakai bahasa Indonesia santai (lu/gue).
-- **Commit tanpa trailer Co-Authored-By.** Commit dan push hanya kalau diminta.
+- Commit dan push setiap perubahan yang selesai. Pakai Conventional Commits tanpa trailer `Co-authored-by`.
 - Ide UI baru dirombak dulu di preview `experiments/zenith-dot-vN.html`, baru di-port ke `src/` setelah user setuju. Port V7 sendiri sudah disetujui.
 - "catat" artinya tulis ke `experiments/NOTES.md`. "catat dulu" artinya cuma ditulis, jangan diimplementasi.
 - Update `README.md` (bagian fitur dan langkah verifikasi) serta `experiments/NOTES.md` setiap kali sebuah tahap selesai.

@@ -1,7 +1,7 @@
 const frames = new Map();
-const edge = navigator.userAgentData?.brands?.some(({ brand }) => brand === "Microsoft Edge") ||
-  navigator.userAgent.includes(" Edg/");
-const browser = edge ? "msedge.exe" : "chrome.exe";
+const brands = navigator.userAgentData?.brands?.map(({ brand }) => brand) ?? [];
+const browser = brands.includes("Microsoft Edge") || navigator.userAgent.includes(" Edg/") ? "msedge.exe"
+  : brands.includes("Brave") || navigator.brave ? "brave.exe" : "chrome.exe";
 let host = null;
 let heartbeat = null;
 let reconnect = null;

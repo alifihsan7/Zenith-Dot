@@ -9,7 +9,7 @@ if (Test-Path -LiteralPath $installedExe) {
 }
 
 $hostName = 'com.zenith_dot.browser'
-foreach ($vendor in @('Google\Chrome', 'Microsoft\Edge')) {
+foreach ($vendor in @('Google\Chrome', 'Microsoft\Edge', 'BraveSoftware\Brave-Browser')) {
     $location = "HKCU:\Software\$vendor\NativeMessagingHosts\$hostName"
     if (Test-Path -LiteralPath $location) {
         Remove-Item -LiteralPath $location

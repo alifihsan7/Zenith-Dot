@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iterator>
+#include <map>
 #include <string_view>
 #include <thread>
 
@@ -82,7 +83,17 @@ std::wstring browserName(std::wstring_view app) {
         CompareStringOrdinal(app.data(), static_cast<int>(app.size()), L"MSEdge", -1, TRUE) == CSTR_EQUAL) {
         return L"msedge.exe";
     }
+    if (CompareStringOrdinal(app.data(), static_cast<int>(app.size()), L"brave.exe", -1, TRUE) == CSTR_EQUAL ||
+        CompareStringOrdinal(app.data(), static_cast<int>(app.size()), L"Brave", -1, TRUE) == CSTR_EQUAL) {
+        return L"brave.exe";
+    }
     return {};
+}
+
+bool matchingTrack(MediaState const& session, MediaState const& tab) {
+    return !session.title.empty() && session.title == tab.title &&
+           (session.artist.empty() || tab.artist.empty() || session.artist == tab.artist) &&
+           (session.duration <= 0 || tab.duration <= 0 || std::abs(session.duration - tab.duration) <= 2);
 }
 
 std::wstring text(JsonObject const& object, winrt::hstring const& name) {
@@ -142,7 +153,7 @@ bool BrowserTabs::receive(HWND sender, COPYDATASTRUCT const& message) {
         JsonObject snapshot{nullptr};
         if (!JsonObject::TryParse(winrt::to_hstring(bytes), snapshot)) return false;
         const auto browser = snapshot.GetNamedString(L"browser", L"");
-        if (browser != L"chrome.exe" && browser != L"msedge.exe") return false;
+        if (browser != L"chrome.exe" && browser != L"msedge.exe" && browser != L"brave.exe") return false;
         const auto entries = snapshot.GetNamedArray(L"tabs");
         const auto now = std::chrono::steady_clock::now();
         for (const auto& entry : entries) {
@@ -207,16 +218,16 @@ MediaState BrowserTabs::combine(MediaState const& native) const {
     if (!tab) {
         for (const auto& entry : tabs_) {
             if (native.hasSession && browser != entry.media.appId) continue;
-            if (!native.title.empty() && native.title == entry.media.title) {
+            if (!tab || (entry.media.playing && !tab->media.playing) ||
+                (entry.media.playing == tab->media.playing &&
+                 matchingTrack(native, entry.media) && !matchingTrack(native, tab->media))) {
                 tab = &entry;
-                break;
             }
-            if (!tab || (entry.media.playing && !tab->media.playing)) tab = &entry;
         }
     }
 
     MediaState shown = tab ? tab->media : native;
-    if (tab && browser == shown.appId && !native.title.empty() && native.title == shown.title) {
+    if (tab && browser == shown.appId && matchingTrack(native, shown)) {
         shown.cover = native.cover;
         shown.theme = native.theme;
     }
@@ -225,11 +236,10 @@ MediaState BrowserTabs::combine(MediaState const& native) const {
         const auto app = browserName(source.appId);
         return std::ranges::any_of(tabs_, [&](Tab const& entry) { return app == entry.media.appId; });
     });
-    unsigned chrome = 0, edge = 0;
+    std::map<std::wstring_view, unsigned> counts;
     for (const auto& entry : tabs_) {
         const auto& media = entry.media;
-        auto& count = media.appId == L"chrome.exe" ? chrome : edge;
-        shown.sources.push_back({media.appId, media.playing, media.sourceId, ++count});
+        shown.sources.push_back({media.appId, media.playing, media.sourceId, ++counts[media.appId]});
     }
     return shown;
 }

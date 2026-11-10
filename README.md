@@ -46,13 +46,13 @@ The Scratchpad note is stored in `%LOCALAPPDATA%\Zenith Dot\scratchpad.txt`.
 
 ## Choose between browser tabs
 
-Chrome and Edge publish one shared Windows media session for ordinary tabs. For individual tab controls, use the optional **Zenith Dot Browser Tabs** extension included with the build package.
+Chrome, Edge, and Brave publish a shared Windows media session for ordinary tabs. Use the optional **Zenith Dot Browser Tabs** extension in the build package for individual tab controls and to keep YouTube watch-page titles tied to the main player.
 
 1. Install the current Zenith Dot build and run `.\enable-browser-tabs.ps1` from the package. To use a portable build, pass its executable via `-Executable` and run that same copy of Zenith Dot.
-2. Open `chrome://extensions` or `edge://extensions`. Turn on Developer mode, choose **Load unpacked**, and select the package's `browser` folder.
+2. Open `chrome://extensions`, `edge://extensions`, or `brave://extensions`. Turn on Developer mode, choose **Load unpacked**, and select the package's `browser` folder. If the extension is already installed from another folder, replace it with the copy from this package.
 3. Reload existing media tabs. Play two HTML media streams and hover Zenith Dot. Click a numbered browser logo to select that tab, then use play/pause or the seek bar where the media supports it.
 
-The extension sends playback metadata and timing to the local native messaging host. It starts the companion when it has media to report. Previous and Next are available through Windows media sessions. Browser tab controls use the page's HTML audio or video element.
+The extension sends playback metadata and timing to the local native messaging host. It starts the companion when it has media to report. Previous and Next are available through Windows media sessions. Browser tab controls use the page's HTML audio or video element. If Windows reports different artwork metadata for a browser tab, Zenith Dot shows the browser icon until the track details match.
 
 ## Lyrics
 
@@ -76,16 +76,17 @@ Temporary connection or service failures are retried automatically. If the looku
 | `src/system.*` | CPU and memory use for the System screen |
 | `src/desktop.*` | Fullscreen detection, capture indicators, and Windows volume and brightness events |
 | `src/scratchpad.*` | Native text editor, focus handoff, and local note storage |
-| `src/browser_tabs.*` and `browser/` | Optional Chrome/Edge tab detection and native messaging |
+| `src/browser_tabs.*` and `browser/` | Optional Chrome, Edge, and Brave tab detection and native messaging |
 | `scripts/` | Per-user installation and removal |
 
 ## Verify on Windows 11
 
 - Start Spotify or YouTube in a browser that publishes a Windows media session. Check track metadata and playback progress where the player provides them. Try Previous, Pause, and Next, then resume from the tray. If one player pauses while another is still playing, verify the island switches to the playing session.
 - Switch tracks in Spotify and return to a recent track. Its cached cover should appear again while Windows refreshes the thumbnail. Verify that a new track never displays the previous track's cover.
+- With the browser extension enabled, pause a YouTube video and hover a recommendation. The pill and panel should keep the main video's title and timeline. Then navigate to another video in the same tab and check that both update together.
 - Play tracks with differently coloured covers. The waveform and progress bar should fade to a colour from each cover, with a faint tint in the panel's lower-right corner. A greyscale cover or a player without artwork should fall back to light blue.
 - Type in another app, then hover and click the island (including Previous, Pause, and Next). Focus and the caret must stay in that app. Right-click the island, close the menu, and confirm focus returns to the app.
-- Hover the pill: the panel opens after a short delay, and the cover and title move into place. Move a little past the panel's edge and it should stay open, then close once the pointer is well away. Click outside it to close it right away.
+- Hover the pill: the panel opens after a short delay. The title moves into place, while the cover fades in and out at its fixed position inside the panel. Move a little past the panel's edge and it should stay open, then close once the pointer is well away. Click outside it to close it right away.
 - Switch between Now Playing, Timers, and System. Drag the timeline to seek where the player allows it. With two players open, click the other app's logo to show it.
 - Open Timers, adjust Focus and Break, then switch to Quick Timer while Focus is running and start a second countdown. Check each timer's pill, pause/resume, and completion bubble. Close and reopen the panel and check that the last timer view returns.
 - Open System and switch the Windows default audio output. Check the displayed name and the Sound Settings link. Toggle Do Not Disturb in Windows and check the notification row and bubble behaviour.
