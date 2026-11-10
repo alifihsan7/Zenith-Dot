@@ -4,10 +4,16 @@ Serah terima untuk agent berikutnya (Codex). Isinya posisi kerja terakhir, cara 
 
 ## Posisi sekarang
 
-- Branch `main` di `4f9d681`, sudah di-push ke `origin` (github.com/alifihsan7/Zenith-Dot). Working tree bersih kecuali file ini.
-- Build terbaru sudah ter-install di `%LOCALAPPDATA%\Zenith Dot\ZenithDot.exe` dan jalan saat login.
+- Perbaikan pencocokan dan retry lirik masuk ke `main` di `ee230d4`. Tahap berikutnya mencakup Scratchpad, Hide/Show, pemilih tab Chrome/Edge, estimasi sisa baterai, ikon Pin, dan pemulihan tampilan panel.
+- Installer menempatkan Zenith Dot di `%LOCALAPPDATA%\Zenith Dot\ZenithDot.exe` dan membuat shortcut Startup. Paket pengujian lokal ada di bawah.
 - Proyek: overlay "dynamic island" untuk Windows 11 dalam C++20, Win32, Direct2D, DirectWrite, dan C++/WinRT. Satu proses, satu jendela layered di tengah atas monitor utama.
 - Desain acuannya preview HTML `experiments/zenith-dot-v7.html`. Folder `experiments/` di-gitignore, jadi cuma ada di mesin lokal. Catatan keputusan dan backlog ada di `experiments/NOTES.md`; baca itu juga.
+
+## Lanjut dari sini
+
+- Paket Release lokal ada di `out/ZenithDot-Panel-State.zip`. Isinya executable, installer, script setup browser bridge, dan ekstensi unpacked. Preview panel ada di `experiments/zenith-dot-scratchpad.html`.
+- Build Release, simpan catatan UTF-8, pemilihan dua tab dari snapshot, dan routing command extension lulus tes lokal.
+- Tes interaktif berikutnya: pin Scratchpad lalu pindah ke app lain, unpin dan cek klik luar, lalu tes simpan/restart dan fokus setelah `Esc`; pasang ekstensi lalu uji play/pause dan seek ke dua tab dari browser yang sama; coba Hide/Show saat musik jalan; cek startup dan ukur RAM idle/playback (termasuk proses companion jika ekstensi aktif).
 
 ## Progres port V7 ke native
 
@@ -16,7 +22,7 @@ Serah terima untuk agent berikutnya (Codex). Isinya posisi kerja terakhir, cara 
 | 1 | Dot ↔ pill, panel hover (Now Playing, Focus, System), morph cover dan judul, warna aksen dari cover | Selesai, `55c4fed` |
 | 2 | Bubble split liquid: Copy, charger, baterai lemah, Focus done; alert inline saat panel terbuka | Selesai, `4f9d681` |
 | 3 | Sembunyi saat fullscreen, indikator mic dan kamera, HUD volume dan brightness | Sudah diimplementasikan dan build Release lulus. Verifikasi di desktop interaktif masih terbuka. |
-| 4 | Scratchpad dan lirik | Panel lirik penuh. Scratchpad masih terbuka. |
+| 4 | Scratchpad dan lirik | Panel lirik penuh dan Scratchpad native dengan simpan lokal. |
 
 Sebelumnya juga sudah selesai: island tidak mencuri fokus (`WS_EX_NOACTIVATE` + `MA_NOACTIVATE`) dan warna aksen ikut cover (`6efa8bf`).
 
@@ -66,9 +72,11 @@ Perilaku acuan ada di V7: cari `fullscreen`, `mic`, `camera`, `volume`, dan `bri
 
 ## Tahap 4 dan hal yang perlu keputusan user
 
-- **Scratchpad** butuh input teks, jadi island harus boleh mengambil fokus saat area teks diklik, lalu mengembalikan fokus ke app sebelumnya saat panel ditutup (pengecualian ini sudah dicatat di NOTES). Butuh kontrol edit sendiri, karena kontrol Win32 standar tidak tergambar di jendela layered dengan `UpdateLayeredWindow`.
+- **Scratchpad:** Klik area catatan untuk membuka editor Win32 yang menumpang di atas panel. `Esc` saat mengedit menutup panel dan mengembalikan fokus. File tersimpan lokal di `%LOCALAPPDATA%\Zenith Dot\scratchpad.txt`.
+- **Pin panel:** Ikon pin berlaku di semua tab dan tetap aktif saat pindah tab atau saat editor Scratchpad kehilangan fokus. Setelah panel ditutup, hover membuka tab dan mode Lyrics terakhir. Scroll manual dipulihkan jika lagunya masih sama.
+- **Hide/Show:** Kontrol tray menyembunyikan island tanpa memutus playback. Browser tab terpisah tersedia lewat ekstensi opsional Chrome/Edge. Setup ada di README.
 - **Lirik:** Lookup ke LRCLIB saat dibuka. Kolom menampilkan lirik sepanjang lagu dengan wrapping dan auto-scroll. Up Next dihapus dari lingkup produk sesuai revisi user.
-- Masih terbuka di NOTES: multi-monitor dan DPI. Sekarang island cuma di monitor utama.
+- Island dipasang di monitor utama sesuai keputusan user.
 
 ## Cara tes yang sudah terbukti
 

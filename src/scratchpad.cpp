@@ -1,0 +1,202 @@
+#include "scratchpad.hpp"
+
+#include <commctrl.h>
+#include <shlobj.h>
+#include <windowsx.h>
+#include <winrt/base.h>
+
+#include <fstream>
+#include <memory>
+
+namespace zenith {
+namespace {
+
+constexpr wchar_t editorClass[] = L"ZenithDot.Scratchpad";
+constexpr UINT_PTR saveTimer = 1;
+constexpr UINT noteLimit = 32'768;
+constexpr COLORREF editorBackground = RGB(22, 28, 36);
+
+}
+
+Scratchpad::~Scratchpad() { close(); }
+
+void Scratchpad::load() {
+    PWSTR folder = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &folder))) return;
+    const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> release(folder, CoTaskMemFree);
+    file_ = std::filesystem::path(folder) / L"Zenith Dot" / L"scratchpad.txt";
+    std::ifstream input(file_, std::ios::binary | std::ios::ate);
+    const auto size = input.tellg();
+    if (size <= 0 || size > 4 * noteLimit) return;
+    std::string bytes(static_cast<size_t>(size), '\0');
+    if (!input.seekg(0).read(bytes.data(), size)) return;
+    try {
+        view_.text = std::wstring(winrt::to_hstring(bytes));
+    } catch (winrt::hresult_error const&) {
+        view_.saveFailed = true;
+    }
+}
+
+bool Scratchpad::open(HWND owner, RECT bounds) {
+    if (window_) return true;
+    const auto instance = GetModuleHandleW(nullptr);
+    WNDCLASSW type{};
+    type.lpfnWndProc = dispatch;
+    type.hInstance = instance;
+    type.hCursor = LoadCursorW(nullptr, IDC_IBEAM);
+    type.lpszClassName = editorClass;
+    if (!RegisterClassW(&type) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+
+    owner_ = owner;
+    previous_ = GetForegroundWindow();
+    const auto dpi = GetDpiForWindow(owner);
+    font_ = CreateFontW(-MulDiv(14, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    background_ = CreateSolidBrush(editorBackground);
+    window_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, editorClass, L"Scratchpad", WS_POPUP,
+                              bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
+                              owner, nullptr, instance, this);
+    if (!window_) {
+        close();
+        return false;
+    }
+
+    edit_ = CreateWindowExW(0, L"EDIT", view_.text.c_str(),
+        WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
+        0, 0, bounds.right - bounds.left, bounds.bottom - bounds.top, window_, nullptr, instance, nullptr);
+    if (!edit_ || !SetWindowSubclass(edit_, editInput, 1, reinterpret_cast<DWORD_PTR>(this))) {
+        close();
+        return false;
+    }
+    SendMessageW(edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), FALSE);
+    SendMessageW(edit_, EM_SETLIMITTEXT, noteLimit, 0);
+    SendMessageW(edit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                 MAKELPARAM(MulDiv(7, dpi, 96), MulDiv(7, dpi, 96)));
+    ShowWindow(window_, SW_SHOW);
+    SetForegroundWindow(window_);
+    SetFocus(edit_);
+    POINT pointer{};
+    RECT client{};
+    int caret = GetWindowTextLengthW(edit_);
+    if (GetCursorPos(&pointer) && ScreenToClient(edit_, &pointer) && GetClientRect(edit_, &client) &&
+        PtInRect(&client, pointer)) {
+        caret = LOWORD(SendMessageW(edit_, EM_CHARFROMPOS, 0, MAKELPARAM(pointer.x, pointer.y)));
+    }
+    SendMessageW(edit_, EM_SETSEL, caret, caret);
+    return true;
+}
+
+void Scratchpad::place(RECT bounds) {
+    RECT current{};
+    if (!window_ || !GetWindowRect(window_, &current) || EqualRect(&current, &bounds)) return;
+    SetWindowPos(window_, nullptr, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+}
+
+void Scratchpad::save() {
+    if (!dirty_ || !edit_) return;
+    const auto count = GetWindowTextLengthW(edit_);
+    std::wstring text(static_cast<size_t>(count) + 1, L'\0');
+    text.resize(GetWindowTextW(edit_, text.data(), count + 1));
+    view_.text = std::move(text);
+    view_.saveFailed = true;
+    if (file_.empty()) return;
+
+    std::error_code error;
+    std::filesystem::create_directories(file_.parent_path(), error);
+    if (error) return;
+    auto pending = file_;
+    pending += L".tmp";
+    try {
+        const auto bytes = winrt::to_string(view_.text);
+        std::ofstream output(pending, std::ios::binary | std::ios::trunc);
+        output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        output.close();
+        if (output && MoveFileExW(pending.c_str(), file_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            dirty_ = false;
+            view_.saveFailed = false;
+        }
+    } catch (winrt::hresult_error const&) {
+        // Keep the draft in memory so a later edit or close can retry the save.
+    }
+}
+
+void Scratchpad::close(bool restoreFocus) {
+    if (window_) {
+        save();
+        const auto closing = window_;
+        const bool restore = restoreFocus && GetForegroundWindow() == closing;
+        window_ = nullptr;
+        DestroyWindow(closing);
+        edit_ = nullptr;
+        if (restore && previous_ && previous_ != owner_ && IsWindow(previous_)) SetForegroundWindow(previous_);
+    }
+    if (font_) DeleteObject(font_);
+    if (background_) DeleteObject(background_);
+    font_ = nullptr;
+    background_ = nullptr;
+}
+
+LRESULT CALLBACK Scratchpad::dispatch(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == WM_NCCREATE) {
+        const auto creation = reinterpret_cast<CREATESTRUCTW const*>(lparam);
+        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(creation->lpCreateParams));
+    }
+    const auto self = reinterpret_cast<Scratchpad*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (!self) return DefWindowProcW(window, message, wparam, lparam);
+
+    switch (message) {
+    case WM_SIZE:
+        if (self->edit_) MoveWindow(self->edit_, 0, 0, LOWORD(lparam), HIWORD(lparam), TRUE);
+        return 0;
+    case WM_CTLCOLOREDIT:
+        SetTextColor(reinterpret_cast<HDC>(wparam), RGB(245, 246, 248));
+        SetBkColor(reinterpret_cast<HDC>(wparam), editorBackground);
+        return reinterpret_cast<LRESULT>(self->background_);
+    case WM_ERASEBKGND: {
+        RECT rect{};
+        GetClientRect(window, &rect);
+        FillRect(reinterpret_cast<HDC>(wparam), &rect, self->background_);
+        return 1;
+    }
+    case WM_COMMAND:
+        if (HIWORD(wparam) == EN_CHANGE && self->edit_) {
+            self->dirty_ = true;
+            SetTimer(window, saveTimer, 350, nullptr);
+        }
+        return 0;
+    case WM_TIMER:
+        KillTimer(window, saveTimer);
+        self->save();
+        return 0;
+    case WM_ACTIVATE:
+        if (LOWORD(wparam) == WA_INACTIVE && self->window_ == window) {
+            PostMessageW(self->owner_, dismissed, reinterpret_cast<WPARAM>(window), 0);
+        }
+        break;
+    case WM_CLOSE:
+        PostMessageW(self->owner_, dismissed, reinterpret_cast<WPARAM>(window), explicitDismiss);
+        return 0;
+    }
+    return DefWindowProcW(window, message, wparam, lparam);
+}
+
+LRESULT CALLBACK Scratchpad::editInput(HWND edit, UINT message, WPARAM wparam, LPARAM lparam,
+                                        UINT_PTR, DWORD_PTR context) {
+    const auto self = reinterpret_cast<Scratchpad*>(context);
+    if (message == WM_KEYDOWN && wparam == VK_ESCAPE) {
+        PostMessageW(self->owner_, dismissed, reinterpret_cast<WPARAM>(self->window_), explicitDismiss);
+        return 0;
+    }
+    if (message == WM_CHAR && wparam == 1) {
+        SendMessageW(edit, EM_SETSEL, 0, -1);
+        return 0;
+    }
+    if (message == WM_MOUSEWHEEL) {
+        SendMessageW(edit, EM_LINESCROLL, 0, -3 * GET_WHEEL_DELTA_WPARAM(wparam) / WHEEL_DELTA);
+        return 0;
+    }
+    return DefSubclassProc(edit, message, wparam, lparam);
+}
+
+}

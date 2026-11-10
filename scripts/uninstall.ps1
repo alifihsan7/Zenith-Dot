@@ -8,6 +8,18 @@ if (Test-Path -LiteralPath $installedExe) {
     Remove-Item -LiteralPath $installedExe
 }
 
+$hostName = 'com.zenith_dot.browser'
+foreach ($vendor in @('Google\Chrome', 'Microsoft\Edge')) {
+    $location = "HKCU:\Software\$vendor\NativeMessagingHosts\$hostName"
+    if (Test-Path -LiteralPath $location) {
+        Remove-Item -LiteralPath $location
+    }
+}
+$manifestPath = Join-Path $installDir ($hostName + '.json')
+if (Test-Path -LiteralPath $manifestPath) {
+    Remove-Item -LiteralPath $manifestPath
+}
+
 foreach ($location in @('Programs', 'Startup')) {
     $folder = [Environment]::GetFolderPath($location)
     if ($folder) {

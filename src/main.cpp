@@ -1,5 +1,6 @@
 #include <initguid.h>
 
+#include "browser_tabs.hpp"
 #include "desktop.hpp"
 #include "island.hpp"
 #include <shellapi.h>
@@ -11,7 +12,6 @@ namespace {
 using namespace std::chrono_literals;
 
 constexpr wchar_t appName[] = L"Zenith Dot";
-constexpr wchar_t windowClass[] = L"ZenithDot.Overlay";
 constexpr UINT trayMessage = WM_APP + 2;
 constexpr UINT redrawMessage = WM_APP + 3;
 constexpr UINT_PTR powerTimer = 1;
@@ -20,7 +20,7 @@ constexpr UINT_PTR fullscreenTimer = 3;
 constexpr unsigned microphoneColor = 0xff9f0a;
 constexpr unsigned cameraColor = 0x30d158;
 
-enum Menu { previousTrack = 1, togglePlayback, nextTrack, exitApp };
+enum Menu { previousTrack = 1, togglePlayback, nextTrack, toggleVisibility, exitApp };
 constexpr MediaCommand controls[] = {MediaCommand::previous, MediaCommand::toggle, MediaCommand::next};
 
 class App {
@@ -31,10 +31,14 @@ private:
     static LRESULT CALLBACK dispatch(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
     LRESULT handle(UINT message, WPARAM wparam, LPARAM lparam);
     void frame();
+    void updateMedia();
+    void control(MediaCommand command);
     void run(IslandCommand const& command);
     void refreshPower();
     void refreshMotion();
     bool refreshFullscreen();
+    void applyVisibility();
+    bool suppressed() const { return fullscreen_ || hidden_; }
     void refreshCapture(bool announce = true);
     void showLevel(IslandAlert::Kind kind, unsigned percent, bool muted = false);
     void addTray();
@@ -49,15 +53,19 @@ private:
     std::shared_ptr<MediaMonitor> monitor_;
     std::shared_ptr<Lyrics> lyrics_;
     MediaState media_;
+    MediaState nativeMedia_;
+    BrowserTabs browserTabs_;
     PowerState power_;
     DesktopMonitor desktop_;
     CaptureActivity capture_;
     std::optional<WPARAM> lastVolume_;
     SystemMonitor system_;
+    Scratchpad scratchpad_;
     std::chrono::steady_clock::time_point systemSampled_{};
     Island island_;
     bool tracking_ = false;
     bool fullscreen_ = false;
+    bool hidden_ = false;
     unsigned lowWarned_ = 0;   // the low-battery threshold (20 or 10) already announced this discharge
 };
 
@@ -66,12 +74,13 @@ int App::run(HINSTANCE instance) {
     type.lpfnWndProc = dispatch;
     type.hInstance = instance;
     type.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    type.lpszClassName = windowClass;
+    type.lpszClassName = overlayWindowClass;
     winrt::check_bool(RegisterClassW(&type));
     // WS_EX_NOACTIVATE: clicks and hover reach the island, but the app the user is working in keeps focus.
     window_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
-        windowClass, appName, WS_POPUP, 0, 0, 16, 16, nullptr, nullptr, instance, this);
+        overlayWindowClass, appName, WS_POPUP, 0, 0, 16, 16, nullptr, nullptr, instance, this);
     winrt::check_bool(window_ != nullptr);
+    browserTabs_.setWindow(window_);
 
     taskbarCreated_ = RegisterWindowMessageW(L"TaskbarCreated");
     refreshMotion();
@@ -86,14 +95,15 @@ int App::run(HINSTANCE instance) {
     desktop_.start(window_);
     lyrics_ = std::make_shared<Lyrics>([this] { frame(); });
     island_.setLyrics(lyrics_->view());
+    scratchpad_.load();
+    island_.setScratchpad(scratchpad_.view());
     refreshFullscreen();
     refreshCapture(false);
     addTray();
     frame();
     monitor_ = std::make_shared<MediaMonitor>(window_, [this](MediaState const& state) {
-        media_ = state;
-        island_.setMedia(state);
-        frame();
+        nativeMedia_ = state;
+        updateMedia();
     });
     monitor_->start();
 
@@ -109,6 +119,10 @@ int App::run(HINSTANCE instance) {
 
 void App::frame() {
     island_.tick();
+    if (scratchpad_.window() && !island_.scratchEditorRect()) {
+        scratchpad_.close();
+        island_.setScratchEditing(false);
+    }
     if (lyrics_) lyrics_->update(media_, island_.wantsLyrics());
     const auto now = std::chrono::steady_clock::now();
     if (island_.wantsSystemStats() && now - systemSampled_ >= 1s) {
@@ -116,8 +130,11 @@ void App::frame() {
         systemSampled_ = now;
     }
     const bool shown = IsWindowVisible(window_) != FALSE;
-    const bool visible = island_.visible() && (shown || !fullscreen_);
+    const bool visible = island_.visible() && (shown || !suppressed());
     if (visible) island_.draw(window_);
+    if (scratchpad_.window()) {
+        if (const auto bounds = island_.scratchEditorRect()) scratchpad_.place(*bounds);
+    }
     if (visible != shown) ShowWindow(window_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
     const UINT interval = island_.frameInterval();
     if (interval == frameInterval_) return;
@@ -126,15 +143,37 @@ void App::frame() {
     if (frameInterval_ != 0) SetTimer(window_, frameTimer, frameInterval_, nullptr);
 }
 
+void App::updateMedia() {
+    media_ = browserTabs_.combine(nativeMedia_);
+    island_.setMedia(media_);
+    frame();
+}
+
+void App::control(MediaCommand command) {
+    if (!media_.sourceId.empty()) browserTabs_.control(media_.sourceId, command);
+    else if (monitor_) monitor_->control(command);
+}
+
 void App::run(IslandCommand const& command) {
     if (!monitor_) return;
     switch (command.kind) {
-    case IslandCommand::Kind::previous: monitor_->control(MediaCommand::previous); break;
-    case IslandCommand::Kind::toggle: monitor_->control(MediaCommand::toggle); break;
-    case IslandCommand::Kind::next: monitor_->control(MediaCommand::next); break;
-    case IslandCommand::Kind::seek: monitor_->seek(command.seconds); break;
-    case IslandCommand::Kind::selectSource: monitor_->select(command.appId); break;
+    case IslandCommand::Kind::previous: control(MediaCommand::previous); break;
+    case IslandCommand::Kind::toggle: control(MediaCommand::toggle); break;
+    case IslandCommand::Kind::next: control(MediaCommand::next); break;
+    case IslandCommand::Kind::seek:
+        if (media_.sourceId.empty()) monitor_->seek(command.seconds);
+        else browserTabs_.seek(media_.sourceId, command.seconds);
+        break;
+    case IslandCommand::Kind::selectSource:
+        if (browserTabs_.select(command.appId)) updateMedia();
+        else monitor_->select(command.appId);
+        break;
     case IslandCommand::Kind::retryLyrics: if (lyrics_) lyrics_->retry(); break;
+    case IslandCommand::Kind::editScratchpad:
+        if (const auto bounds = island_.scratchEditorRect()) {
+            island_.setScratchEditing(scratchpad_.open(window_, *bounds));
+        }
+        break;
     case IslandCommand::Kind::none: break;
     }
 }
@@ -174,15 +213,21 @@ void App::refreshMotion() {
 }
 
 bool App::refreshFullscreen() {
-    if (GetForegroundWindow() == window_) return false;
+    const auto foreground = GetForegroundWindow();
+    if (foreground && (foreground == window_ || foreground == scratchpad_.window())) return false;
     const bool fullscreen = fullscreenOnPrimary(window_);
     if (fullscreen == fullscreen_) return false;
     fullscreen_ = fullscreen;
-    island_.setSuppressed(fullscreen);
-    const auto style = GetWindowLongPtrW(window_, GWL_EXSTYLE);
-    SetWindowLongPtrW(window_, GWL_EXSTYLE, fullscreen ? style | WS_EX_TRANSPARENT : style & ~WS_EX_TRANSPARENT);
-    if (fullscreen && GetCapture() == window_) ReleaseCapture();
+    applyVisibility();
     return true;
+}
+
+void App::applyVisibility() {
+    const bool hide = suppressed();
+    island_.setSuppressed(hide);
+    const auto style = GetWindowLongPtrW(window_, GWL_EXSTYLE);
+    SetWindowLongPtrW(window_, GWL_EXSTYLE, hide ? style | WS_EX_TRANSPARENT : style & ~WS_EX_TRANSPARENT);
+    if (hide && GetCapture() == window_) ReleaseCapture();
 }
 
 void App::refreshCapture(bool announce) {
@@ -204,7 +249,7 @@ void App::refreshCapture(bool announce) {
 }
 
 void App::showLevel(IslandAlert::Kind kind, unsigned percent, bool muted) {
-    if (fullscreen_) return;
+    if (suppressed()) return;
     island_.notify({kind, L"", muted ? L"Muted" : std::to_wstring(percent) + L"%", std::nullopt,
                     1, 1800ms, muted ? 0u : percent});
     frame();
@@ -227,10 +272,12 @@ void App::addTray() {
 void App::showMenu(POINT point) {
     const auto menu = CreatePopupMenu();
     if (!menu) return;
-    AppendMenuW(menu, MF_STRING | (media_.hasSession ? MF_ENABLED : MF_GRAYED), previousTrack, L"&Previous track");
+    const auto skip = media_.hasSession && media_.canSkip ? MF_ENABLED : MF_GRAYED;
+    AppendMenuW(menu, MF_STRING | skip, previousTrack, L"&Previous track");
     AppendMenuW(menu, MF_STRING, togglePlayback, media_.playing ? L"P&ause" : L"&Play");
-    AppendMenuW(menu, MF_STRING | (media_.hasSession ? MF_ENABLED : MF_GRAYED), nextTrack, L"&Next track");
+    AppendMenuW(menu, MF_STRING | skip, nextTrack, L"&Next track");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, toggleVisibility, hidden_ ? L"&Show Zenith Dot" : L"&Hide Zenith Dot");
     AppendMenuW(menu, MF_STRING, exitApp, L"E&xit Zenith Dot");
     // TrackPopupMenu needs the owner in the foreground to dismiss correctly. Hand focus back afterwards.
     const auto previous = GetForegroundWindow();
@@ -242,8 +289,12 @@ void App::showMenu(POINT point) {
     if (previous && previous != window_ && IsWindow(previous)) SetForegroundWindow(previous);
     if (selected == exitApp) {
         DestroyWindow(window_);
+    } else if (selected == toggleVisibility) {
+        hidden_ = !hidden_;
+        applyVisibility();
+        frame();
     } else if (selected >= previousTrack && selected <= nextTrack && monitor_) {
-        monitor_->control(controls[selected - previousTrack]);
+        control(controls[selected - previousTrack]);
     }
 }
 
@@ -347,8 +398,19 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_TIMER:
         if (wparam == powerTimer) refreshPower();
         if (wparam == frameTimer) frame();
-        if (wparam == fullscreenTimer && refreshFullscreen()) frame();
+        if (wparam == fullscreenTimer) {
+            const bool changed = refreshFullscreen();
+            if (browserTabs_.prune()) updateMedia();
+            else if (changed) frame();
+        }
         return 0;
+    case WM_COPYDATA:
+        if (const auto packet = reinterpret_cast<COPYDATASTRUCT const*>(lparam);
+            packet && browserTabs_.receive(reinterpret_cast<HWND>(wparam), *packet)) {
+            updateMedia();
+            return TRUE;
+        }
+        return FALSE;
     case DesktopMonitor::foregroundChanged:
         if (refreshFullscreen()) frame();
         return 0;
@@ -372,7 +434,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         if (monitor_) monitor_->refresh(wparam);
         return 0;
     case WM_CLIPBOARDUPDATE:
-        if (fullscreen_) return 0;
+        if (suppressed()) return 0;
         if (auto alert = clipboardAlert()) {
             island_.notify(std::move(*alert));
             frame();
@@ -387,7 +449,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         }
         break;
     case WM_MOUSEMOVE:
-        if (fullscreen_) return 0;
+        if (suppressed()) return 0;
         if (!tracking_) {
             TRACKMOUSEEVENT tracking{sizeof(TRACKMOUSEEVENT), TME_LEAVE, window_, 0};
             tracking_ = TrackMouseEvent(&tracking) != FALSE;
@@ -422,6 +484,15 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         island_.pointerCancel();
         frame();
         return 0;
+    case Scratchpad::dismissed:
+        if (scratchpad_.window() == reinterpret_cast<HWND>(wparam)) {
+            const bool explicitClose = lparam == Scratchpad::explicitDismiss;
+            scratchpad_.close(explicitClose);
+            island_.setScratchEditing(false);
+            if (explicitClose || !island_.panelPinned()) island_.closePanel();
+            frame();
+        }
+        return 0;
     case WM_CONTEXTMENU: {
         POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         if (point.x == -1 && point.y == -1) ClientToScreen(window_, &point);
@@ -435,6 +506,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         }
         return 0;
     case WM_DESTROY:
+        scratchpad_.close();
         KillTimer(window_, powerTimer);
         KillTimer(window_, frameTimer);
         KillTimer(window_, fullscreenTimer);
@@ -454,6 +526,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
 }
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+    if (zenith::browserHostRequested()) return zenith::runBrowserHost(instance);
     const auto singleInstance = CreateMutexW(nullptr, FALSE, L"Local\\ZenithDot.Overlay.0A54ED53");
     const auto error = GetLastError();
     if (!singleInstance) return 1;

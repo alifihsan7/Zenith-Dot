@@ -2,6 +2,7 @@
 
 #include "media.hpp"
 #include "lyrics.hpp"
+#include "scratchpad.hpp"
 #include "power.hpp"
 #include "system.hpp"
 
@@ -23,7 +24,7 @@ namespace zenith {
 
 // Something a click on the island asks the app to do.
 struct IslandCommand {
-    enum class Kind { none, previous, toggle, next, seek, selectSource, retryLyrics };
+    enum class Kind { none, previous, toggle, next, seek, selectSource, retryLyrics, editScratchpad };
     Kind kind = Kind::none;
     double seconds = 0;
     std::wstring appId;
@@ -59,6 +60,11 @@ public:
     void setSuppressed(bool suppressed);
     void setCaptureColor(std::optional<unsigned> color);
     void setLyrics(LyricsView const& lyrics);
+    void setScratchpad(ScratchpadView const& scratchpad);
+    void setScratchEditing(bool editing);
+    void closePanel();
+    bool panelPinned() const;
+    std::optional<RECT> scratchEditorRect() const;
     bool wantsLyrics() const;
     void notify(IslandAlert alert);
 
@@ -81,8 +87,8 @@ public:
 
 private:
     enum class Hit { none, pill, previous, toggle, next, timeline, source, navMedia, navFocus, navSystem,
-                     focusToggle, focusReset, lyrics, lyricLine, retryLyrics };
-    enum class Screen { media, focus, system };
+                     navScratch, focusToggle, focusReset, lyrics, lyricLine, retryLyrics, scratchEdit, panelPin };
+    enum class Screen { media, focus, scratch, system };
     enum class PillMode { dot, media, focus };
     struct Target {
         D2D1_RECT_F rect;
@@ -103,6 +109,7 @@ private:
     float panelWidthAt(Clock::time_point now) const;
     float lyricScroll(Clock::time_point now) const;
     void moveLyricScroll(float offset, Clock::time_point now);
+    void updateLyricVisibility(bool wasVisible, Clock::time_point now);
     float screenHeight(Screen screen) const;
     D2D1_RECT_F panelRect(Clock::time_point now) const;
     int focusRemaining(Clock::time_point now) const;
@@ -134,6 +141,7 @@ private:
     void drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double position);
     void prepareLyricLayout(float width);
     void drawFocus(D2D1_RECT_F panel, Clock::time_point now, bool record);
+    void drawScratchpad(D2D1_RECT_F panel, bool record);
     void drawSystem(D2D1_RECT_F panel);
     void drawNav(D2D1_RECT_F panel, bool record);
     void drawShared(D2D1_RECT_F panel, float value, float amount);
@@ -201,6 +209,10 @@ private:
     float widthFrom_ = 0;
     Clock::time_point widthStart_{};
     bool lyricsOpen_ = false;
+    bool scratchEditing_ = false;
+    bool panelPinned_ = false;
+    ScratchpadView const* scratchpad_ = nullptr;
+    std::optional<D2D1_RECT_F> scratchEditor_;
     LyricsView const* lyrics_ = nullptr;
     float lyricsWidth_ = 0;
     float lyricScrollFrom_ = 0;
@@ -208,6 +220,7 @@ private:
     float lyricScrollShown_ = 0;
     Clock::time_point lyricScrollStart_{};
     Clock::time_point lyricFollowAt_{};
+    Clock::duration lyricFollowLeft_{};
     D2D1_RECT_F lyricViewport_{};
     std::vector<DWRITE_TEXT_RANGE> lyricRanges_;
     std::ptrdiff_t activeLyric_ = -1;
@@ -272,6 +285,7 @@ private:
     winrt::com_ptr<IDWriteTextFormat> headingCenterFont_;
     winrt::com_ptr<IDWriteTextFormat> bodyFont_;
     winrt::com_ptr<IDWriteTextFormat> lyricFont_;
+    winrt::com_ptr<IDWriteTextFormat> scratchFont_;
     winrt::com_ptr<IDWriteTextFormat> bodyEndFont_;
     winrt::com_ptr<IDWriteTextFormat> strongEndFont_;
     winrt::com_ptr<IDWriteTextFormat> monoFont_;

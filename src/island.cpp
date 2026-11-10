@@ -431,6 +431,9 @@ void Island::setAnimate(bool animate) {
 
 void Island::setMedia(MediaState const& media) {
     const auto now = Clock::now();
+    if (pressed_ == Hit::source && (pressedIndex_ >= media.sources.size() || pressedIndex_ >= media_.sources.size() ||
+        media.sources[pressedIndex_].appId != media_.sources[pressedIndex_].appId ||
+        media.sources[pressedIndex_].id != media_.sources[pressedIndex_].id)) pressed_ = Hit::none;
     // The media screen changes height when a session comes or goes; animate that like a screen change.
     if (open_ && screen_ == Screen::media && media.hasSession != media_.hasSession) {
         heightFrom_ = panelHeight(now);
@@ -459,6 +462,21 @@ void Island::setSystem(SystemStats const& stats) {
 
 void Island::setLyrics(LyricsView const& lyrics) { lyrics_ = &lyrics; }
 
+void Island::setScratchpad(ScratchpadView const& scratchpad) { scratchpad_ = &scratchpad; }
+
+void Island::setScratchEditing(bool editing) { scratchEditing_ = editing; }
+
+void Island::closePanel() { setOpen(false, Clock::now()); }
+
+bool Island::panelPinned() const { return open_ && panelPinned_; }
+
+std::optional<RECT> Island::scratchEditorRect() const {
+    if (!open_ || screen_ != Screen::scratch || !scratchEditor_) return std::nullopt;
+    const auto box = *scratchEditor_;
+    return RECT{anchor_.x + std::lround(box.left * scale_), anchor_.y + std::lround(box.top * scale_),
+                anchor_.x + std::lround(box.right * scale_), anchor_.y + std::lround(box.bottom * scale_)};
+}
+
 bool Island::wantsLyrics() const {
     return open_ && screen_ == Screen::media && media_.hasSession && lyricsOpen_;
 }
@@ -478,6 +496,7 @@ float Island::screenHeight(Screen screen) const {
     switch (screen) {
     case Screen::media: return media_.hasSession ? mediaPanelHeight : 146;
     case Screen::focus: return 183.0f;
+    case Screen::scratch: return 216.0f;
     case Screen::system: return 169.5f;
     }
     return 146.0f;
@@ -593,21 +612,22 @@ void Island::setOpen(bool open, Clock::time_point now) {
     openAt_.reset();
     closeAt_.reset();
     if (open_ == open || (open && (suppressed_ || bubbleShowing()))) return;
+    const bool lyricsVisible = wantsLyrics();
     const float shown = panelValue(now);
     // The cover and title travel between the pill and the panel when both show the track.
-    const bool trackVisible = media_.hasSession && (open || screen_ == Screen::media);
+    const bool trackVisible = media_.hasSession && screen_ == Screen::media;
     if (open) {
-        lyricsOpen_ = false;
-        lyricFollowAt_ = {};
         widthStart_ = {};
-        screen_ = screenFrom_ = Screen::media;
+        screenFrom_ = screen_;
         screenStart_ = {};
-        heightFrom_ = screenHeight(Screen::media);
+        heightFrom_ = screenHeight(screen_);
     }
     const bool pill = pillAmount(now) >= 1;
     shareCover_ = trackVisible && pillMode_ != PillMode::focus && (pillContent_ == PillMode::media || !pill);
     shareTitle_ = shareCover_ && pill && pillContent_ == PillMode::media;
     open_ = open;
+    updateLyricVisibility(lyricsVisible, now);
+    if (!open) panelPinned_ = false;
     keepHeight_ = 0;
     panelFrom_ = shown;
     panelStart_ = now;
@@ -620,11 +640,13 @@ void Island::setOpen(bool open, Clock::time_point now) {
 
 void Island::showScreen(Screen screen, Clock::time_point now) {
     if (screen == screen_) return;
+    const bool lyricsVisible = wantsLyrics();
     heightFrom_ = panelHeight(now);
     widthFrom_ = panelWidthAt(now);
     keepHeight_ = std::max(keepHeight_, heightFrom_);
     screenFrom_ = screen_;
     screen_ = screen;
+    updateLyricVisibility(lyricsVisible, now);
     screenStart_ = animate_ ? now : Clock::time_point{};
     widthStart_ = screenStart_;
 }
@@ -641,9 +663,9 @@ void Island::toggleFocus(Clock::time_point now) {
 
 void Island::tick() {
     const auto now = Clock::now();
-    if (open_) {
+    if (open_ && !panelPinned_) {
         // Hover hysteresis: entering needs the real pill, but the open panel stays while the pointer
-        // is within keepOpenMargin of it. A click outside closes it at once.
+        // is within keepOpenMargin of it. An outside click closes an unpinned panel.
         POINT cursor{};
         GetCursorPos(&cursor);
         const D2D1_POINT_2F point{(cursor.x - anchor_.x) / scale_, (cursor.y - anchor_.y) / scale_};
@@ -653,7 +675,7 @@ void Island::tick() {
         }
         auto keep = panel;
         keep.bottom = std::max(keep.bottom, keep.top + keepHeight_);
-        if (inside(grow(keep, keepOpenMargin, keepOpenMargin), point) || dragging_) {
+        if (inside(grow(keep, keepOpenMargin, keepOpenMargin), point) || dragging_ || scratchEditing_) {
             closeAt_.reset();
         } else if (!closeAt_) {
             closeAt_ = now + closeDelay;
@@ -698,6 +720,10 @@ unsigned Island::frameInterval() const {
     if (animate_ && now - visibilityStart_ < visibilityTime) return 10;
     if (suppressed_) return focusUntil_ ? 1000 : 0;
     if (moving(now) || openAt_ || closeAt_ || dragging_) return 10;
+    if (panelPinned() && !alert_) {
+        if (screen_ == Screen::media && (media_.playing || (wantsLyrics() && now < lyricFollowAt_))) return 50;
+        return screen_ == Screen::system || scratchEditing_ || focusUntil_ ? 1000 : 0;
+    }
     if (open_ || alert_) return 50;
     if (pillMode_ == PillMode::media && media_.playing && animate_) return 33;
     if (pillMode_ != PillMode::dot) return 250;
@@ -779,6 +805,19 @@ void Island::moveLyricScroll(float offset, Clock::time_point now) {
     lyricScrollStart_ = now;
 }
 
+void Island::updateLyricVisibility(bool wasVisible, Clock::time_point now) {
+    const bool visible = wantsLyrics();
+    if (visible == wasVisible) return;
+    if (visible) {
+        lyricFollowAt_ = now + lyricFollowLeft_;
+        lyricFollowLeft_ = {};
+    } else {
+        lyricFollowLeft_ = std::max(Clock::duration::zero(), lyricFollowAt_ - now);
+        lyricScrollFrom_ = lyricScrollTo_ = lyricScrollShown_;
+        lyricScrollStart_ = {};
+    }
+}
+
 bool Island::scrollLyrics(POINT client, int delta) {
     if (!wantsLyrics() || !inside(lyricViewport_, stagePoint(client))) return false;
     const float limit = lyricContentHeight_ - (lyricViewport_.bottom - lyricViewport_.top);
@@ -834,24 +873,33 @@ IslandCommand Island::pointerUp(POINT client) {
     case Hit::source:
         if (index < media_.sources.size()) {
             command.kind = IslandCommand::Kind::selectSource;
-            command.appId = media_.sources[index].appId;
+            const auto& source = media_.sources[index];
+            command.appId = source.id.empty() ? source.appId : source.id;
         }
         break;
     case Hit::navMedia: showScreen(Screen::media, now); break;
     case Hit::navFocus: showScreen(Screen::focus, now); break;
+    case Hit::navScratch: showScreen(Screen::scratch, now); break;
     case Hit::navSystem: showScreen(Screen::system, now); break;
-    case Hit::lyrics:
+    case Hit::lyrics: {
+        const bool lyricsVisible = wantsLyrics();
         widthFrom_ = panelWidthAt(now);
         widthStart_ = animate_ ? now : Clock::time_point{};
         lyricsOpen_ = !lyricsOpen_;
-        lyricFollowAt_ = {};
+        updateLyricVisibility(lyricsVisible, now);
         break;
+    }
     case Hit::lyricLine:
         command.kind = IslandCommand::Kind::seek;
         command.seconds = lyrics_->lines[index].seconds;
         lyricFollowAt_ = now + 500ms;
         break;
     case Hit::retryLyrics: command.kind = IslandCommand::Kind::retryLyrics; break;
+    case Hit::scratchEdit: command.kind = IslandCommand::Kind::editScratchpad; break;
+    case Hit::panelPin:
+        panelPinned_ = !panelPinned_;
+        closeAt_.reset();
+        break;
     case Hit::focusToggle: toggleFocus(now); break;
     case Hit::focusReset:
         focusUntil_.reset();
@@ -972,6 +1020,8 @@ void Island::prepareText() {
         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 17, L"", lyricFont_.put()));
     winrt::check_hresult(lyricFont_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP));
     winrt::check_hresult(lyricFont_->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 24, 18));
+    winrt::check_hresult(fonts_->CreateTextFormat(L"Segoe UI", nullptr, normal, DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL, 14, L"", scratchFont_.put()));
     create(bodyEndFont_, L"Segoe UI", 12, normal, end);
     create(strongEndFont_, L"Segoe UI", 12, DWRITE_FONT_WEIGHT_BOLD, end);
     create(monoFont_, L"Consolas", 10, normal, start);
@@ -1268,6 +1318,7 @@ void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now,
     switch (screen) {
     case Screen::media: drawMedia(panel, now, hideShared, record); break;
     case Screen::focus: drawFocus(panel, now, record); break;
+    case Screen::scratch: drawScratchpad(panel, record); break;
     case Screen::system: drawSystem(panel); break;
     }
 }
@@ -1329,6 +1380,7 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, bool hideShared
     const Hit buttons[]{Hit::previous, Hit::toggle, Hit::next};
     const auto onAccent = mixColor(accent_, D2D1::ColorF(0, 0, 0), 0.86f);
     for (int i = 0; i < 3; ++i) {
+        const bool enabled = buttons[i] == Hit::toggle || media_.canSkip;
         const D2D1_POINT_2F c{centerX + (i - 1) * 45.0f, middleY};
         const auto disc = D2D1::Ellipse(c, 18, 18);
         if (buttons[i] == Hit::toggle) {
@@ -1343,14 +1395,15 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, bool hideShared
                 fillPolygon({{c.x - 4, c.y - 6}, {c.x + 6, c.y}, {c.x - 4, c.y + 6}}, onAccent);
             }
         } else {
-            if (pressed(buttons[i])) target_->FillEllipse(disc, ink(white(0.14f)));
-            else if (hovered(buttons[i])) target_->FillEllipse(disc, ink(white(0.08f)));
+            if (enabled && pressed(buttons[i])) target_->FillEllipse(disc, ink(white(0.14f)));
+            else if (enabled && hovered(buttons[i])) target_->FillEllipse(disc, ink(white(0.08f)));
+            const auto color = enabled ? rgb(inkColor) : rgb(mutedColor, 0.42f);
             const float d = buttons[i] == Hit::next ? 1.0f : -1.0f;
-            fillPolygon({{c.x - 6 * d, c.y - 5.5f}, {c.x + 5 * d, c.y}, {c.x - 6 * d, c.y + 5.5f}}, rgb(inkColor));
+            fillPolygon({{c.x - 6 * d, c.y - 5.5f}, {c.x + 5 * d, c.y}, {c.x - 6 * d, c.y + 5.5f}}, color);
             const float bar = d > 0 ? c.x + 4 : c.x - 6;
-            target_->FillRectangle(box(bar, c.y - 5.5f, 2, 11), ink(rgb(inkColor)));
+            target_->FillRectangle(box(bar, c.y - 5.5f, 2, 11), ink(color));
         }
-        if (record) addTarget(box(c.x - 18, c.y - 18, 36, 36), buttons[i]);
+        if (record && enabled) addTarget(box(c.x - 18, c.y - 18, 36, 36), buttons[i]);
     }
 
     // Sources: one round button per app with a media session, marked by its logo.
@@ -1361,7 +1414,9 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, bool hideShared
         const D2D1_POINT_2F c{rect.left + 15, rect.top + 15};
         if (pressed(Hit::source, i)) target_->FillEllipse(D2D1::Ellipse(c, 15, 15), ink(white(0.14f)));
         else if (hovered(Hit::source, i)) target_->FillEllipse(D2D1::Ellipse(c, 15, 15), ink(white(0.08f)));
-        if (source.appId == media_.appId) target_->DrawEllipse(D2D1::Ellipse(c, 14.5f, 14.5f), ink(accent_), 1);
+        const bool selected = source.id.empty() ? media_.sourceId.empty() && source.appId == media_.appId :
+                                                 source.id == media_.sourceId;
+        if (selected) target_->DrawEllipse(D2D1::Ellipse(c, 14.5f, 14.5f), ink(accent_), 1);
         if (auto* logo = icon(source.appId); logo && bitmap(*logo)) {
             target_->DrawBitmap(logo->bitmap.get(), box(c.x - 9, c.y - 9, 18, 18), 1,
                                 D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
@@ -1369,6 +1424,12 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, bool hideShared
             target_->FillEllipse(D2D1::Ellipse(c, 9, 9), ink(white(0.16f)));
             const auto name = appName(source.appId);
             text(name.substr(0, 1), letterFont_.get(), box(c.x - 9, c.y - 9, 18, 18), rgb(inkColor));
+        }
+        if (source.tabNumber > 0) {
+            const auto badge = pt(c.x + 10, c.y + 10);
+            target_->FillEllipse(D2D1::Ellipse(badge, 7, 7), ink(rgb(0x253347)));
+            text(std::to_wstring(source.tabNumber), letterFont_.get(), box(badge.x - 7, badge.y - 7, 14, 14),
+                 rgb(inkColor));
         }
         if (record) addTarget(rect, Hit::source, i);
     }
@@ -1380,6 +1441,7 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, bool hideShared
 void Island::prepareLyricLayout(float width) {
     if (lyricLayout_ && lyricLayoutRevision_ == lyrics_->revision && lyricLayoutWidth_ == width) return;
     if (pressed_ == Hit::lyricLine) pressed_ = Hit::none;
+    const bool newLyrics = lyricLayoutRevision_ != lyrics_->revision;
 
     std::wstring joined = lyrics_->plain;
     lyricRanges_.clear();
@@ -1400,8 +1462,11 @@ void Island::prepareLyricLayout(float width) {
     lyricLayoutRevision_ = lyrics_->revision;
     activeLyric_ = -1;
     activeLyricTop_ = activeLyricHeight_ = 0;
-    lyricScrollFrom_ = lyricScrollTo_ = 0;
-    lyricScrollStart_ = lyricFollowAt_ = {};
+    if (newLyrics) {
+        lyricScrollFrom_ = lyricScrollTo_ = lyricScrollShown_ = 0;
+        lyricScrollStart_ = lyricFollowAt_ = {};
+        lyricFollowLeft_ = {};
+    }
     if (!lyricActiveInk_) {
         winrt::check_hresult(target_->CreateSolidColorBrush(rgb(inkColor), lyricActiveInk_.put()));
     }
@@ -1460,13 +1525,13 @@ void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double positio
         }
     }
 
-    if (synced && now >= lyricFollowAt_ && pressed_ != Hit::lyricLine) {
+    if (synced && wantsLyrics() && now >= lyricFollowAt_ && pressed_ != Hit::lyricLine) {
         const float lead = std::max(0.0f, (viewportHeight - activeLyricHeight_) * 0.36f);
         const float limit = std::max(0.0f, lyricContentHeight_ - viewportHeight);
         moveLyricScroll(std::clamp(activeLyricTop_ - lead, 0.0f, limit), now);
     }
     lyricViewport_ = box(x, y + 34, width, viewportHeight);
-    lyricScrollShown_ = lyricScroll(now);
+    lyricScrollShown_ = std::clamp(lyricScroll(now), 0.0f, std::max(0.0f, lyricContentHeight_ - viewportHeight));
     target_->PushAxisAlignedClip(lyricViewport_, D2D1_ANTIALIAS_MODE_ALIASED);
     target_->DrawTextLayout(pt(x, lyricViewport_.top - lyricScrollShown_), lyricLayout_.get(),
                             ink(rgb(plain ? inkColor : mutedColor)));
@@ -1483,6 +1548,29 @@ void Island::drawFocus(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     const float centerX = x + panelWidth / 2;
     drawButton(box(centerX - 68, y + 96.2f, 64, 30), label, Hit::focusToggle, record);
     drawButton(box(centerX + 4, y + 96.2f, 64, 30), L"Reset", Hit::focusReset, record);
+}
+
+void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
+    const float x = panel.left + padX;
+    const float y = panel.top + padTop;
+    text(L"Scratchpad", titleFont_.get(), box(x, y, innerWidth, 22), rgb(inkColor));
+    if (scratchpad_ && scratchpad_->saveFailed) {
+        text(L"Couldn’t save", bodyEndFont_.get(), box(x + 160, y, innerWidth - 160, 22), rgb(mutedColor));
+    }
+    const auto field = box(x, y + 32, innerWidth, 116);
+    const auto edge = scratchEditing_ || hovered(Hit::scratchEdit) ? accent_ : rgb(0x737e8c);
+    target_->FillRoundedRectangle(rounded(field, 6), ink(rgb(0x161c24)));
+    target_->DrawRoundedRectangle(rounded(field, 6), ink(edge), 1);
+    const auto editor = grow(field, -3, -3);
+    if (!scratchEditing_) {
+        const bool empty = !scratchpad_ || scratchpad_->text.empty();
+        text(empty ? L"Write a quick note…" : std::wstring_view(scratchpad_->text), scratchFont_.get(),
+             grow(editor, -7, -4), rgb(empty ? mutedColor : inkColor));
+    }
+    if (record) {
+        scratchEditor_ = editor;
+        addTarget(field, Hit::scratchEdit);
+    }
 }
 
 void Island::drawSystem(D2D1_RECT_F panel) {
@@ -1507,6 +1595,12 @@ void Island::drawSystem(D2D1_RECT_F panel) {
         status = power_.pluggedIn == true ? (power_.charging ? L"Charging" : L"Plugged in") :
                  power_.pluggedIn == false ? L"On Battery" : L"Battery";
     }
+    if (power_.remaining) {
+        const auto minutes = std::chrono::ceil<std::chrono::minutes>(*power_.remaining).count();
+        status += L" · ";
+        if (minutes >= 60) status += std::to_wstring(minutes / 60) + L"h ";
+        status += std::to_wstring(minutes % 60) + L"m left";
+    }
     const auto level = power_.percent ? std::to_wstring(*power_.percent) + L"%" : std::wstring{};
     text(status, bodyFont_.get(), box(x + 14, y + 96.4f, 260, 17), rgb(readoutColor));
     text(level, strongEndFont_.get(), box(x + 275, y + 96.4f, 80, 17), rgb(readoutColor));
@@ -1515,10 +1609,10 @@ void Island::drawSystem(D2D1_RECT_F panel) {
 void Island::drawNav(D2D1_RECT_F panel, bool record) {
     const float top = panel.bottom - padBottom - navHeight;
     target_->FillRectangle(box(panel.left + padX, top - 6, innerWidth, 1), ink(white(0.12f)));
-    const float start = panel.left + panelWidth / 2 - (3 * 35 + 2 * 8) / 2.0f;
-    const Hit hits[]{Hit::navMedia, Hit::navFocus, Hit::navSystem};
-    const Screen screens[]{Screen::media, Screen::focus, Screen::system};
-    for (int i = 0; i < 3; ++i) {
+    const float start = panel.left + panelWidth / 2 - (4 * 35 + 3 * 8) / 2.0f;
+    const Hit hits[]{Hit::navMedia, Hit::navFocus, Hit::navScratch, Hit::navSystem};
+    const Screen screens[]{Screen::media, Screen::focus, Screen::scratch, Screen::system};
+    for (int i = 0; i < 4; ++i) {
         const auto rect = box(start + i * 43.0f, top, 35, navHeight);
         const bool selected = screen_ == screens[i];
         if (selected) target_->FillRoundedRectangle(rounded(rect, 7), ink(withAlpha(accent_, 0.14f)));
@@ -1527,9 +1621,23 @@ void Island::drawNav(D2D1_RECT_F panel, bool record) {
         const D2D1_POINT_2F c{rect.left + 17.5f, rect.top + 15.5f};
         if (i == 0) text(L"♫", glyphFont_.get(), rect, color);
         if (i == 1) drawFocusGlyph(c, 15, color);
-        if (i == 2) drawChipGlyph(c, color);
+        if (i == 2) text(L"✎", glyphFont_.get(), rect, color);
+        if (i == 3) drawChipGlyph(c, color);
         if (record) addTarget(rect, hits[i]);
     }
+    const auto pin = box(panel.left + panelWidth - padX - 34, top + 1, 34, 29);
+    drawButton(pin, L"", Hit::panelPin, record);
+    const bool pinned = panelPinned();
+    const auto color = pinned ? accent_ : rgb(inkColor);
+    const float x = pin.left + 17, y = pin.top + 14;
+    PathBuilder glyph(graphics_.get());
+    glyph.move(pt(x - 4.5f, y - 7), pinned).line(pt(x + 4.5f, y - 7)).line(pt(x + 2.5f, y - 4))
+        .line(pt(x + 2.5f, y - 1)).line(pt(x + 5, y + 2)).line(pt(x - 5, y + 2))
+        .line(pt(x - 2.5f, y - 1)).line(pt(x - 2.5f, y - 4)).close();
+    const auto shape = glyph.finish();
+    if (pinned) target_->FillGeometry(shape.get(), ink(color));
+    else target_->DrawGeometry(shape.get(), ink(color), 1.4f, roundStroke_.get());
+    target_->DrawLine(pt(x, y + 2), pt(x, y + 7), ink(color), 1.4f, roundStroke_.get());
 }
 
 // The cover (and title) travel between their pill and panel spots while the panel opens or closes.
@@ -1859,6 +1967,7 @@ void Island::draw(HWND window) {
     base_ = D2D1::Matrix3x2F::Scale(scale_, scale_) *
             D2D1::Matrix3x2F::Translation(static_cast<float>(-origin_.x), static_cast<float>(-origin_.y));
     targets_.clear();
+    scratchEditor_.reset();
     lyricViewport_ = {};
     layerDepth_ = 0;
     target_->BeginDraw();

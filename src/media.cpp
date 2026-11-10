@@ -201,14 +201,14 @@ void MediaMonitor::updateState() {
     state_.playing = false;
     state_.canSeek = false;
     state_.sampledAt = now;
-    // One entry per app: two browser tabs from the same browser share one source.
+    // The browser bridge supplies per-tab sources separately from Windows app sessions.
     state_.sources.clear();
     for (const auto& entry : sessions_) {
         const auto id = appIdOf(entry.session);
         if (id.empty()) continue;
         const auto known = std::ranges::find(state_.sources, id, &MediaSource::appId);
         if (known == state_.sources.end()) {
-            state_.sources.push_back({id, isPlaying(entry.session)});
+            state_.sources.push_back({id, isPlaying(entry.session), {}, 0});
         } else {
             known->playing = known->playing || isPlaying(entry.session);
         }
