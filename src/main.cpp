@@ -4,7 +4,9 @@
 #include "desktop.hpp"
 #include "drop_zone.hpp"
 #include "island.hpp"
+#include <hidusage.h>
 #include <ole2.h>
+#include <set>
 #include <shellapi.h>
 #include <windowsx.h>
 
@@ -29,6 +31,14 @@ constexpr unsigned cameraColor = 0x30d158;
 enum Menu { previousTrack = 1, togglePlayback, nextTrack, toggleVisibility, openDropZone, exitApp };
 constexpr MediaCommand controls[] = {MediaCommand::previous, MediaCommand::toggle, MediaCommand::next};
 
+struct LockKey {
+    USHORT virtualKey;
+    IslandAlert::Kind kind;
+    wchar_t const* label;
+    bool enabled = false;
+    std::set<HANDLE> held{};
+};
+
 class App {
 public:
     int run(HINSTANCE instance);
@@ -52,6 +62,7 @@ private:
     void showAudioPicker();
     void queueClipboard(bool listenerEvent = false);
     void refreshClipboard();
+    void updateLockKey(RAWKEYBOARD const& keyboard, HANDLE device);
     std::optional<IslandAlert> clipboardAlert(bool& busy);
 
     HWND window_ = nullptr;
@@ -81,6 +92,10 @@ private:
     std::optional<unsigned> clipboardAttempts_;
     unsigned captureTick_ = 0;
     unsigned lowWarned_ = 0;   // the low-battery threshold (20 or 10) already announced this discharge
+    LockKey lockKeys_[2]{
+        {VK_CAPITAL, IslandAlert::Kind::capsLock, L"Caps Lock"},
+        {VK_NUMLOCK, IslandAlert::Kind::numLock, L"Num Lock"},
+    };
 };
 
 int App::run(HINSTANCE instance) {
@@ -107,6 +122,11 @@ int App::run(HINSTANCE instance) {
     SetTimer(window_, fullscreenTimer, 750, nullptr);
     clipboardSequence_ = GetClipboardSequenceNumber();
     clipboardListening_ = AddClipboardFormatListener(window_) != FALSE;
+    for (auto& key : lockKeys_) key.enabled = (GetKeyState(key.virtualKey) & 1) != 0;
+    const RAWINPUTDEVICE keyboard{HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_KEYBOARD, RIDEV_INPUTSINK, window_};
+    if (!RegisterRawInputDevices(&keyboard, 1, sizeof(keyboard))) {
+        OutputDebugStringW(L"Zenith Dot could not register lock key input.\n");
+    }
     dropZone_.attach(window_, [this](bool hovering) {
         island_.setDropHover(hovering);
         frame();
@@ -462,6 +482,20 @@ void App::refreshClipboard() {
     }
 }
 
+void App::updateLockKey(RAWKEYBOARD const& keyboard, HANDLE device) {
+    for (auto& key : lockKeys_) {
+        if (keyboard.VKey != key.virtualKey) continue;
+        if (keyboard.Flags & RI_KEY_BREAK) {
+            key.held.erase(device);
+        } else if (key.held.insert(device).second) {
+            key.enabled = !key.enabled;
+            island_.notify({key.kind, key.label, key.enabled ? L"On" : L"Off", std::nullopt, 1, 1100ms});
+            frame();
+        }
+        return;
+    }
+}
+
 LRESULT CALLBACK App::dispatch(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     if (message == WM_NCCREATE) {
         const auto creation = reinterpret_cast<CREATESTRUCTW*>(lparam);
@@ -565,6 +599,16 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_CLIPBOARDUPDATE:
         queueClipboard(true);
         return 0;
+    case WM_INPUT: {
+        RAWINPUT input{};
+        UINT bytes = sizeof(input);
+        const UINT read = GetRawInputData(reinterpret_cast<HRAWINPUT>(lparam), RID_INPUT,
+                                          &input, &bytes, sizeof(RAWINPUTHEADER));
+        if (read != static_cast<UINT>(-1) && input.header.dwType == RIM_TYPEKEYBOARD) {
+            updateLockKey(input.data.keyboard, input.header.hDevice);
+        }
+        return DefWindowProcW(window_, message, wparam, lparam);
+    }
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;
     case WM_SETCURSOR:

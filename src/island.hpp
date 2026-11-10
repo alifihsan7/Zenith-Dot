@@ -37,7 +37,7 @@ struct IslandCommand {
 // A short notice that splits off the pill as a liquid bubble (or shows inside the open panel).
 struct IslandAlert {
     enum class Kind { copy, charging, battery, lowBattery, focusDone, breakDone, timerDone,
-                      microphone, camera, volume, brightness };
+                      microphone, camera, volume, brightness, capsLock, numLock };
     Kind kind = Kind::copy;
     std::wstring title;
     std::wstring value;
@@ -130,7 +130,8 @@ private:
     float pillLyricOut(float progress) const;
     float pillLyricIn(float progress) const;
     D2D1_SIZE_F pillSize(Clock::time_point now) const;
-    float captureWidth() const;
+    float captureWidth(Clock::time_point now) const;
+    float captureProgress(Clock::time_point now, float from, bool active) const;
     D2D1_RECT_F compactShape(Clock::time_point now, float amount) const;
     float visibility(Clock::time_point now) const;
     float panelValue(Clock::time_point now) const;
@@ -167,25 +168,25 @@ private:
     void prepareSurface(int width, int height);
     void prepareText();
     void releaseDeviceResources();
-    void drawCompact(Clock::time_point now, float amount, bool hideShared);
-    void drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideShared);
+    void drawCompact(Clock::time_point now, float amount, bool hideTitle);
+    void drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideTitle);
     void drawLyricsGlyph(D2D1_POINT_2F origin, D2D1_COLOR_F color);
-    void drawPillContent(Clock::time_point now, bool hideShared);
-    void drawPanel(Clock::time_point now, float value, float amount);
-    void drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, bool hideShared, bool record);
-    void drawMedia(D2D1_RECT_F panel, Clock::time_point now, bool hideShared, bool record);
+    void drawPillContent(Clock::time_point now, bool hideTitle);
+    void drawPanel(Clock::time_point now, float value, float amount, bool morphTitle);
+    void drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record);
+    void drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record);
     void drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double position);
     void prepareLyricLayout(float width);
     void drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record);
     void drawScratchpad(D2D1_RECT_F panel, bool record);
     void drawDropZone(D2D1_RECT_F panel, bool record);
-    void drawCaptureIndicators(D2D1_POINT_2F right);
+    void drawCaptureIndicators(D2D1_POINT_2F right, float mic, float camera);
     void drawSystem(D2D1_RECT_F panel, bool record);
     void drawNav(D2D1_RECT_F panel, bool record);
     void drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color);
     static std::wstring_view screenLabel(Screen screen);
-    void drawShared(D2D1_RECT_F panel, Clock::time_point now, float value, float amount);
-    void drawArt(D2D1_RECT_F rect, float radius);
+    void drawSharedTitle(D2D1_RECT_F panel, float value);
+    void drawArt(D2D1_RECT_F rect, float opacity);
     void drawFocusGlyph(D2D1_POINT_2F center, float size, D2D1_COLOR_F color);
     void drawTimerGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color);
     void drawChipGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color);
@@ -221,6 +222,9 @@ private:
     Clock::time_point visibilityStart_{};
     std::optional<unsigned> microphoneColor_;
     std::optional<unsigned> cameraColor_;
+    float microphoneFrom_ = 0;
+    float cameraFrom_ = 0;
+    Clock::time_point captureStart_{};
 
     // Cover colours cross-fade from the *From_ values to theme_, starting at themeStart_.
     CoverTheme theme_;
@@ -256,7 +260,7 @@ private:
     bool open_ = false;
     float panelFrom_ = 0;
     Clock::time_point panelStart_{};
-    bool shareCover_ = false;
+    D2D1_RECT_F closingPanel_{};
     bool shareTitle_ = false;
     Screen screen_ = Screen::media;
     Screen screenFrom_ = Screen::media;

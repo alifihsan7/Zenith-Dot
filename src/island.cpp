@@ -51,9 +51,12 @@ constexpr auto closeDelay = 185ms;
 constexpr auto parkDelay = 5s;
 constexpr auto featurePreviewTime = 850ms;
 constexpr auto pillGrowTime = 280ms;
-constexpr auto pillShrinkTime = 320ms;
+constexpr auto pillShrinkTime = 400ms;
 constexpr auto panelTime = 220ms;
-constexpr auto idlePillHold = 160ms;
+constexpr auto panelCloseTime = 360ms;
+constexpr auto idlePillHold = 240ms;
+constexpr auto captureTime = 230ms;
+constexpr float captureSlot = 19;
 constexpr auto themeTime = 700ms;
 constexpr auto alertOpenTime = 540ms;
 constexpr auto alertCloseTime = 440ms;
@@ -559,7 +562,7 @@ float Island::pillLyricIn(float t) const {
 }
 
 D2D1_SIZE_F Island::pillSize(Clock::time_point now) const {
-    const float extra = captureWidth();
+    const float extra = captureWidth(now);
     if (pillSizeTarget_.width == 0) return {pillWidth + extra, pillHeight};
     const float t = pillLyricProgress(now);
     const auto resize = [t](float from, float to) {
@@ -570,8 +573,14 @@ D2D1_SIZE_F Island::pillSize(Clock::time_point now) const {
             resize(pillSizeFrom_.height, pillSizeTarget_.height)};
 }
 
-float Island::captureWidth() const {
-    return (cameraColor_ ? 19.0f : 0.0f) + (microphoneColor_ ? 19.0f : 0.0f);
+float Island::captureProgress(Clock::time_point now, float from, bool active) const {
+    const auto amount = animate_ ? easeInOut(progress(captureStart_, captureTime, now)) : 1.0f;
+    return std::lerp(from, active ? 1.0f : 0.0f, amount);
+}
+
+float Island::captureWidth(Clock::time_point now) const {
+    return captureSlot * (captureProgress(now, microphoneFrom_, microphoneColor_.has_value()) +
+                          captureProgress(now, cameraFrom_, cameraColor_.has_value()));
 }
 
 D2D1_RECT_F Island::compactShape(Clock::time_point now, float amount) const {
@@ -579,13 +588,15 @@ D2D1_RECT_F Island::compactShape(Clock::time_point now, float amount) const {
     const auto size = pillSize(now);
     const float width = std::lerp(dotSize, size.width, t);
     const float height = std::lerp(dotSize, size.height, t);
-    return box(-width / 2, std::lerp(pillCenterY - dotSize / 2, pillTop, t), width, height);
+    return box((captureWidth(now) * t - width) / 2,
+               std::lerp(pillCenterY - dotSize / 2, pillTop, t), width, height);
 }
 
 float Island::panelValue(Clock::time_point now) const {
     const float target = open_ ? 1.0f : 0.0f;
     if (!animate_) return target;
-    return std::lerp(panelFrom_, target, panelEase(progress(panelStart_, panelTime, now)));
+    const float phase = progress(panelStart_, open_ ? panelTime : panelCloseTime, now);
+    return std::lerp(panelFrom_, target, open_ ? panelEase(phase) : easeInOut(phase));
 }
 
 float Island::screenHeight(Screen screen) const {
@@ -615,7 +626,8 @@ D2D1_RECT_F Island::panelRect(Clock::time_point now) const {
 
 bool Island::moving(Clock::time_point now) const {
     if (!animate_) return false;
-    return now - pillStart_ < pillLength_ || now - panelStart_ < panelTime || now - screenStart_ < panelTime ||
+    return now - pillStart_ < pillLength_ || now - panelStart_ < (open_ ? panelTime : panelCloseTime) ||
+           now - captureStart_ < captureTime || now - screenStart_ < panelTime ||
            now - widthStart_ < panelTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
            now - themeStart_ < themeTime || now - pillLyricStart_ < pillLyricTime ||
            (bubbleShowing() && now - alertStart_ < alertLength_);
@@ -686,7 +698,9 @@ void Island::updatePillLyric(Clock::time_point now, float workWidth) {
         if (next != lines.begin()) line = (next - 1)->text;
         if (line.find_first_not_of(L" \t\r\n") == std::wstring_view::npos || line.size() > 4096) line = {};
     }
-    const float maxWidth = std::clamp(workWidth - maxBubble - 60 - captureWidth(), 180.0f, maxPillLyricWidth);
+    const float reserved = captureSlot * (static_cast<int>(microphoneColor_.has_value()) +
+                                          static_cast<int>(cameraColor_.has_value()));
+    const float maxWidth = std::clamp(workWidth - maxBubble - 60 - reserved, 180.0f, maxPillLyricWidth);
     const float maxHeight = std::min(maxPillLyricHeight, maxWidth / 2);
     if (line == pillLyric_.text && (line.empty() || maxWidth == pillLyricMaxWidth_)) return;
 
@@ -725,7 +739,7 @@ void Island::updatePillLyric(Clock::time_point now, float workWidth) {
     }
     pillLyricMaxWidth_ = maxWidth;
     pillSizeFrom_ = pillSize(now);
-    pillSizeFrom_.width -= captureWidth();
+    pillSizeFrom_.width -= captureWidth(now);
     pillSizeTarget_ = target;
     pillLyric_ = std::move(next);
     pillLyricStart_ = pillMode_ == PillMode::dot ? Clock::time_point{} : now;
@@ -777,9 +791,14 @@ void Island::setSuppressed(bool suppressed) {
 }
 
 void Island::setCaptureColors(std::optional<unsigned> microphone, std::optional<unsigned> camera) {
+    if (microphone == microphoneColor_ && camera == cameraColor_) return;
+    const auto now = Clock::now();
+    microphoneFrom_ = captureProgress(now, microphoneFrom_, microphoneColor_.has_value());
+    cameraFrom_ = captureProgress(now, cameraFrom_, cameraColor_.has_value());
+    captureStart_ = now;
     microphoneColor_ = microphone;
     cameraColor_ = camera;
-    updatePill(Clock::now());
+    updatePill(now);
 }
 
 void Island::setOpen(bool open, Clock::time_point now) {
@@ -788,23 +807,21 @@ void Island::setOpen(bool open, Clock::time_point now) {
     if (open_ == open || (open && (suppressed_ || bubbleShowing()))) return;
     const bool lyricsVisible = wantsLyrics();
     const float shown = panelValue(now);
-    // The cover and title travel between the pill and the panel when both show the track.
-    const bool trackVisible = media_.hasSession && screen_ == Screen::media;
     if (open) {
         previewUntil_ = {};
         idlePillUntil_ = {};
-        widthStart_ = {};
-        screenFrom_ = screen_;
-        screenStart_ = {};
-        heightFrom_ = screenHeight(screen_);
+        if (shown <= 0) {
+            widthStart_ = {};
+            screenFrom_ = screen_;
+            screenStart_ = {};
+            heightFrom_ = screenHeight(screen_);
+        }
     }
-    const bool pill = pillAmount(now) >= 1;
-    shareCover_ = trackVisible && (pillMode_ == PillMode::media || pillMode_ == PillMode::dot) &&
-                  !pillLyric_.layout && !previousPillLyric_.layout &&
-                  (pillContent_ == PillMode::media || !pill);
-    shareTitle_ = shareCover_ && pill && pillContent_ == PillMode::media;
+    shareTitle_ = media_.hasSession && screen_ == Screen::media && pillMode_ == PillMode::media &&
+                  pillAmount(now) >= 1 && pillContent_ == PillMode::media &&
+                  !pillLyric_.layout && !previousPillLyric_.layout;
     open_ = open;
-    if (!open && !suppressed_) idlePillUntil_ = now + idlePillHold + (animate_ ? panelTime : 0ms);
+    if (!open && !suppressed_) idlePillUntil_ = now + idlePillHold + (animate_ ? panelCloseTime : 0ms);
     updateLyricVisibility(lyricsVisible, now);
     if (!open) panelPinned_ = false;
     keepHeight_ = 0;
@@ -991,12 +1008,17 @@ bool Island::pointerMove(POINT client) {
         dragFraction_ = timelineFraction(point);
         return true;
     }
+    const auto now = Clock::now();
+    if (!open_ && !suppressed_ && panelValue(now) > 0 && inside(closingPanel_, point)) {
+        setOpen(true, now);
+        return true;
+    }
     const auto target = targetAt(point);
     const auto hit = target ? target->hit : Hit::none;
     const auto index = target ? target->index : 0;
     if (!open_) {
         if (hit == Hit::pill) {
-            if (!openAt_) openAt_ = std::max(Clock::now() + openDelay, previewUntil_);
+            if (!openAt_) openAt_ = std::max(now + openDelay, previewUntil_);
         } else {
             openAt_.reset();
         }
@@ -1457,25 +1479,28 @@ void Island::drawButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool
 }
 
 // The cover, or the app's logo on a dark tile when the player gives no cover.
-void Island::drawArt(D2D1_RECT_F rect, float radius) {
+void Island::drawArt(D2D1_RECT_F rect, float opacity) {
+    if (opacity <= 0) return;
+    constexpr float radius = 8;
     const float size = rect.right - rect.left;
     if (auto* image = bitmap(cover_)) {
         winrt::com_ptr<ID2D1BitmapBrush> fill;
         winrt::check_hresult(target_->CreateBitmapBrush(image, fill.put()));
         fill->SetInterpolationMode(D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        fill->SetOpacity(opacity);
         fill->SetTransform(D2D1::Matrix3x2F::Scale(size / cover_.width, (rect.bottom - rect.top) / cover_.height) *
                            D2D1::Matrix3x2F::Translation(rect.left, rect.top));
         target_->FillRoundedRectangle(rounded(rect, radius), fill.get());
         return;
     }
-    target_->FillRoundedRectangle(rounded(rect, radius), ink(white(0.08f)));
+    target_->FillRoundedRectangle(rounded(rect, radius), ink(white(0.08f * opacity)));
     const D2D1_POINT_2F center{(rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2};
     if (auto* logo = icon(media_.appId); logo && bitmap(*logo)) {
         const float side = size * 0.55f;
-        target_->DrawBitmap(logo->bitmap.get(), box(center.x - side / 2, center.y - side / 2, side, side), 1,
+        target_->DrawBitmap(logo->bitmap.get(), box(center.x - side / 2, center.y - side / 2, side, side), opacity,
                             D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     } else if (size >= 24) {
-        text(L"♫", glyphFont_.get(), rect, rgb(mutedColor));
+        text(L"♫", glyphFont_.get(), rect, rgb(mutedColor, opacity));
     }
 }
 
@@ -1485,7 +1510,7 @@ static D2D1_RECT_F compactHit(D2D1_RECT_F shape, float amount) {
     return amount >= 1 ? grow(shape, 0, 3) : box(-22, pillTop - 3, 44, 46);
 }
 
-void Island::drawCompact(Clock::time_point now, float amount, bool hideShared) {
+void Island::drawCompact(Clock::time_point now, float amount, bool hideTitle) {
     if (bubbleShowing()) {
         drawSplit(now, amount);
         return;
@@ -1505,19 +1530,20 @@ void Island::drawCompact(Clock::time_point now, float amount, bool hideShared) {
     winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
     winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(rounded(shape, radius), clip.put()));
     pushLayer(clip.get(), opacity);
-    drawCompactContent(now, shape, hideShared);
+    drawCompactContent(now, shape, hideTitle);
     popLayer();
 }
 
-void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideShared) {
+void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideTitle) {
     const auto center = pt((shape.left + shape.right) / 2, (shape.top + shape.bottom) / 2);
+    const float extra = captureWidth(now);
     const float t = pillLyricProgress(now);
     const float fadeOut = pillLyricOut(t);
     const float oldOpacity = previousPillAlpha_ * (1 - fadeOut);
     const float newOpacity = pillLyricIn(t);
     const auto drawLyric = [&](PillLyric const& lyric, float opacity, float offset) {
         if (!lyric.layout || opacity <= 0) return;
-        target_->DrawTextLayout(pt(center.x + (pillLyricIconSpace - lyric.textSize.width - captureWidth()) / 2,
+        target_->DrawTextLayout(pt(center.x + (pillLyricIconSpace - lyric.textSize.width - extra) / 2,
                                    center.y - lyric.textSize.height / 2 + offset),
                                 lyric.layout.get(), ink(rgb(inkColor, opacity)));
     };
@@ -1533,21 +1559,27 @@ void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool h
         mediaOpacity = (previousPillLyric_.layout ? 0 : oldOpacity) + (pillLyric_.layout ? 0 : newOpacity);
     }
     if (mediaOpacity > 0) {
-        target_->SetTransform(D2D1::Matrix3x2F::Translation(center.x - captureWidth() / 2, center.y - pillCenterY) * base_);
+        target_->SetTransform(D2D1::Matrix3x2F::Translation(center.x - extra / 2, center.y - pillCenterY) * base_);
         if (mediaOpacity < 1) pushLayer(nullptr, mediaOpacity);
-        drawPillContent(now, hideShared);
+        drawPillContent(now, hideTitle);
         if (mediaOpacity < 1) popLayer();
         target_->SetTransform(base_);
     }
-    drawCaptureIndicators(pt(shape.right - 17, center.y));
+    drawCaptureIndicators(pt(shape.right - 17, center.y),
+        captureProgress(now, microphoneFrom_, microphoneColor_.has_value()),
+        captureProgress(now, cameraFrom_, cameraColor_.has_value()));
 }
 
-void Island::drawCaptureIndicators(D2D1_POINT_2F right) {
-    if (cameraColor_) {
-        drawAlertIcon(IslandAlert::Kind::camera, pt(right.x - 8, right.y - 8), rgb(*cameraColor_));
-        right.x -= 19;
-    }
-    if (microphoneColor_) drawAlertIcon(IslandAlert::Kind::microphone, pt(right.x - 8, right.y - 8), rgb(*microphoneColor_));
+void Island::drawCaptureIndicators(D2D1_POINT_2F right, float mic, float camera) {
+    const auto draw = [&](IslandAlert::Kind kind, std::optional<unsigned> color, float amount) {
+        const float opacity = lin(0.60f, 1, amount);
+        if (color && opacity > 0) {
+            drawAlertIcon(kind, pt(right.x - 8 + 4 * (1 - opacity), right.y - 8), rgb(*color, opacity));
+        }
+        right.x -= captureSlot * amount;
+    };
+    draw(IslandAlert::Kind::camera, cameraColor_, camera);
+    draw(IslandAlert::Kind::microphone, microphoneColor_, mic);
 }
 
 void Island::drawLyricsGlyph(D2D1_POINT_2F origin, D2D1_COLOR_F color) {
@@ -1559,7 +1591,7 @@ void Island::drawLyricsGlyph(D2D1_POINT_2F origin, D2D1_COLOR_F color) {
     target_->DrawLine(pt(x + 9, y + 12), pt(x + 13.5f, y + 12), ink(color), 1.4f, roundStroke_.get());
 }
 
-void Island::drawPillContent(Clock::time_point now, bool hideShared) {
+void Island::drawPillContent(Clock::time_point now, bool hideTitle) {
     const float edge = pillLeft + pillWidth - 12;
     const float right = edge;
     if (pillContent_ == PillMode::privacy || pillContent_ == PillMode::idle) {
@@ -1590,7 +1622,7 @@ void Island::drawPillContent(Clock::time_point now, bool hideShared) {
              rgb(inkColor));
         return;
     }
-    if (!hideShared) target_->FillEllipse(D2D1::Ellipse({pillLeft + 16, pillCenterY}, 4, 4), ink(accent_));
+    target_->FillEllipse(D2D1::Ellipse({pillLeft + 16, pillCenterY}, 4, 4), ink(accent_));
     float titleEnd = right;
     if (pillPlaying_) {
         // Four bars, each scaling between 40% and 100% (V7's 0.75s alternate ease-in-out loop).
@@ -1619,7 +1651,7 @@ void Island::drawPillContent(Clock::time_point now, bool hideShared) {
         }
         titleEnd = left - 8;
     }
-    if (!hideShared || !shareTitle_) {
+    if (!hideTitle) {
         text(pillTitle_, pillTitleFont_.get(), box(pillLeft + 28, pillTop, titleEnd - (pillLeft + 28), pillHeight),
              rgb(inkColor));
     }
@@ -1627,7 +1659,7 @@ void Island::drawPillContent(Clock::time_point now, bool hideShared) {
 
 // ---- Panel ---------------------------------------------------------------------------------------
 
-void Island::drawPanel(Clock::time_point now, float value, float amount) {
+void Island::drawPanel(Clock::time_point now, float value, float amount, bool morphTitle) {
     const auto full = panelRect(now);
     const auto from = compactShape(now, amount);
     const float fromRadius = std::min(from.right - from.left, from.bottom - from.top) / 2;
@@ -1636,8 +1668,9 @@ void Island::drawPanel(Clock::time_point now, float value, float amount) {
     clip.left = std::lerp(from.left, full.left, breadth);
     clip.right = std::lerp(from.right, full.right, breadth);
     if (open_) panelWheel_ = clip;
+    else closingPanel_ = clip;
     const float radius = std::lerp(fromRadius, panelRadius, value);
-    const float opacity = open_ ? std::lerp(0.68f, 1.0f, value) : value;
+    const float opacity = easeOut(value);
 
     // Soft drop shadow (0 8px 22px at 35%), faded in as the panel settles.
     const float shadow = lin(0.6f, 1, value) * opacity;
@@ -1655,7 +1688,8 @@ void Island::drawPanel(Clock::time_point now, float value, float amount) {
     target_->DrawRoundedRectangle(rounded(grow(clip, -0.5f, -0.5f), radius - 0.5f), ink(white(0.12f)), 1);
 
     recordPanel_ = open_ && value >= 1;
-    const bool hideShared = shareCover_ && value < 1;
+    // Fade the artwork at its panel position once the expanding shell has room for it.
+    const float artOpacity = lin(0.55f, 0.9f, value);
     auto content = full;
     if (const float inset = inlineInset(); inset > 0) {
         drawInlineAlert(full);
@@ -1665,25 +1699,26 @@ void Island::drawPanel(Clock::time_point now, float value, float amount) {
     if (switching < 1 && screenFrom_ != screen_) {
         const float enter = easeInOut(switching);
         pushLayer(nullptr, 1 - enter);
-        drawScreen(screenFrom_, content, now, false, false);
+        drawScreen(screenFrom_, content, now, artOpacity, false, false);
         popLayer();
         if (enter > 0) {
             pushLayer(nullptr, enter);
-            drawScreen(screen_, content, now, false, recordPanel_);
+            drawScreen(screen_, content, now, artOpacity, false, recordPanel_);
             popLayer();
         }
     } else {
-        drawScreen(screen_, content, now, hideShared, recordPanel_);
+        drawScreen(screen_, content, now, artOpacity, morphTitle, recordPanel_);
     }
     drawNav(full, recordPanel_);
     popLayer();
 
-    if (shareCover_ && value < 1 && value > 0) drawShared(content, now, value, amount);
+    if (morphTitle) drawSharedTitle(content, value);
 }
 
-void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, bool hideShared, bool record) {
+void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, float artOpacity,
+                        bool hideTitle, bool record) {
     switch (screen) {
-    case Screen::media: drawMedia(panel, now, hideShared, record); break;
+    case Screen::media: drawMedia(panel, now, artOpacity, hideTitle, record); break;
     case Screen::timers: drawTimers(panel, now, record); break;
     case Screen::scratch: drawScratchpad(panel, record); break;
     case Screen::drop: drawDropZone(panel, record); break;
@@ -1691,7 +1726,7 @@ void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now,
     }
 }
 
-void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, bool hideShared, bool record) {
+void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record) {
     const float x = panel.left;
     const float y = panel.top;
     if (!media_.hasSession) {
@@ -1699,8 +1734,8 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, bool hideShared
         return;
     }
     // Track: cover, title, artist.
-    if (!hideShared) drawArt(box(x + 14, y + 13, 44, 44), 8);
-    if (!hideShared || !shareTitle_) text(title(), titleFont_.get(), box(x + 68, y + 15.4f, 247, 22.4f), rgb(inkColor));
+    drawArt(box(x + 14, y + 13, 44, 44), artOpacity);
+    if (!hideTitle) text(title(), titleFont_.get(), box(x + 68, y + 15.4f, 247, 22.4f), rgb(inkColor));
     const auto& detail = media_.artist.empty() ? media_.album : media_.artist;
     text(detail, bodyFont_.get(), box(x + 68, y + 37.8f, 247, 16.8f), rgb(mutedColor));
 
@@ -2074,7 +2109,8 @@ void Island::drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color
 
 void Island::drawNav(D2D1_RECT_F panel, bool record) {
     const float top = panel.bottom - padBottom - navHeight;
-    drawCaptureIndicators(pt(panel.left + padX + 26, top + navHeight / 2));
+    drawCaptureIndicators(pt(panel.left + padX + 26, top + navHeight / 2),
+                          microphoneColor_ ? 1.0f : 0.0f, cameraColor_ ? 1.0f : 0.0f);
     constexpr auto count = std::size(screens);
     const float start = panel.left + panelWidth / 2 - (count * 35 + (count - 1) * 8) / 2.0f;
     const Hit hits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem};
@@ -2102,14 +2138,7 @@ void Island::drawNav(D2D1_RECT_F panel, bool record) {
     target_->DrawLine(pt(x, y + 2), pt(x, y + 7), ink(color), 1.4f, roundStroke_.get());
 }
 
-// The cover (and title) travel between their pill and panel spots while the panel opens or closes.
-void Island::drawShared(D2D1_RECT_F panel, Clock::time_point now, float value, float amount) {
-    const bool pill = amount >= 1 && pillContent_ == PillMode::media;
-    const auto fromCover = pill ? box(pillLeft + 12, pillCenterY - 4, 8, 8) : compactShape(now, amount);
-    const auto toCover = box(panel.left + 14, panel.top + 13, 44, 44);
-    const float fromRadius = (fromCover.right - fromCover.left) / 2;
-    drawArt(mixRect(fromCover, toCover, value), std::lerp(fromRadius, 8.0f, value));
-    if (!shareTitle_) return;
+void Island::drawSharedTitle(D2D1_RECT_F panel, float value) {
     // The title is drawn at its panel size and scaled down to the pill's 12px at the start.
     const float scale = std::lerp(12.0f / 16.0f, 1.0f, value);
     const float x = std::lerp(pillLeft + 28, panel.left + 68, value);
@@ -2126,7 +2155,9 @@ void Island::notify(IslandAlert alert) {
     if (suppressed_ || notificationsQuiet()) return;
     const auto now = Clock::now();
     prepareText();
-    if (alert_ && alert_->kind == alert.kind && (alert.kind == IslandAlert::Kind::copy || alert.meter)) {
+    const bool replacesSameKind = alert.kind == IslandAlert::Kind::copy || alert.meter ||
+                                  alert.kind == IslandAlert::Kind::capsLock || alert.kind == IslandAlert::Kind::numLock;
+    if (alert_ && alert_->kind == alert.kind && replacesSameKind) {
         if (alertInline_) {
             alertUntil_ = now + inlineAlertTime;
         } else if (alertTo_ == 0) {
@@ -2233,7 +2264,7 @@ void Island::drawSplit(Clock::time_point now, float amount) {
         const float d = (2 * capRadius + releaseGap) * travel;
         const float bubbleWidth = std::lerp(pillHeight, std::max(pillHeight, target / scale), widen);
         const float span = p < pinchAt ? width + d : width + releaseGap + bubbleWidth;
-        left = -span / 2;
+        left = (captureWidth(now) / scale - span) / 2;
         const float bx = left + width - capRadius;
         alertOpacity = lin(pinchAt - 0.1f, pinchAt + 0.12f, p);
         copyOpacity = lin(0.8f, 1, p);
@@ -2316,6 +2347,11 @@ void Island::drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_CO
     target_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) * D2D1::Matrix3x2F::Translation(origin.x, origin.y) *
                           base_);
     switch (kind) {
+    case IslandAlert::Kind::capsLock:
+    case IslandAlert::Kind::numLock:
+        target_->DrawRoundedRectangle(rounded(box(1.5f, 1.5f, 13, 13), 2.5f), ink(color), 1.4f);
+        text(kind == IslandAlert::Kind::capsLock ? L"A" : L"1", buttonFont_.get(), box(2, 2, 12, 12), color);
+        break;
     case IslandAlert::Kind::copy: {
         target_->DrawRoundedRectangle(rounded(box(5, 5, 8.5f, 8.5f), 1.5f), ink(color), 1.5f);
         PathBuilder back(graphics_.get());
@@ -2434,6 +2470,9 @@ void Island::draw(HWND window) {
     const float value = panelValue(now);
     const bool panelVisible = open_ || value > 0;
     const bool compactVisible = !open_;
+    const bool switchingScreen = screenFrom_ != screen_ && progress(screenStart_, panelTime, now) < 1;
+    const bool morphTitle = shareTitle_ && screen_ == Screen::media && media_.hasSession &&
+                            !switchingScreen && value > 0 && value < 1;
     if (!panelVisible || panelWidthAt(now) <= panelWidth) lyricLayout_ = nullptr;
 
     // The surface only covers what is drawn this frame.
@@ -2445,7 +2484,8 @@ void Island::draw(HWND window) {
         const float height = amount >= 1 ? size.height : pillHeight;
         const float bubble = std::max(alertWidth_, height);
         const float width = amount >= 1 ? size.width + releaseGap * height / pillHeight + bubble : bubble;
-        bounds = unite(bounds, grow(box(-width / 2, pillTop, width, height), 2, 2));
+        const float extra = amount >= 1 ? captureWidth(now) : 0;
+        bounds = unite(bounds, grow(box((extra - width) / 2, pillTop, width, height), 2, 2));
     }
     bounds.top = std::max(bounds.top, 0.0f);
     origin_ = {static_cast<LONG>(std::floor(bounds.left * scale_)), static_cast<LONG>(std::floor(bounds.top * scale_))};
@@ -2462,12 +2502,13 @@ void Island::draw(HWND window) {
     lyricViewport_ = {};
     dropViewport_ = {};
     panelWheel_ = {};
+    closingPanel_ = {};
     layerDepth_ = 0;
     target_->BeginDraw();
     target_->SetTransform(base_);
     target_->Clear(D2D1::ColorF(0, 0));
-    if (compactVisible) drawCompact(now, amount, shareCover_ && value > 0);
-    if (panelVisible) drawPanel(now, value, amount);
+    if (compactVisible) drawCompact(now, amount, morphTitle);
+    if (panelVisible) drawPanel(now, value, amount, morphTitle);
     const HRESULT result = target_->EndDraw();
     if (result == D2DERR_RECREATE_TARGET) {
         releaseDeviceResources();
