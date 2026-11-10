@@ -21,7 +21,7 @@ struct LyricsView {
 class Lyrics : public std::enable_shared_from_this<Lyrics> {
 public:
     explicit Lyrics(std::function<void()> changed);
-    void update(MediaState const& media, bool open);
+    void update(MediaState const& media, bool panelOpen, bool pillActive = false);
     void retry();
     void stop();
     LyricsView const& view() const { return view_; }
@@ -38,6 +38,7 @@ private:
     unsigned revision_ = 0;
     std::chrono::steady_clock::time_point retryAfter_{};
     bool open_ = false;
+    bool panelOpen_ = false;
     bool stopped_ = false;
     Action request_{nullptr};
 };

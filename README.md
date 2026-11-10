@@ -51,6 +51,8 @@ The extension sends playback metadata and timing to the local native messaging h
 
 Opening **Lyrics** sends the selected track's title, artist, duration, and album when available to [LRCLIB](https://lrclib.net/docs). When a matching track has synced lyrics and the player supplies a timeline, the side column shows the full lyrics within the height of Now Playing. Long lines wrap, and the active line uses a brighter text colour. Scroll over the lyrics to read ahead or back. Playback following resumes five seconds after the last scroll. If the player supports seeking, click any lyric line to jump to its timestamp.
 
+With Lyrics enabled, the compact pill shows the current synced line. It widens to fit the text and wraps longer lines. The track title returns before the first line or at gaps marked in the lyrics. After a pause, the pill keeps the last line for five seconds before shrinking. If Focus and media are both active, the pill follows the one you selected most recently.
+
 If the first lookup misses, Zenith Dot searches for the same title and artist within four seconds of the track's duration. When only plain lyrics are available, the column shows them with an **Unsynced** label. If no lyrics are found, reopen Lyrics after 30 seconds to retry.
 
 Temporary connection or service failures are retried automatically. If the lookup still fails, choose **Retry** in Lyrics to try again for the current track.
@@ -81,6 +83,7 @@ Temporary connection or service failures are retried automatically. If the looku
 - While music plays, choose **Hide Zenith Dot** from the tray. Confirm playback continues, then restore the island with **Show Zenith Dot**.
 - With the browser extension enabled, play two tabs in the same browser and select each numbered logo. Verify that play/pause and seek affect the selected tab.
 - Open Lyrics on a song with an LRCLIB match. Check that long lines wrap. Click a wrapped line and confirm playback jumps to its timestamp in a seekable player. Scroll to the first and last lines and check that playback following resumes five seconds after the last scroll. Switch tracks while a lookup is pending and check that the old track's lyrics disappear.
+- Leave Lyrics enabled and move away from the panel. Check that the pill shows the active line, wraps a long line, and shrinks after five seconds paused. Trigger a Copy notice while the lyric pill is wide and verify that it splits off cleanly.
 - Pause playback: the pill should show a pause glyph, then shrink to the dot after five seconds.
 - Copy some text: a "Copied" bubble should stretch out of the pill, pinch off, show the first line, and merge back after about two seconds. Copy with the panel open: the notice should appear as a row at the top of the panel. Copy a password from a password manager: no notice.
 - Unplug and reconnect the charger: "On Battery" and then a green "Charging" bubble, each with the battery level.

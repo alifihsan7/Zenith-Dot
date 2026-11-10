@@ -66,6 +66,7 @@ public:
     bool panelPinned() const;
     std::optional<RECT> scratchEditorRect() const;
     bool wantsLyrics() const;
+    bool wantsLyricPill() const;
     void notify(IslandAlert alert);
 
     // Runs time-based behavior: hover delays, closing, the focus timer, and parking the pill. Call before draw.
@@ -101,8 +102,16 @@ private:
         std::vector<uint8_t> pixels;
         winrt::com_ptr<ID2D1Bitmap> bitmap;
     };
+    struct PillLyric {
+        std::wstring text;
+        winrt::com_ptr<IDWriteTextLayout> layout;
+        D2D1_SIZE_F textSize{};
+    };
 
     float pillAmount(Clock::time_point now) const;
+    float pillLyricBlend(Clock::time_point now) const;
+    D2D1_SIZE_F pillSize(Clock::time_point now) const;
+    D2D1_RECT_F compactShape(Clock::time_point now, float amount) const;
     float visibility(Clock::time_point now) const;
     float panelValue(Clock::time_point now) const;
     float panelHeight(Clock::time_point now) const;
@@ -115,6 +124,7 @@ private:
     int focusRemaining(Clock::time_point now) const;
     bool moving(Clock::time_point now) const;
     void updatePill(Clock::time_point now);
+    void updatePillLyric(Clock::time_point now, float workWidth);
     void updateTheme(Clock::time_point now);
     void setOpen(bool open, Clock::time_point now);
     void showScreen(Screen screen, Clock::time_point now);
@@ -134,6 +144,7 @@ private:
     void prepareText();
     void releaseDeviceResources();
     void drawCompact(Clock::time_point now, float amount, bool hideShared);
+    void drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideShared);
     void drawPillContent(Clock::time_point now, bool hideShared);
     void drawPanel(Clock::time_point now, float value, float amount);
     void drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, bool hideShared, bool record);
@@ -144,7 +155,7 @@ private:
     void drawScratchpad(D2D1_RECT_F panel, bool record);
     void drawSystem(D2D1_RECT_F panel);
     void drawNav(D2D1_RECT_F panel, bool record);
-    void drawShared(D2D1_RECT_F panel, float value, float amount);
+    void drawShared(D2D1_RECT_F panel, Clock::time_point now, float value, float amount);
     void drawArt(D2D1_RECT_F rect, float radius);
     void drawFocusGlyph(D2D1_POINT_2F center, float size, D2D1_COLOR_F color);
     void drawChipGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color);
@@ -188,6 +199,7 @@ private:
     // Dot <-> pill. The content snapshot stays while the pill shrinks so it can fade out.
     PillMode pillMode_ = PillMode::dot;
     PillMode pillContent_ = PillMode::media;
+    PillMode preferredPill_ = PillMode::media;
     std::wstring pillTitle_;
     bool pillPlaying_ = false;
     float pillFrom_ = 0;
@@ -195,6 +207,12 @@ private:
     Clock::time_point pillStart_{};
     Clock::duration pillLength_{};
     Clock::time_point lastActive_{};
+    PillLyric pillLyric_;
+    PillLyric previousPillLyric_;
+    D2D1_SIZE_F pillSizeFrom_{};
+    D2D1_SIZE_F pillSizeTarget_{};
+    Clock::time_point pillLyricStart_{};
+    float pillLyricMaxWidth_ = 0;
 
     // Panel. panelFrom_ animates toward 1 (open) or 0 (closed) from panelStart_.
     bool open_ = false;
@@ -285,6 +303,7 @@ private:
     winrt::com_ptr<IDWriteTextFormat> headingCenterFont_;
     winrt::com_ptr<IDWriteTextFormat> bodyFont_;
     winrt::com_ptr<IDWriteTextFormat> lyricFont_;
+    winrt::com_ptr<IDWriteTextFormat> pillLyricFont_;
     winrt::com_ptr<IDWriteTextFormat> scratchFont_;
     winrt::com_ptr<IDWriteTextFormat> bodyEndFont_;
     winrt::com_ptr<IDWriteTextFormat> strongEndFont_;

@@ -123,7 +123,7 @@ void App::frame() {
         scratchpad_.close();
         island_.setScratchEditing(false);
     }
-    if (lyrics_) lyrics_->update(media_, island_.wantsLyrics());
+    if (lyrics_) lyrics_->update(media_, island_.wantsLyrics(), island_.wantsLyricPill());
     const auto now = std::chrono::steady_clock::now();
     if (island_.wantsSystemStats() && now - systemSampled_ >= 1s) {
         island_.setSystem(system_.sample());

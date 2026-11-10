@@ -233,8 +233,9 @@ void Lyrics::retry() {
     if (open_ && view_.status == LyricsStatus::error) view_.status = LyricsStatus::idle;
 }
 
-void Lyrics::update(MediaState const& media, bool open) {
+void Lyrics::update(MediaState const& media, bool panelOpen, bool pillActive) {
     if (stopped_) return;
+    const bool open = panelOpen || pillActive;
     const bool trackChanged = appId_ != media.appId || title_ != media.title || artist_ != media.artist ||
                               album_ != media.album;
     const auto duration = std::isfinite(media.duration) ?
@@ -257,8 +258,10 @@ void Lyrics::update(MediaState const& media, bool open) {
         cancel();
         view_.status = LyricsStatus::idle;
     }
-    if (open && !open_ && view_.status == LyricsStatus::unavailable &&
+    if (open && (!open_ || (panelOpen && !panelOpen_)) && view_.status == LyricsStatus::unavailable &&
         std::chrono::steady_clock::now() >= retryAfter_) view_.status = LyricsStatus::idle;
+    if (panelOpen && !panelOpen_ && view_.status == LyricsStatus::error) view_.status = LyricsStatus::idle;
+    panelOpen_ = panelOpen;
     open_ = open;
     if (open && view_.status == LyricsStatus::idle) {
         if (title_.empty() || artist_.empty() || duration_ == 0) {

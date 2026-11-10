@@ -17,6 +17,8 @@ using namespace std::chrono_literals;
 constexpr float pillTop = 8;
 constexpr float pillWidth = 147;
 constexpr float pillHeight = 40;
+constexpr float maxPillLyricWidth = 720;
+constexpr float maxPillLyricHeight = 160;
 constexpr float pillCenterY = pillTop + pillHeight / 2;
 constexpr float pillLeft = -pillWidth / 2;
 constexpr float dotSize = 12;
@@ -41,7 +43,6 @@ constexpr float releaseGap = 10;      // gap between pill and bubble at the pinc
 constexpr float neckSpread = 0.5f;
 constexpr float handleSize = 2.4f;
 constexpr float maxBubble = 259;
-constexpr float splitWidth = pillWidth + releaseGap + maxBubble;
 
 constexpr auto openDelay = 50ms;
 constexpr auto closeDelay = 185ms;
@@ -55,6 +56,7 @@ constexpr auto alertCloseTime = 440ms;
 constexpr auto inlineAlertTime = 2000ms;
 constexpr auto visibilityTime = 200ms;
 constexpr auto lyricScrollTime = 190ms;
+constexpr auto pillLyricTime = 210ms;
 constexpr int focusLength = 25 * 60;
 
 constexpr unsigned inkColor = 0xf5f6f8;
@@ -447,8 +449,8 @@ void Island::setMedia(MediaState const& media) {
         cover_ = {};
         if (coverSource_) cover_ = {coverSource_->size, coverSource_->size, coverSource_->pixels, nullptr};
     }
+    if (media_.playing || media.playing) lastActive_ = now;
     media_ = media;
-    if (media_.playing) lastActive_ = now;
     updatePill(now);
 }
 
@@ -481,9 +483,32 @@ bool Island::wantsLyrics() const {
     return open_ && screen_ == Screen::media && media_.hasSession && lyricsOpen_;
 }
 
+bool Island::wantsLyricPill() const {
+    return !suppressed_ && lyricsOpen_ && pillMode_ == PillMode::media;
+}
+
 float Island::pillAmount(Clock::time_point now) const {
     if (!animate_) return pillTarget_;
     return std::lerp(pillFrom_, pillTarget_, progress(pillStart_, pillLength_, now));
+}
+
+float Island::pillLyricBlend(Clock::time_point now) const {
+    return animate_ ? easeInOut(progress(pillLyricStart_, pillLyricTime, now)) : 1;
+}
+
+D2D1_SIZE_F Island::pillSize(Clock::time_point now) const {
+    if (pillSizeTarget_.width == 0) return {pillWidth, pillHeight};
+    const float t = pillLyricBlend(now);
+    return {std::lerp(pillSizeFrom_.width, pillSizeTarget_.width, t),
+            std::lerp(pillSizeFrom_.height, pillSizeTarget_.height, t)};
+}
+
+D2D1_RECT_F Island::compactShape(Clock::time_point now, float amount) const {
+    const float t = easeInOut(clamp01(amount));
+    const auto size = pillSize(now);
+    const float width = std::lerp(dotSize, size.width, t);
+    const float height = std::lerp(dotSize, size.height, t);
+    return box(-width / 2, std::lerp(pillCenterY - dotSize / 2, pillTop, t), width, height);
 }
 
 float Island::panelValue(Clock::time_point now) const {
@@ -526,7 +551,7 @@ bool Island::moving(Clock::time_point now) const {
     if (!animate_) return false;
     return now - pillStart_ < pillLength_ || now - panelStart_ < panelTime || now - screenStart_ < panelTime ||
            now - widthStart_ < panelTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
-           now - themeStart_ < themeTime ||
+           now - themeStart_ < themeTime || now - pillLyricStart_ < pillLyricTime ||
            (bubbleShowing() && now - alertStart_ < alertLength_);
 }
 
@@ -538,10 +563,12 @@ std::wstring Island::title() const {
 
 void Island::updatePill(Clock::time_point now) {
     auto mode = PillMode::dot;
-    if (media_.hasSession && (media_.playing || open_ || now - lastActive_ < parkDelay)) {
-        mode = PillMode::media;
-    } else if (focusUntil_ || (alert_ && alert_->kind == IslandAlert::Kind::focusDone)) {
+    const bool mediaActive = media_.hasSession && (media_.playing || open_ || now - lastActive_ < parkDelay);
+    const bool focusActive = focusUntil_ || (alert_ && alert_->kind == IslandAlert::Kind::focusDone);
+    if (focusActive && (!mediaActive || preferredPill_ == PillMode::focus)) {
         mode = PillMode::focus;
+    } else if (mediaActive) {
+        mode = PillMode::media;
     }
     pillMode_ = mode;
     if (mode != PillMode::dot) {
@@ -557,6 +584,50 @@ void Island::updatePill(Clock::time_point now) {
         pillStart_ = now;
         pillLength_ = target > 0 ? Clock::duration(pillGrowTime) : Clock::duration(pillShrinkTime);
     }
+}
+
+void Island::updatePillLyric(Clock::time_point now, float workWidth) {
+    if (bubbleShowing() || (pillMode_ == PillMode::dot && pillAmount(now) > 0)) return;
+    if (pillLyricBlend(now) >= 1) previousPillLyric_ = {};
+
+    std::wstring_view line;
+    if (wantsLyricPill() && lyrics_ && lyrics_->status == LyricsStatus::ready && media_.duration > 0) {
+        const auto& lines = lyrics_->lines;
+        const auto next = std::ranges::upper_bound(lines, media_.positionAt(now), {}, &LyricLine::seconds);
+        if (next != lines.begin()) line = (next - 1)->text;
+        if (line.find_first_not_of(L" \t\r\n") == std::wstring_view::npos || line.size() > 4096) line = {};
+    }
+    const float maxWidth = std::clamp(workWidth - maxBubble - 60, 180.0f, maxPillLyricWidth);
+    const float maxHeight = std::min(maxPillLyricHeight, maxWidth / 2);
+    if (line == pillLyric_.text && (line.empty() || maxWidth == pillLyricMaxWidth_)) return;
+
+    PillLyric next;
+    D2D1_SIZE_F target{pillWidth, pillHeight};
+    if (!line.empty()) {
+        next.text = line;
+        winrt::check_hresult(fonts_->CreateTextLayout(line.data(), static_cast<UINT32>(line.size()),
+            pillLyricFont_.get(), maxWidth - pillHeight, 10'000, next.layout.put()));
+        DWRITE_TEXT_METRICS metrics{};
+        winrt::check_hresult(next.layout->GetMetrics(&metrics));
+        if (metrics.lineCount > 1) {
+            // Reserve space for both rounded ends even when a lyric needs several rows.
+            winrt::check_hresult(next.layout->SetMaxWidth(maxWidth - maxHeight));
+            winrt::check_hresult(next.layout->GetMetrics(&metrics));
+        }
+        if (metrics.height + 16 <= maxHeight) {
+            next.textSize = {metrics.layoutWidth, metrics.height};
+            target = {metrics.lineCount > 1 ? maxWidth : std::max(pillWidth, std::ceil(metrics.width) + pillHeight),
+                      std::max(pillHeight, std::ceil(metrics.height) + 16)};
+        } else {
+            next.layout = nullptr;
+        }
+    }
+    pillLyricMaxWidth_ = maxWidth;
+    pillSizeFrom_ = pillSize(now);
+    pillSizeTarget_ = target;
+    previousPillLyric_ = pillMode_ == PillMode::dot ? PillLyric{} : std::move(pillLyric_);
+    pillLyric_ = std::move(next);
+    pillLyricStart_ = pillMode_ == PillMode::dot ? Clock::time_point{} : now;
 }
 
 void Island::updateTheme(Clock::time_point now) {
@@ -623,7 +694,8 @@ void Island::setOpen(bool open, Clock::time_point now) {
         heightFrom_ = screenHeight(screen_);
     }
     const bool pill = pillAmount(now) >= 1;
-    shareCover_ = trackVisible && pillMode_ != PillMode::focus && (pillContent_ == PillMode::media || !pill);
+    shareCover_ = trackVisible && pillMode_ != PillMode::focus && !pillLyric_.layout && !previousPillLyric_.layout &&
+                  (pillContent_ == PillMode::media || !pill);
     shareTitle_ = shareCover_ && pill && pillContent_ == PillMode::media;
     open_ = open;
     updateLyricVisibility(lyricsVisible, now);
@@ -634,7 +706,6 @@ void Island::setOpen(bool open, Clock::time_point now) {
     hovered_ = pressed_ = Hit::none;
     dragging_ = false;
     buttonWasDown_ = true;
-    if (open) lastActive_ = now;
     updatePill(now);
 }
 
@@ -646,6 +717,8 @@ void Island::showScreen(Screen screen, Clock::time_point now) {
     keepHeight_ = std::max(keepHeight_, heightFrom_);
     screenFrom_ = screen_;
     screen_ = screen;
+    if (screen == Screen::media) preferredPill_ = PillMode::media;
+    if (screen == Screen::focus) preferredPill_ = PillMode::focus;
     updateLyricVisibility(lyricsVisible, now);
     screenStart_ = animate_ ? now : Clock::time_point{};
     widthStart_ = screenStart_;
@@ -710,7 +783,7 @@ void Island::tick() {
             finishAlert(now);
         }
     }
-    if (media_.playing || open_) lastActive_ = now;
+    if (media_.playing) lastActive_ = now;
     updatePill(now);
     updateTheme(now);
 }
@@ -725,6 +798,7 @@ unsigned Island::frameInterval() const {
         return screen_ == Screen::system || scratchEditing_ || focusUntil_ ? 1000 : 0;
     }
     if (open_ || alert_) return 50;
+    if (wantsLyricPill() && media_.playing) return 50;
     if (pillMode_ == PillMode::media && media_.playing && animate_) return 33;
     if (pillMode_ != PillMode::dot) return 250;
     return 0;
@@ -1020,6 +1094,10 @@ void Island::prepareText() {
         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 17, L"", lyricFont_.put()));
     winrt::check_hresult(lyricFont_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP));
     winrt::check_hresult(lyricFont_->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 24, 18));
+    winrt::check_hresult(fonts_->CreateTextFormat(lyricFamily, systemFonts.get(), DWRITE_FONT_WEIGHT_MEDIUM,
+        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 15, L"", pillLyricFont_.put()));
+    winrt::check_hresult(pillLyricFont_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER));
+    winrt::check_hresult(pillLyricFont_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP));
     winrt::check_hresult(fonts_->CreateTextFormat(L"Segoe UI", nullptr, normal, DWRITE_FONT_STYLE_NORMAL,
         DWRITE_FONT_STRETCH_NORMAL, 14, L"", scratchFont_.put()));
     create(bodyEndFont_, L"Segoe UI", 12, normal, end);
@@ -1174,11 +1252,8 @@ void Island::drawArt(D2D1_RECT_F rect, float radius) {
 
 // ---- Compact: dot and pill -----------------------------------------------------------------------
 
-static D2D1_RECT_F compactShape(float amount) {
-    const float t = easeInOut(clamp01(amount));
-    const float width = std::lerp(dotSize, pillWidth, t);
-    const float height = std::lerp(dotSize, pillHeight, t);
-    return box(-width / 2, pillCenterY - height / 2, width, height);
+static D2D1_RECT_F compactHit(D2D1_RECT_F shape, float amount) {
+    return amount >= 1 ? grow(shape, 0, 3) : box(-22, pillTop - 3, 44, 46);
 }
 
 void Island::drawCompact(Clock::time_point now, float amount, bool hideShared) {
@@ -1187,11 +1262,11 @@ void Island::drawCompact(Clock::time_point now, float amount, bool hideShared) {
         return;
     }
     // A nearly transparent hit area: layered windows only receive the pointer over painted pixels.
-    const auto hit = amount >= 1 ? box(pillLeft, pillTop - 3, pillWidth, 46) : box(-22, pillTop - 3, 44, 46);
+    const auto shape = compactShape(now, amount);
+    const auto hit = compactHit(shape, amount);
     target_->FillRectangle(hit, ink(D2D1::ColorF(0, 0, 0, 1.0f / 255)));
     addTarget(hit, Hit::pill);
 
-    const auto shape = compactShape(amount);
     const float radius = std::min(shape.right - shape.left, shape.bottom - shape.top) / 2;
     fillShell(rounded(shape, radius));
     if (captureColor_ && amount < 1) {
@@ -1204,16 +1279,36 @@ void Island::drawCompact(Clock::time_point now, float amount, bool hideShared) {
     winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
     winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(rounded(shape, radius), clip.put()));
     pushLayer(clip.get(), opacity);
-    drawPillContent(now, hideShared);
+    drawCompactContent(now, shape, hideShared);
     popLayer();
+}
+
+void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideShared) {
+    const auto center = pt((shape.left + shape.right) / 2, (shape.top + shape.bottom) / 2);
+    const float blend = pillLyricBlend(now);
+    const auto drawLyric = [&](PillLyric const& lyric, float opacity) {
+        if (!lyric.layout || opacity <= 0) return;
+        target_->DrawTextLayout(pt(center.x - lyric.textSize.width / 2, center.y - lyric.textSize.height / 2),
+                                lyric.layout.get(), ink(rgb(inkColor, opacity)));
+    };
+    drawLyric(previousPillLyric_, 1 - blend);
+    drawLyric(pillLyric_, blend);
+    const float mediaOpacity = (previousPillLyric_.layout ? 0 : 1 - blend) + (pillLyric_.layout ? 0 : blend);
+    if (mediaOpacity > 0) {
+        target_->SetTransform(D2D1::Matrix3x2F::Translation(center.x, center.y - pillCenterY) * base_);
+        if (mediaOpacity < 1) pushLayer(nullptr, mediaOpacity);
+        drawPillContent(now, hideShared);
+        if (mediaOpacity < 1) popLayer();
+        target_->SetTransform(base_);
+    }
+    if (captureColor_) {
+        target_->FillEllipse(D2D1::Ellipse({shape.right - 12, center.y}, 3, 3), ink(rgb(*captureColor_)));
+    }
 }
 
 void Island::drawPillContent(Clock::time_point now, bool hideShared) {
     const float edge = pillLeft + pillWidth - 12;
     const float right = edge - (captureColor_ ? 11 : 0);
-    if (captureColor_) {
-        target_->FillEllipse(D2D1::Ellipse({edge, pillCenterY}, 3, 3), ink(rgb(*captureColor_)));
-    }
     if (pillContent_ == PillMode::focus) {
         drawFocusGlyph({pillLeft + 19, pillCenterY}, 14, accent_);
         const bool done = !focusUntil_ && alert_ && alert_->kind == IslandAlert::Kind::focusDone;
@@ -1262,7 +1357,7 @@ void Island::drawPillContent(Clock::time_point now, bool hideShared) {
 
 void Island::drawPanel(Clock::time_point now, float value, float amount) {
     const auto full = panelRect(now);
-    const auto from = compactShape(amount);
+    const auto from = compactShape(now, amount);
     const float fromRadius = std::min(from.right - from.left, from.bottom - from.top) / 2;
     const auto clip = mixRect(from, full, value);
     const float radius = std::lerp(fromRadius, panelRadius, value);
@@ -1311,7 +1406,7 @@ void Island::drawPanel(Clock::time_point now, float value, float amount) {
     drawNav(full, recordPanel_);
     popLayer();
 
-    if (shareCover_ && value < 1 && value > 0) drawShared(content, value, amount);
+    if (shareCover_ && value < 1 && value > 0) drawShared(content, now, value, amount);
 }
 
 void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, bool hideShared, bool record) {
@@ -1641,9 +1736,9 @@ void Island::drawNav(D2D1_RECT_F panel, bool record) {
 }
 
 // The cover (and title) travel between their pill and panel spots while the panel opens or closes.
-void Island::drawShared(D2D1_RECT_F panel, float value, float amount) {
+void Island::drawShared(D2D1_RECT_F panel, Clock::time_point now, float value, float amount) {
     const bool pill = amount >= 1 && pillContent_ == PillMode::media;
-    const auto fromCover = pill ? box(pillLeft + 12, pillCenterY - 4, 8, 8) : compactShape(amount);
+    const auto fromCover = pill ? box(pillLeft + 12, pillCenterY - 4, 8, 8) : compactShape(now, amount);
     const auto toCover = box(panel.left + 14, panel.top + 13, 44, 44);
     const float fromRadius = (fromCover.right - fromCover.left) / 2;
     drawArt(mixRect(fromCover, toCover, value), std::lerp(fromRadius, 8.0f, value));
@@ -1701,6 +1796,9 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
         alertUntil_ = now + inlineAlertTime;
         return;
     }
+    pillSizeFrom_ = pillSizeTarget_;
+    pillLyricStart_ = {};
+    previousPillLyric_ = {};
     openAt_.reset();
     alertFrom_ = 0;
     alertTo_ = 1;
@@ -1746,31 +1844,34 @@ void Island::drawSplit(Clock::time_point now, float amount) {
     const float p = alertValue(now);
     const float target = alertWidth_;
     PathBuilder shape(graphics_.get());
-    float left = pillLeft;
+    float left = 0;
     D2D1_RECT_F area{};
     float alertOpacity = 0;
     float copyOpacity = 0;
     const bool fromPill = amount >= 1;
+    const auto size = pillSize(now);
+    const float scale = fromPill ? size.height / pillHeight : 1;
     if (fromPill) {
+        const float width = size.width / scale;
         // Stretch until the pinch, then widen. The whole shape stays centered and only grows.
         const float travel = easeInOut(lin(0, pinchAt, p));
         const float widen = easeInOut(lin(pinchAt, 1, p));
         const float d = (2 * capRadius + releaseGap) * travel;
-        const float bubbleWidth = std::lerp(pillHeight, target, widen);
-        const float span = p < pinchAt ? pillWidth + d : pillWidth + releaseGap + bubbleWidth;
+        const float bubbleWidth = std::lerp(pillHeight, std::max(pillHeight, target / scale), widen);
+        const float span = p < pinchAt ? width + d : width + releaseGap + bubbleWidth;
         left = -span / 2;
-        const float bx = left + pillWidth - capRadius;
+        const float bx = left + width - capRadius;
         alertOpacity = lin(pinchAt - 0.1f, pinchAt + 0.12f, p);
         copyOpacity = lin(0.8f, 1, p);
         if (p < pinchAt) {
             // The bubble is a full-size copy of the pill's cap sliding out of it.
             const float k = 1 - std::pow(lin(0.28f, pinchAt, p), 2.0f);
             area = box(bx + d - capRadius, pillTop, 2 * capRadius, pillHeight);
-            if (d < 0.5f) capsule(shape, box(left, pillTop, pillWidth, pillHeight));
+            if (d < 0.5f) capsule(shape, box(left, pillTop, width, pillHeight));
             else connectedPath(shape, left, bx, d, capRadius, k);
         } else {
             const float q = easeOut(lin(pinchAt, pinchAt + 0.28f, p));
-            area = box(left + pillWidth + releaseGap, pillTop, bubbleWidth, pillHeight);
+            area = box(left + width + releaseGap, pillTop, bubbleWidth, pillHeight);
             releasedPath(shape, left, bx, q, area.left, bubbleWidth);
         }
     } else {
@@ -1784,20 +1885,27 @@ void Island::drawSplit(Clock::time_point now, float amount) {
         copyOpacity = 1;
     }
     const auto geometry = shape.finish();
-    fillShell(geometry.get());
-    if (!fromPill && captureColor_) {
-        target_->FillGeometry(geometry.get(), ink(rgb(*captureColor_, 1 - easeOut(p))));
+    winrt::com_ptr<ID2D1TransformedGeometry> stretched;
+    ID2D1Geometry* visible = geometry.get();
+    if (scale != 1) {
+        const auto transform = D2D1::Matrix3x2F::Scale(scale, scale, pt(0, pillTop));
+        winrt::check_hresult(graphics_->CreateTransformedGeometry(geometry.get(), &transform, stretched.put()));
+        visible = stretched.get();
+        area = box(area.left * scale, pillTop, (area.right - area.left) * scale, size.height);
     }
-    target_->DrawGeometry(geometry.get(), ink(white(0.13f)), 1);
+    fillShell(visible);
+    if (!fromPill && captureColor_) {
+        target_->FillGeometry(visible, ink(rgb(*captureColor_, 1 - easeOut(p))));
+    }
+    target_->DrawGeometry(visible, ink(white(0.13f)), 1);
 
     if (fromPill) {
+        const auto capsule = box(left * scale, pillTop, size.width, size.height);
         winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
         winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(
-            rounded(box(left, pillTop, pillWidth, pillHeight), capRadius), clip.put()));
+            rounded(capsule, size.height / 2), clip.put()));
         pushLayer(clip.get(), 1);
-        target_->SetTransform(D2D1::Matrix3x2F::Translation(left - pillLeft, 0) * base_);
-        drawPillContent(now, false);
-        target_->SetTransform(base_);
+        drawCompactContent(now, capsule, false);
         popLayer();
     }
     drawAlertContent(area, alertOpacity, copyOpacity);
@@ -1939,10 +2047,13 @@ void Island::draw(HWND window) {
     monitorInfo.cbSize = sizeof(MONITORINFO);
     winrt::check_bool(GetMonitorInfoW(monitor, &monitorInfo));
     const auto work = monitorInfo.rcWork;
-    lyricsWidth_ = std::clamp((work.right - work.left) / scale_ - panelWidth - 2 * shadowReach,
+    const float workWidth = (work.right - work.left) / scale_;
+    lyricsWidth_ = std::clamp(workWidth - panelWidth - 2 * shadowReach,
                               130.0f, maxLyricsWidth);
     const float opacity = visibility(now);
     anchor_ = {work.left + (work.right - work.left) / 2, work.top - std::lround((1 - opacity) * 14 * scale_)};
+    prepareText();
+    updatePillLyric(now, workWidth);
 
     const float amount = pillAmount(now);
     const float value = panelValue(now);
@@ -1951,16 +2062,21 @@ void Island::draw(HWND window) {
     if (!panelVisible || panelWidthAt(now) <= panelWidth) lyricLayout_ = nullptr;
 
     // The surface only covers what is drawn this frame.
-    auto bounds = grow(compactShape(amount), 2, 2);
-    bounds = unite(bounds, amount >= 1 ? box(pillLeft, pillTop - 3, pillWidth, 46) : box(-22, pillTop - 3, 44, 46));
+    const auto compact = compactShape(now, amount);
+    auto bounds = unite(grow(compact, 2, 2), compactHit(compact, amount));
     if (panelVisible) bounds = unite(bounds, grow(panelRect(now), shadowReach, shadowReach));
-    if (bubbleShowing()) bounds = unite(bounds, box(-splitWidth / 2 - 2, pillTop - 2, splitWidth + 4, pillHeight + 4));
+    if (bubbleShowing()) {
+        const auto size = pillSize(now);
+        const float height = amount >= 1 ? size.height : pillHeight;
+        const float bubble = std::max(alertWidth_, height);
+        const float width = amount >= 1 ? size.width + releaseGap * height / pillHeight + bubble : bubble;
+        bounds = unite(bounds, grow(box(-width / 2, pillTop, width, height), 2, 2));
+    }
     bounds.top = std::max(bounds.top, 0.0f);
     origin_ = {static_cast<LONG>(std::floor(bounds.left * scale_)), static_cast<LONG>(std::floor(bounds.top * scale_))};
     const int width = static_cast<int>(std::ceil(bounds.right * scale_)) - origin_.x;
     const int height = static_cast<int>(std::ceil(bounds.bottom * scale_)) - origin_.y;
     prepareSurface(width, height);
-    prepareText();
     const RECT pixels{0, 0, surfaceSize_.cx, surfaceSize_.cy};
     winrt::check_hresult(target_->BindDC(surface_, &pixels));
 
