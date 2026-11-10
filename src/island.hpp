@@ -1,6 +1,7 @@
 #pragma once
 
 #include "media.hpp"
+#include "lyrics.hpp"
 #include "power.hpp"
 #include "system.hpp"
 
@@ -9,6 +10,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <map>
@@ -29,13 +31,14 @@ struct IslandCommand {
 
 // A short notice that splits off the pill as a liquid bubble (or shows inside the open panel).
 struct IslandAlert {
-    enum class Kind { copy, charging, battery, lowBattery, focusDone };
+    enum class Kind { copy, charging, battery, lowBattery, focusDone, microphone, camera, volume, brightness };
     Kind kind = Kind::copy;
     std::wstring title;
     std::wstring value;
     std::optional<unsigned> color;   // icon colour (0xRRGGBB); the accent when empty
     int priority = 1;                // a waiting alert is replaced only by one of equal or higher priority
     std::chrono::milliseconds hold{1800};
+    std::optional<unsigned> meter = std::nullopt;
 };
 
 // The island UI from preview V7: an idle dot, a pill while something is going on, and a panel on hover.
@@ -53,6 +56,10 @@ public:
     void setMedia(MediaState const& media);
     void setPower(PowerState const& power);
     void setSystem(SystemStats const& stats);
+    void setSuppressed(bool suppressed);
+    void setCaptureColor(std::optional<unsigned> color);
+    void setLyrics(LyricsView const& lyrics);
+    bool wantsLyrics() const;
     void notify(IslandAlert alert);
 
     // Runs time-based behavior: hover delays, closing, the focus timer, and parking the pill. Call before draw.
@@ -60,11 +67,13 @@ public:
     void draw(HWND window);
     // Milliseconds until the next frame is needed, or 0 while nothing moves.
     unsigned frameInterval() const;
+    bool visible() const;
     bool wantsSystemStats() const;
 
     // Pointer input in window client pixels. The bool results say whether a redraw is needed.
     bool pointerMove(POINT client);
     bool pointerLeave();
+    bool scrollLyrics(POINT client, int delta);
     bool pointerDown(POINT client);   // true: capture the mouse until pointerUp
     IslandCommand pointerUp(POINT client);
     void pointerCancel();
@@ -72,7 +81,7 @@ public:
 
 private:
     enum class Hit { none, pill, previous, toggle, next, timeline, source, navMedia, navFocus, navSystem,
-                     focusToggle, focusReset };
+                     focusToggle, focusReset, lyrics, lyricLine };
     enum class Screen { media, focus, system };
     enum class PillMode { dot, media, focus };
     struct Target {
@@ -88,8 +97,12 @@ private:
     };
 
     float pillAmount(Clock::time_point now) const;
+    float visibility(Clock::time_point now) const;
     float panelValue(Clock::time_point now) const;
     float panelHeight(Clock::time_point now) const;
+    float panelWidthAt(Clock::time_point now) const;
+    float lyricScroll(Clock::time_point now) const;
+    void moveLyricScroll(float offset, Clock::time_point now);
     float screenHeight(Screen screen) const;
     D2D1_RECT_F panelRect(Clock::time_point now) const;
     int focusRemaining(Clock::time_point now) const;
@@ -100,7 +113,7 @@ private:
     void showScreen(Screen screen, Clock::time_point now);
     void toggleFocus(Clock::time_point now);
     D2D1_POINT_2F stagePoint(POINT client) const;
-    Target const* targetAt(D2D1_POINT_2F point) const;
+    std::optional<Target> targetAt(D2D1_POINT_2F point) const;
     float timelineFraction(D2D1_POINT_2F point) const;
     std::wstring title() const;
     void startAlert(IslandAlert alert, Clock::time_point now, bool update);
@@ -118,6 +131,8 @@ private:
     void drawPanel(Clock::time_point now, float value, float amount);
     void drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, bool hideShared, bool record);
     void drawMedia(D2D1_RECT_F panel, Clock::time_point now, bool hideShared, bool record);
+    void drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double position);
+    void prepareLyricLayout(float width);
     void drawFocus(D2D1_RECT_F panel, Clock::time_point now, bool record);
     void drawSystem(D2D1_RECT_F panel);
     void drawNav(D2D1_RECT_F panel, bool record);
@@ -131,6 +146,7 @@ private:
     void drawSplit(Clock::time_point now, float amount);
     void drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity);
     void drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color);
+    void drawAlertMeter(float left, float right, float middle, float opacity);
     void drawInlineAlert(D2D1_RECT_F panel);
     void fillPolygon(std::initializer_list<D2D1_POINT_2F> points, D2D1_COLOR_F color);
     void pushLayer(ID2D1Geometry* mask, float opacity);
@@ -148,6 +164,10 @@ private:
     PowerState power_;
     SystemStats system_;
     bool animate_ = true;
+    bool suppressed_ = false;
+    float visibilityFrom_ = 1;
+    Clock::time_point visibilityStart_{};
+    std::optional<unsigned> captureColor_;
 
     // Cover colours cross-fade from the *From_ values to theme_, starting at themeStart_.
     CoverTheme theme_;
@@ -178,6 +198,26 @@ private:
     Screen screenFrom_ = Screen::media;
     Clock::time_point screenStart_{};
     float heightFrom_ = 0;
+    float widthFrom_ = 0;
+    Clock::time_point widthStart_{};
+    bool lyricsOpen_ = false;
+    LyricsView const* lyrics_ = nullptr;
+    float lyricsWidth_ = 0;
+    float lyricScrollFrom_ = 0;
+    float lyricScrollTo_ = 0;
+    float lyricScrollShown_ = 0;
+    Clock::time_point lyricScrollStart_{};
+    Clock::time_point lyricFollowAt_{};
+    D2D1_RECT_F lyricViewport_{};
+    std::vector<DWRITE_TEXT_RANGE> lyricRanges_;
+    std::ptrdiff_t activeLyric_ = -1;
+    float activeLyricTop_ = 0;
+    float activeLyricHeight_ = 0;
+    float lyricContentHeight_ = 0;
+    float lyricLayoutWidth_ = 0;
+    unsigned lyricLayoutRevision_ = 0;
+    winrt::com_ptr<IDWriteTextLayout> lyricLayout_;
+    winrt::com_ptr<ID2D1SolidColorBrush> lyricActiveInk_;
     // After a screen change shrinks the panel, its old height still counts as "near" until the
     // pointer enters the new panel, so the pointer left behind on the nav doesn't close it.
     float keepHeight_ = 0;
@@ -231,6 +271,7 @@ private:
     winrt::com_ptr<IDWriteTextFormat> titleFont_;
     winrt::com_ptr<IDWriteTextFormat> headingCenterFont_;
     winrt::com_ptr<IDWriteTextFormat> bodyFont_;
+    winrt::com_ptr<IDWriteTextFormat> lyricFont_;
     winrt::com_ptr<IDWriteTextFormat> bodyEndFont_;
     winrt::com_ptr<IDWriteTextFormat> strongEndFont_;
     winrt::com_ptr<IDWriteTextFormat> monoFont_;

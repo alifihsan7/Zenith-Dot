@@ -15,8 +15,8 @@ Serah terima untuk agent berikutnya (Codex). Isinya posisi kerja terakhir, cara 
 |---|---|---|
 | 1 | Dot ↔ pill, panel hover (Now Playing, Focus, System), morph cover dan judul, warna aksen dari cover | Selesai, `55c4fed` |
 | 2 | Bubble split liquid: Copy, charger, baterai lemah, Focus done; alert inline saat panel terbuka | Selesai, `4f9d681` |
-| 3 | Sembunyi saat fullscreen, indikator mic dan kamera, HUD volume dan brightness | **Belum mulai.** User minta lanjut sampai selesai |
-| 4 | Scratchpad; lirik dan Up Next | Belum. Lirik/Up Next butuh keputusan user (lihat bawah) |
+| 3 | Sembunyi saat fullscreen, indikator mic dan kamera, HUD volume dan brightness | Sudah diimplementasikan dan build Release lulus. Verifikasi di desktop interaktif masih terbuka. |
+| 4 | Scratchpad dan lirik | Panel lirik penuh. Scratchpad masih terbuka. |
 
 Sebelumnya juga sudah selesai: island tidak mencuri fokus (`WS_EX_NOACTIVATE` + `MA_NOACTIVATE`) dan warna aksen ikut cover (`6efa8bf`).
 
@@ -44,6 +44,7 @@ cmake --build out --config Release --parallel
 | `src/media.hpp/.cpp` | `MediaMonitor`: sesi GSMTC, metadata, cover (96×96, crop tengah), warna dari cover, daftar sumber, seek, pilih sumber |
 | `src/power.*` | Status baterai dan AC |
 | `src/system.*` | CPU (`GetSystemTimes`) dan RAM untuk layar System |
+| `src/desktop.*` | Sinyal fullscreen, aktivitas mic/kamera, volume Core Audio, dan brightness WMI |
 
 ### Hal penting di `Island`
 
@@ -55,7 +56,7 @@ cmake --build out --config Release --parallel
 - **Geometri split liquid** (`neck`, `connectedPath`, `releasedPath`, `PathBuilder`) adalah port 1:1 dari JS V7, termasuk konstanta `pinchAt`, `releaseGap`, `neckSpread`, dan `handleSize`. Kalau mengubah perilakunya, ubah di preview dulu.
 - Semua ukuran dan timing diambil dari V7 dan disimpan sebagai konstanta di atas `island.cpp`.
 
-## Tahap 3: rencana yang belum dikerjakan
+## Tahap 3: acuan implementasi
 
 Perilaku acuan ada di V7: cari `fullscreen`, `mic`, `camera`, `volume`, dan `brightness` di `experiments/zenith-dot-v7.html`.
 
@@ -66,7 +67,7 @@ Perilaku acuan ada di V7: cari `fullscreen`, `mic`, `camera`, `volume`, dan `bri
 ## Tahap 4 dan hal yang perlu keputusan user
 
 - **Scratchpad** butuh input teks, jadi island harus boleh mengambil fokus saat area teks diklik, lalu mengembalikan fokus ke app sebelumnya saat panel ditutup (pengecualian ini sudah dicatat di NOTES). Butuh kontrol edit sendiri, karena kontrol Win32 standar tidak tergambar di jendela layered dengan `UpdateLayeredWindow`.
-- **Lirik dan Up Next:** GSMTC Windows tidak menyediakan lirik maupun antrean, jadi tombolnya sengaja belum dipasang di native. Butuh sumber data lain (misalnya API lirik online seperti LRCLIB, yang berarti akses jaringan). **Tanyakan user dulu.**
+- **Lirik:** Lookup ke LRCLIB saat dibuka. Kolom menampilkan lirik sepanjang lagu dengan wrapping dan auto-scroll. Up Next dihapus dari lingkup produk sesuai revisi user.
 - Masih terbuka di NOTES: multi-monitor dan DPI. Sekarang island cuma di monitor utama.
 
 ## Cara tes yang sudah terbukti

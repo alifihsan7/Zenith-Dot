@@ -1,5 +1,6 @@
 #include <initguid.h>
 
+#include "desktop.hpp"
 #include "island.hpp"
 #include <shellapi.h>
 #include <windowsx.h>
@@ -15,6 +16,9 @@ constexpr UINT trayMessage = WM_APP + 2;
 constexpr UINT redrawMessage = WM_APP + 3;
 constexpr UINT_PTR powerTimer = 1;
 constexpr UINT_PTR frameTimer = 2;
+constexpr UINT_PTR fullscreenTimer = 3;
+constexpr unsigned microphoneColor = 0xff9f0a;
+constexpr unsigned cameraColor = 0x30d158;
 
 enum Menu { previousTrack = 1, togglePlayback, nextTrack, exitApp };
 constexpr MediaCommand controls[] = {MediaCommand::previous, MediaCommand::toggle, MediaCommand::next};
@@ -30,6 +34,9 @@ private:
     void run(IslandCommand const& command);
     void refreshPower();
     void refreshMotion();
+    bool refreshFullscreen();
+    void refreshCapture(bool announce = true);
+    void showLevel(IslandAlert::Kind kind, unsigned percent, bool muted = false);
     void addTray();
     void showMenu(POINT point);
     std::optional<IslandAlert> clipboardAlert();
@@ -40,12 +47,17 @@ private:
     UINT frameInterval_ = 0;
     NOTIFYICONDATAW tray_{};
     std::shared_ptr<MediaMonitor> monitor_;
+    std::shared_ptr<Lyrics> lyrics_;
     MediaState media_;
     PowerState power_;
+    DesktopMonitor desktop_;
+    CaptureActivity capture_;
+    std::optional<WPARAM> lastVolume_;
     SystemMonitor system_;
     std::chrono::steady_clock::time_point systemSampled_{};
     Island island_;
     bool tracking_ = false;
+    bool fullscreen_ = false;
     unsigned lowWarned_ = 0;   // the low-battery threshold (20 or 10) already announced this discharge
 };
 
@@ -69,10 +81,15 @@ int App::run(HINSTANCE instance) {
     powerNotification_ = RegisterPowerSettingNotification(window_, &GUID_ACDC_POWER_SOURCE,
                                                            DEVICE_NOTIFY_WINDOW_HANDLE);
     SetTimer(window_, powerTimer, 10'000, nullptr);
+    SetTimer(window_, fullscreenTimer, 750, nullptr);
     AddClipboardFormatListener(window_);
+    desktop_.start(window_);
+    lyrics_ = std::make_shared<Lyrics>([this] { frame(); });
+    island_.setLyrics(lyrics_->view());
+    refreshFullscreen();
+    refreshCapture(false);
     addTray();
     frame();
-    ShowWindow(window_, SW_SHOWNOACTIVATE);
     monitor_ = std::make_shared<MediaMonitor>(window_, [this](MediaState const& state) {
         media_ = state;
         island_.setMedia(state);
@@ -92,12 +109,16 @@ int App::run(HINSTANCE instance) {
 
 void App::frame() {
     island_.tick();
+    if (lyrics_) lyrics_->update(media_, island_.wantsLyrics());
     const auto now = std::chrono::steady_clock::now();
     if (island_.wantsSystemStats() && now - systemSampled_ >= 1s) {
         island_.setSystem(system_.sample());
         systemSampled_ = now;
     }
-    island_.draw(window_);
+    const bool shown = IsWindowVisible(window_) != FALSE;
+    const bool visible = island_.visible() && (shown || !fullscreen_);
+    if (visible) island_.draw(window_);
+    if (visible != shown) ShowWindow(window_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
     const UINT interval = island_.frameInterval();
     if (interval == frameInterval_) return;
     if (frameInterval_ != 0) KillTimer(window_, frameTimer);
@@ -149,6 +170,43 @@ void App::refreshMotion() {
     BOOL animations = TRUE;
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0);
     island_.setAnimate(animations != FALSE);
+}
+
+bool App::refreshFullscreen() {
+    if (GetForegroundWindow() == window_) return false;
+    const bool fullscreen = fullscreenOnPrimary(window_);
+    if (fullscreen == fullscreen_) return false;
+    fullscreen_ = fullscreen;
+    island_.setSuppressed(fullscreen);
+    const auto style = GetWindowLongPtrW(window_, GWL_EXSTYLE);
+    SetWindowLongPtrW(window_, GWL_EXSTYLE, fullscreen ? style | WS_EX_TRANSPARENT : style & ~WS_EX_TRANSPARENT);
+    if (fullscreen && GetCapture() == window_) ReleaseCapture();
+    return true;
+}
+
+void App::refreshCapture(bool announce) {
+    auto activity = readCaptureActivity();
+    if (activity == capture_) return;
+    std::optional<unsigned> color;
+    if (!activity.camera.empty()) color = cameraColor;
+    else if (!activity.microphone.empty()) color = microphoneColor;
+    island_.setCaptureColor(color);
+    if (announce) {
+        if (capture_.camera.empty() && !activity.camera.empty()) {
+            island_.notify({IslandAlert::Kind::camera, L"Camera", activity.camera, cameraColor, 2});
+        } else if (capture_.microphone.empty() && !activity.microphone.empty()) {
+            island_.notify({IslandAlert::Kind::microphone, L"Microphone", activity.microphone, microphoneColor, 2});
+        }
+    }
+    capture_ = std::move(activity);
+    if (announce) frame();
+}
+
+void App::showLevel(IslandAlert::Kind kind, unsigned percent, bool muted) {
+    if (fullscreen_) return;
+    island_.notify({kind, L"", muted ? L"Muted" : std::to_wstring(percent) + L"%", std::nullopt,
+                    1, 1800ms, muted ? 0u : percent});
+    frame();
 }
 
 void App::addTray() {
@@ -279,6 +337,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         PostMessageW(window_, redrawMessage, 0, 0);
         return 0;
     case redrawMessage:
+        refreshFullscreen();
         frame();
         return 0;
     case WM_POWERBROADCAST:
@@ -287,11 +346,32 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_TIMER:
         if (wparam == powerTimer) refreshPower();
         if (wparam == frameTimer) frame();
+        if (wparam == fullscreenTimer && refreshFullscreen()) frame();
+        return 0;
+    case DesktopMonitor::foregroundChanged:
+        if (refreshFullscreen()) frame();
+        return 0;
+    case DesktopMonitor::captureChanged:
+        refreshCapture();
+        return 0;
+    case DesktopMonitor::audioDeviceChanged:
+        lastVolume_.reset();
+        desktop_.refreshAudioDevice();
+        return 0;
+    case DesktopMonitor::volumeChanged:
+        if (desktop_.isCurrentVolume(lparam) && wparam != lastVolume_) {
+            lastVolume_ = wparam;
+            showLevel(IslandAlert::Kind::volume, static_cast<unsigned>(wparam & 0xff), (wparam & 0x100) != 0);
+        }
+        return 0;
+    case DesktopMonitor::brightnessChanged:
+        showLevel(IslandAlert::Kind::brightness, static_cast<unsigned>(wparam));
         return 0;
     case MediaMonitor::notification:
         if (monitor_) monitor_->refresh(wparam);
         return 0;
     case WM_CLIPBOARDUPDATE:
+        if (fullscreen_) return 0;
         if (auto alert = clipboardAlert()) {
             island_.notify(std::move(*alert));
             frame();
@@ -306,6 +386,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         }
         break;
     case WM_MOUSEMOVE:
+        if (fullscreen_) return 0;
         if (!tracking_) {
             TRACKMOUSEEVENT tracking{sizeof(TRACKMOUSEEVENT), TME_LEAVE, window_, 0};
             tracking_ = TrackMouseEvent(&tracking) != FALSE;
@@ -319,6 +400,12 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         tracking_ = false;
         if (island_.pointerLeave()) frame();
         return 0;
+    case WM_MOUSEWHEEL: {
+        POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        ScreenToClient(window_, &point);
+        if (island_.scrollLyrics(point, GET_WHEEL_DELTA_WPARAM(wparam))) frame();
+        return 0;
+    }
     case WM_LBUTTONDOWN:
         if (island_.pointerDown({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)})) SetCapture(window_);
         frame();
@@ -349,6 +436,9 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_DESTROY:
         KillTimer(window_, powerTimer);
         KillTimer(window_, frameTimer);
+        KillTimer(window_, fullscreenTimer);
+        desktop_.stop();
+        if (lyrics_) lyrics_->stop();
         RemoveClipboardFormatListener(window_);
         if (monitor_) monitor_->stop();
         if (powerNotification_) UnregisterPowerSettingNotification(powerNotification_);

@@ -2,11 +2,15 @@
 
 A Windows 11 overlay that sits as a dot at the top center of the primary display. When a Windows media session plays, the dot grows into a pill with the track title and a waveform. After five seconds paused, it shrinks back to the dot. Hover the pill or the dot to open the panel:
 
-- **Now Playing:** cover, title, artist, a seekable timeline, playback controls, and one button per app with a media session.
+- **Now Playing:** cover, title, artist, a seekable timeline, playback controls, and one button per app with a media session. Open **Lyrics** with the speech bubble beside the title.
 - **Focus:** a 25-minute timer. While it runs, the pill shows the time left.
 - **System:** CPU, memory, and power status.
 
 Short notices split off the pill as a liquid bubble, or grow out of the dot: plugging in or unplugging the charger, low battery at 20% and 10%, the end of a Focus session, and copying something (with a short preview). While the panel is open they show as a row at its top instead. Clipboard content is never stored, and content that password managers mark as private is not announced.
+
+Zenith Dot hides during fullscreen on the primary display and resumes when you leave fullscreen. The idle dot turns orange during microphone use and green during camera use. In pill mode, the indicator sits on the right. When capture starts, a notice shows the app using the device.
+
+System volume and brightness changes show a meter that updates in place as you adjust the level. Brightness requires a display that publishes Windows WMI brightness events. The Windows volume and brightness flyouts can appear alongside Zenith Dot.
 
 The accent colour follows the current cover. The tray menu has media controls and Exit.
 
@@ -28,6 +32,10 @@ The [Windows workflow](.github/workflows/windows.yml) also builds a downloadable
 
 In the extracted build package or `dist` directory, run `.\install.ps1` from PowerShell. The script installs for the current user and creates Start menu and Startup shortcuts. Open **Zenith Dot** from Start to launch immediately. To uninstall, exit from the tray menu and run `.\uninstall.ps1` from the same package.
 
+## Lyrics
+
+Opening **Lyrics** sends the selected track's title, artist, duration, and album when available to [LRCLIB](https://lrclib.net/docs). When a matching track has synced lyrics and the player supplies a timeline, the side column shows the full lyrics within the height of Now Playing. Long lines wrap, and the active line uses a brighter text colour. Scroll over the lyrics to read ahead or back. Playback following resumes five seconds after the last scroll. If the player supports seeking, click any lyric line to jump to its timestamp.
+
 ## Source layout
 
 | Module | Responsibility |
@@ -35,8 +43,10 @@ In the extracted build package or `dist` directory, run `.\install.ps1` from Pow
 | `src/main.cpp` | Window lifecycle, single instance, tray, timers, and input |
 | `src/island.*` | The dot, pill, and panel: rendering, animations, hover, and hit testing |
 | `src/media.*` | Windows GSMTC sessions, metadata, timeline, and transport controls |
+| `src/lyrics.*` | On-demand lookup and parsing for synced lyrics |
 | `src/power.*` | Native battery and AC telemetry |
 | `src/system.*` | CPU and memory use for the System screen |
+| `src/desktop.*` | Fullscreen detection, capture indicators, and Windows volume and brightness events |
 | `scripts/` | Per-user installation and removal |
 
 ## Verify on Windows 11
@@ -46,9 +56,13 @@ In the extracted build package or `dist` directory, run `.\install.ps1` from Pow
 - Type in another app, then hover and click the island (including Previous, Pause, and Next). Focus and the caret must stay in that app. Right-click the island, close the menu, and confirm focus returns to the app.
 - Hover the pill: the panel opens after a short delay, and the cover and title move into place. Move a little past the panel's edge and it should stay open, then close once the pointer is well away. Click outside it to close it right away.
 - Switch between Now Playing, Focus, and System. Drag the timeline to seek where the player allows it. With two players open, click the other app's logo to show it.
+- Open Lyrics on a song with an LRCLIB match. Check that long lines wrap. Click a wrapped line and confirm playback jumps to its timestamp in a seekable player. Scroll to the first and last lines and check that playback following resumes five seconds after the last scroll. Switch tracks while a lookup is pending and check that the old track's lyrics disappear.
 - Pause playback: the pill should show a pause glyph, then shrink to the dot after five seconds.
 - Copy some text: a "Copied" bubble should stretch out of the pill, pinch off, show the first line, and merge back after about two seconds. Copy with the panel open: the notice should appear as a row at the top of the panel. Copy a password from a password manager: no notice.
 - Unplug and reconnect the charger: "On Battery" and then a green "Charging" bubble, each with the battery level.
 - Open System and check the battery percentage and AC status. Unplug and reconnect the charger. On a desktop without a battery, confirm the panel reports that state.
+- Enter and leave fullscreen in a video player on the primary display. The island should fade out, close its panel, and return after you exit fullscreen. Notices raised during fullscreen should expire without appearing afterwards.
+- Start and stop microphone or camera capture in an app. Check the app name in the notice and the orange or green indicator. With both devices active, the indicator should be green.
+- Change volume repeatedly, then mute. Check that one volume notice updates in place. On a display that publishes Windows brightness events, repeat with brightness.
 - Install, sign out, sign back in, and confirm there is one Zenith Dot process. Launch it again from Start and check that the process count stays at one.
 - Compare private working set after a minute at idle and during playback. For an Electron baseline, include its renderer and helper processes.

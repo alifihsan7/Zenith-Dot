@@ -21,6 +21,8 @@ constexpr float pillCenterY = pillTop + pillHeight / 2;
 constexpr float pillLeft = -pillWidth / 2;
 constexpr float dotSize = 12;
 constexpr float panelWidth = 369;
+constexpr float mediaPanelHeight = 236;
+constexpr float maxLyricsWidth = 338;
 constexpr float panelRadius = 22;
 constexpr float padTop = 13;
 constexpr float padX = 14;
@@ -51,6 +53,8 @@ constexpr auto themeTime = 700ms;
 constexpr auto alertOpenTime = 540ms;
 constexpr auto alertCloseTime = 440ms;
 constexpr auto inlineAlertTime = 2000ms;
+constexpr auto visibilityTime = 200ms;
+constexpr auto lyricScrollTime = 190ms;
 constexpr int focusLength = 25 * 60;
 
 constexpr unsigned inkColor = 0xf5f6f8;
@@ -432,6 +436,8 @@ void Island::setMedia(MediaState const& media) {
         heightFrom_ = panelHeight(now);
         screenFrom_ = screen_;
         screenStart_ = animate_ ? now : Clock::time_point{};
+        widthFrom_ = panelWidthAt(now);
+        widthStart_ = screenStart_;
     }
     if (media.cover != coverSource_) {
         coverSource_ = media.cover;
@@ -451,6 +457,12 @@ void Island::setSystem(SystemStats const& stats) {
     system_ = stats;
 }
 
+void Island::setLyrics(LyricsView const& lyrics) { lyrics_ = &lyrics; }
+
+bool Island::wantsLyrics() const {
+    return open_ && screen_ == Screen::media && media_.hasSession && lyricsOpen_;
+}
+
 float Island::pillAmount(Clock::time_point now) const {
     if (!animate_) return pillTarget_;
     return std::lerp(pillFrom_, pillTarget_, progress(pillStart_, pillLength_, now));
@@ -464,7 +476,7 @@ float Island::panelValue(Clock::time_point now) const {
 
 float Island::screenHeight(Screen screen) const {
     switch (screen) {
-    case Screen::media: return media_.hasSession ? 236.0f : 146.0f;
+    case Screen::media: return media_.hasSession ? mediaPanelHeight : 146;
     case Screen::focus: return 183.0f;
     case Screen::system: return 169.5f;
     }
@@ -475,8 +487,14 @@ float Island::panelHeight(Clock::time_point now) const {
     return std::lerp(heightFrom_, screenHeight(screen_), panelEase(progress(screenStart_, panelTime, now)));
 }
 
+float Island::panelWidthAt(Clock::time_point now) const {
+    const float width = screen_ == Screen::media && media_.hasSession && lyricsOpen_ ? panelWidth + lyricsWidth_ : panelWidth;
+    return animate_ ? std::lerp(widthFrom_, width, panelEase(progress(widthStart_, panelTime, now))) : width;
+}
+
 D2D1_RECT_F Island::panelRect(Clock::time_point now) const {
-    return box(-panelWidth / 2, pillTop, panelWidth, panelHeight(now) + inlineInset());
+    const float width = panelWidthAt(now);
+    return box(-width / 2, pillTop, width, panelHeight(now) + inlineInset());
 }
 
 int Island::focusRemaining(Clock::time_point now) const {
@@ -488,7 +506,9 @@ int Island::focusRemaining(Clock::time_point now) const {
 bool Island::moving(Clock::time_point now) const {
     if (!animate_) return false;
     return now - pillStart_ < pillLength_ || now - panelStart_ < panelTime || now - screenStart_ < panelTime ||
-           now - themeStart_ < themeTime || (bubbleShowing() && now - alertStart_ < alertLength_);
+           now - widthStart_ < panelTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
+           now - themeStart_ < themeTime ||
+           (bubbleShowing() && now - alertStart_ < alertLength_);
 }
 
 std::wstring Island::title() const {
@@ -539,14 +559,47 @@ void Island::updateTheme(Clock::time_point now) {
     tint_ = mixColor(tintFrom_, rgb(theme_.tint), t);
 }
 
+float Island::visibility(Clock::time_point now) const {
+    const float destination = suppressed_ ? 0.0f : 1.0f;
+    if (!animate_) return destination;
+    return std::lerp(visibilityFrom_, destination, easeOut(progress(visibilityStart_, visibilityTime, now)));
+}
+
+bool Island::visible() const {
+    return visibility(Clock::now()) > 0;
+}
+
+void Island::setSuppressed(bool suppressed) {
+    if (suppressed_ == suppressed) return;
+    const auto now = Clock::now();
+    visibilityFrom_ = visibility(now);
+    visibilityStart_ = now;
+    suppressed_ = suppressed;
+    if (!suppressed_) return;
+    alert_.reset();
+    queued_.reset();
+    alertHoldUntil_.reset();
+    alertFrom_ = alertTo_ = 0;
+    setOpen(false, now);
+    hovered_ = Hit::none;
+    pointerCancel();
+}
+
+void Island::setCaptureColor(std::optional<unsigned> color) {
+    captureColor_ = color;
+}
+
 void Island::setOpen(bool open, Clock::time_point now) {
     openAt_.reset();
     closeAt_.reset();
-    if (open_ == open || (open && bubbleShowing())) return;
+    if (open_ == open || (open && (suppressed_ || bubbleShowing()))) return;
     const float shown = panelValue(now);
     // The cover and title travel between the pill and the panel when both show the track.
     const bool trackVisible = media_.hasSession && (open || screen_ == Screen::media);
     if (open) {
+        lyricsOpen_ = false;
+        lyricFollowAt_ = {};
+        widthStart_ = {};
         screen_ = screenFrom_ = Screen::media;
         screenStart_ = {};
         heightFrom_ = screenHeight(Screen::media);
@@ -568,10 +621,12 @@ void Island::setOpen(bool open, Clock::time_point now) {
 void Island::showScreen(Screen screen, Clock::time_point now) {
     if (screen == screen_) return;
     heightFrom_ = panelHeight(now);
+    widthFrom_ = panelWidthAt(now);
     keepHeight_ = std::max(keepHeight_, heightFrom_);
     screenFrom_ = screen_;
     screen_ = screen;
     screenStart_ = animate_ ? now : Clock::time_point{};
+    widthStart_ = screenStart_;
 }
 
 void Island::toggleFocus(Clock::time_point now) {
@@ -593,7 +648,7 @@ void Island::tick() {
         GetCursorPos(&cursor);
         const D2D1_POINT_2F point{(cursor.x - anchor_.x) / scale_, (cursor.y - anchor_.y) / scale_};
         const auto panel = panelRect(now);
-        if (inside(box(panel.left, panel.top, panelWidth, screenHeight(screen_) + inlineInset()), point)) {
+        if (inside(box(panel.left, panel.top, panel.right - panel.left, screenHeight(screen_) + inlineInset()), point)) {
             keepHeight_ = 0;
         }
         auto keep = panel;
@@ -640,6 +695,8 @@ void Island::tick() {
 
 unsigned Island::frameInterval() const {
     const auto now = Clock::now();
+    if (animate_ && now - visibilityStart_ < visibilityTime) return 10;
+    if (suppressed_) return focusUntil_ ? 1000 : 0;
     if (moving(now) || openAt_ || closeAt_ || dragging_) return 10;
     if (open_ || alert_) return 50;
     if (pillMode_ == PillMode::media && media_.playing && animate_) return 33;
@@ -657,11 +714,24 @@ D2D1_POINT_2F Island::stagePoint(POINT client) const {
     return {(client.x + origin_.x) / scale_, (client.y + origin_.y) / scale_};
 }
 
-Island::Target const* Island::targetAt(D2D1_POINT_2F point) const {
+std::optional<Island::Target> Island::targetAt(D2D1_POINT_2F point) const {
     for (auto it = targets_.rbegin(); it != targets_.rend(); ++it) {
-        if (inside(it->rect, point)) return &*it;
+        if (inside(it->rect, point)) return *it;
     }
-    return nullptr;
+    if (!recordPanel_ || !wantsLyrics() || !media_.canSeek || !lyricLayout_ || !lyrics_ ||
+        lyrics_->status != LyricsStatus::ready ||
+        lyricLayoutRevision_ != lyrics_->revision || !inside(lyricViewport_, point)) return std::nullopt;
+
+    const float y = point.y - lyricViewport_.top + lyricScrollShown_;
+    if (y >= lyricContentHeight_) return std::nullopt;
+    DWRITE_HIT_TEST_METRICS hit{};
+    BOOL trailing = FALSE, onText = FALSE;
+    if (FAILED(lyricLayout_->HitTestPoint(point.x - lyricViewport_.left, y, &trailing, &onText, &hit)) ||
+        y < hit.top || y >= hit.top + hit.height) return std::nullopt;
+
+    const auto next = std::ranges::upper_bound(lyricRanges_, hit.textPosition, {}, &DWRITE_TEXT_RANGE::startPosition);
+    if (next == lyricRanges_.begin() || (next - 1)->length == 0) return std::nullopt;
+    return Target{lyricViewport_, Hit::lyricLine, static_cast<size_t>(next - lyricRanges_.begin() - 1)};
 }
 
 float Island::timelineFraction(D2D1_POINT_2F point) const {
@@ -674,7 +744,7 @@ bool Island::pointerMove(POINT client) {
         dragFraction_ = timelineFraction(point);
         return true;
     }
-    const auto* target = targetAt(point);
+    const auto target = targetAt(point);
     const auto hit = target ? target->hit : Hit::none;
     const auto index = target ? target->index : 0;
     if (!open_) {
@@ -697,9 +767,32 @@ bool Island::pointerLeave() {
     return true;
 }
 
+float Island::lyricScroll(Clock::time_point now) const {
+    if (!animate_) return lyricScrollTo_;
+    return std::lerp(lyricScrollFrom_, lyricScrollTo_, easeOut(progress(lyricScrollStart_, lyricScrollTime, now)));
+}
+
+void Island::moveLyricScroll(float offset, Clock::time_point now) {
+    if (offset == lyricScrollTo_) return;
+    lyricScrollFrom_ = lyricScroll(now);
+    lyricScrollTo_ = offset;
+    lyricScrollStart_ = now;
+}
+
+bool Island::scrollLyrics(POINT client, int delta) {
+    if (!wantsLyrics() || !inside(lyricViewport_, stagePoint(client))) return false;
+    const float limit = lyricContentHeight_ - (lyricViewport_.bottom - lyricViewport_.top);
+    if (limit <= 0) return false;
+    const auto now = Clock::now();
+    lyricFollowAt_ = now + 5s;
+    const float distance = 75.0f * delta / WHEEL_DELTA;
+    moveLyricScroll(std::clamp(lyricScrollTo_ - distance, 0.0f, limit), now);
+    return true;
+}
+
 bool Island::pointerDown(POINT client) {
     const auto point = stagePoint(client);
-    const auto* target = targetAt(point);
+    const auto target = targetAt(point);
     if (!target) return false;
     if (target->hit == Hit::pill) {
         setOpen(true, Clock::now());
@@ -709,6 +802,10 @@ bool Island::pointerDown(POINT client) {
         dragging_ = true;
         dragFraction_ = timelineFraction(point);
         return true;
+    }
+    if (target->hit == Hit::lyricLine) {
+        lyricScrollFrom_ = lyricScrollTo_ = lyricScrollShown_;
+        lyricScrollStart_ = {};
     }
     pressed_ = target->hit;
     pressedIndex_ = target->index;
@@ -725,7 +822,7 @@ IslandCommand Island::pointerUp(POINT client) {
         command.seconds = dragFraction_ * media_.duration;
         return command;
     }
-    const auto* target = targetAt(stagePoint(client));
+    const auto target = targetAt(stagePoint(client));
     const auto hit = pressed_;
     const auto index = pressedIndex_;
     pressed_ = Hit::none;
@@ -743,6 +840,17 @@ IslandCommand Island::pointerUp(POINT client) {
     case Hit::navMedia: showScreen(Screen::media, now); break;
     case Hit::navFocus: showScreen(Screen::focus, now); break;
     case Hit::navSystem: showScreen(Screen::system, now); break;
+    case Hit::lyrics:
+        widthFrom_ = panelWidthAt(now);
+        widthStart_ = animate_ ? now : Clock::time_point{};
+        lyricsOpen_ = !lyricsOpen_;
+        lyricFollowAt_ = {};
+        break;
+    case Hit::lyricLine:
+        command.kind = IslandCommand::Kind::seek;
+        command.seconds = lyrics_->lines[index].seconds;
+        lyricFollowAt_ = now + 500ms;
+        break;
     case Hit::focusToggle: toggleFocus(now); break;
     case Hit::focusReset:
         focusUntil_.reset();
@@ -815,6 +923,8 @@ void Island::prepareSurface(int width, int height) {
 }
 
 void Island::releaseDeviceResources() {
+    lyricLayout_ = nullptr;
+    lyricActiveInk_ = nullptr;
     brush_ = nullptr;
     target_ = nullptr;
     for (auto& layer : layers_) layer = nullptr;
@@ -851,6 +961,16 @@ void Island::prepareText() {
     create(titleFont_, L"Segoe UI", 16, strong, start);
     create(headingCenterFont_, L"Segoe UI", 16, strong, center);
     create(bodyFont_, L"Segoe UI", 12, normal, start);
+    winrt::com_ptr<IDWriteFontCollection> systemFonts;
+    winrt::check_hresult(fonts_->GetSystemFontCollection(systemFonts.put()));
+    UINT32 fontIndex = 0;
+    BOOL variableFont = FALSE;
+    winrt::check_hresult(systemFonts->FindFamilyName(L"Segoe UI Variable Text", &fontIndex, &variableFont));
+    const auto lyricFamily = variableFont ? L"Segoe UI Variable Text" : L"Segoe UI";
+    winrt::check_hresult(fonts_->CreateTextFormat(lyricFamily, systemFonts.get(), DWRITE_FONT_WEIGHT_MEDIUM,
+        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 17, L"", lyricFont_.put()));
+    winrt::check_hresult(lyricFont_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP));
+    winrt::check_hresult(lyricFont_->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 24, 18));
     create(bodyEndFont_, L"Segoe UI", 12, normal, end);
     create(strongEndFont_, L"Segoe UI", 12, DWRITE_FONT_WEIGHT_BOLD, end);
     create(monoFont_, L"Consolas", 10, normal, start);
@@ -1023,6 +1143,9 @@ void Island::drawCompact(Clock::time_point now, float amount, bool hideShared) {
     const auto shape = compactShape(amount);
     const float radius = std::min(shape.right - shape.left, shape.bottom - shape.top) / 2;
     fillShell(rounded(shape, radius));
+    if (captureColor_ && amount < 1) {
+        target_->FillRoundedRectangle(rounded(shape, radius), ink(rgb(*captureColor_, 1 - amount)));
+    }
     target_->DrawRoundedRectangle(rounded(grow(shape, -0.5f, -0.5f), radius - 0.5f), ink(white(0.13f)), 1);
 
     const float opacity = lin(0.55f, 1, amount);
@@ -1035,7 +1158,11 @@ void Island::drawCompact(Clock::time_point now, float amount, bool hideShared) {
 }
 
 void Island::drawPillContent(Clock::time_point now, bool hideShared) {
-    const float right = pillLeft + pillWidth - 12;
+    const float edge = pillLeft + pillWidth - 12;
+    const float right = edge - (captureColor_ ? 11 : 0);
+    if (captureColor_) {
+        target_->FillEllipse(D2D1::Ellipse({edge, pillCenterY}, 3, 3), ink(rgb(*captureColor_)));
+    }
     if (pillContent_ == PillMode::focus) {
         drawFocusGlyph({pillLeft + 19, pillCenterY}, 14, accent_);
         const bool done = !focusUntil_ && alert_ && alert_->kind == IslandAlert::Kind::focusDone;
@@ -1153,9 +1280,24 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, bool hideShared
     }
     // Track: cover, title, artist.
     if (!hideShared) drawArt(box(x + 14, y + 13, 44, 44), 8);
-    if (!hideShared || !shareTitle_) text(title(), titleFont_.get(), box(x + 68, y + 15.4f, 287, 22.4f), rgb(inkColor));
+    if (!hideShared || !shareTitle_) text(title(), titleFont_.get(), box(x + 68, y + 15.4f, 247, 22.4f), rgb(inkColor));
     const auto& detail = media_.artist.empty() ? media_.album : media_.artist;
-    text(detail, bodyFont_.get(), box(x + 68, y + 37.8f, 287, 16.8f), rgb(mutedColor));
+    text(detail, bodyFont_.get(), box(x + 68, y + 37.8f, 247, 16.8f), rgb(mutedColor));
+
+    const auto lyricButton = box(x + 321, y + 17, 34, 34);
+    if (lyricsOpen_ || hovered(Hit::lyrics) || pressed(Hit::lyrics)) {
+        target_->FillRoundedRectangle(rounded(lyricButton, 7), ink(white(0.10f)));
+    }
+    const auto glyph = lyricsOpen_ ? rgb(readoutColor) : rgb(inkColor);
+    const float gx = lyricButton.left + 9, gy = lyricButton.top + 9;
+    PathBuilder speech(graphics_.get());
+    speech.move(pt(gx + 1, gy + 2), false).line(pt(gx + 15, gy + 2)).line(pt(gx + 15, gy + 11))
+        .line(pt(gx + 8, gy + 11)).line(pt(gx + 4, gy + 14)).line(pt(gx + 4, gy + 11))
+        .line(pt(gx + 1, gy + 11)).close();
+    target_->DrawGeometry(speech.finish().get(), ink(glyph), 1.4f, roundStroke_.get());
+    target_->DrawLine(pt(gx + 4, gy + 5), pt(gx + 12, gy + 5), ink(glyph), 1.4f, roundStroke_.get());
+    target_->DrawLine(pt(gx + 4, gy + 8), pt(gx + 9, gy + 8), ink(glyph), 1.4f, roundStroke_.get());
+    if (record) addTarget(lyricButton, Hit::lyrics);
 
     // Timeline.
     const auto rail = box(x + 14, y + 69, innerWidth, 15);
@@ -1229,6 +1371,97 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, bool hideShared
         }
         if (record) addTarget(rect, Hit::source, i);
     }
+    if (panel.right - panel.left > panelWidth) {
+        drawLyrics(panel, now, dragging_ ? dragFraction_ * media_.duration : position);
+    }
+}
+
+void Island::prepareLyricLayout(float width) {
+    if (lyricLayout_ && lyricLayoutRevision_ == lyrics_->revision && lyricLayoutWidth_ == width) return;
+    if (pressed_ == Hit::lyricLine) pressed_ = Hit::none;
+
+    std::wstring joined;
+    lyricRanges_.clear();
+    for (const auto& line : lyrics_->lines) {
+        if (!lyricRanges_.empty()) joined += L'\n';
+        lyricRanges_.push_back({static_cast<UINT32>(joined.size()), static_cast<UINT32>(line.text.size())});
+        joined += line.text;
+    }
+
+    winrt::com_ptr<IDWriteTextLayout> layout;
+    winrt::check_hresult(fonts_->CreateTextLayout(joined.data(), static_cast<UINT32>(joined.size()),
+        lyricFont_.get(), width, 1'000'000, layout.put()));
+    DWRITE_TEXT_METRICS metrics{};
+    winrt::check_hresult(layout->GetMetrics(&metrics));
+    lyricLayout_ = std::move(layout);
+    lyricContentHeight_ = metrics.height;
+    lyricLayoutWidth_ = width;
+    lyricLayoutRevision_ = lyrics_->revision;
+    activeLyric_ = -1;
+    activeLyricTop_ = activeLyricHeight_ = 0;
+    lyricScrollFrom_ = lyricScrollTo_ = 0;
+    lyricScrollStart_ = lyricFollowAt_ = {};
+    if (!lyricActiveInk_) {
+        winrt::check_hresult(target_->CreateSolidColorBrush(rgb(inkColor), lyricActiveInk_.put()));
+    }
+}
+
+void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double position) {
+    if (!lyrics_) return;
+    const float x = panel.left + panelWidth + 8, y = panel.top + 16;
+    const float width = lyricsWidth_ - padX - 8;
+    constexpr float viewportHeight = mediaPanelHeight - 16 - 34 - padX;
+    text(L"Lyrics", titleFont_.get(), box(x, y, width, 22), rgb(inkColor));
+    if (lyrics_->status != LyricsStatus::ready || media_.duration <= 0) {
+        auto status = L"Finding lyrics…";
+        if (media_.duration <= 0) status = L"Playback timing unavailable";
+        else if (lyrics_->status == LyricsStatus::unavailable) status = L"No synced lyrics";
+        else if (lyrics_->status == LyricsStatus::error) status = L"Couldn’t load lyrics";
+        text(status, bodyFont_.get(), box(x, y + 34, width, 20), rgb(mutedColor));
+        return;
+    }
+
+    prepareLyricLayout(width);
+    if (media_.canSeek && width >= 170) {
+        text(L"Click a line to seek", bodyEndFont_.get(), box(x + 57, y, width - 57, 22), rgb(mutedColor));
+    }
+    const auto& lines = lyrics_->lines;
+    const auto next = std::ranges::upper_bound(lines, position, {}, &LyricLine::seconds);
+    const auto active = (next - lines.begin()) - 1;
+    if (active != activeLyric_) {
+        if (activeLyric_ >= 0 && lyricRanges_[activeLyric_].length != 0) {
+            winrt::check_hresult(lyricLayout_->SetDrawingEffect(nullptr, lyricRanges_[activeLyric_]));
+        }
+        activeLyric_ = active;
+        activeLyricTop_ = activeLyricHeight_ = 0;
+        if (active >= 0) {
+            const auto range = lyricRanges_[active];
+            if (range.length != 0) {
+                winrt::check_hresult(lyricLayout_->SetDrawingEffect(lyricActiveInk_.get(), range));
+            }
+            DWRITE_HIT_TEST_METRICS hit{};
+            float left = 0;
+            winrt::check_hresult(lyricLayout_->HitTestTextPosition(range.startPosition, FALSE,
+                &left, &activeLyricTop_, &hit));
+            float bottom = lyricContentHeight_;
+            if (next != lines.end()) {
+                winrt::check_hresult(lyricLayout_->HitTestTextPosition(lyricRanges_[active + 1].startPosition,
+                    FALSE, &left, &bottom, &hit));
+            }
+            activeLyricHeight_ = bottom - activeLyricTop_;
+        }
+    }
+
+    if (now >= lyricFollowAt_ && pressed_ != Hit::lyricLine) {
+        const float lead = std::max(0.0f, (viewportHeight - activeLyricHeight_) * 0.36f);
+        const float limit = std::max(0.0f, lyricContentHeight_ - viewportHeight);
+        moveLyricScroll(std::clamp(activeLyricTop_ - lead, 0.0f, limit), now);
+    }
+    lyricViewport_ = box(x, y + 34, width, viewportHeight);
+    lyricScrollShown_ = lyricScroll(now);
+    target_->PushAxisAlignedClip(lyricViewport_, D2D1_ANTIALIAS_MODE_ALIASED);
+    target_->DrawTextLayout(pt(x, lyricViewport_.top - lyricScrollShown_), lyricLayout_.get(), ink(rgb(mutedColor)));
+    target_->PopAxisAlignedClip();
 }
 
 void Island::drawFocus(D2D1_RECT_F panel, Clock::time_point now, bool record) {
@@ -1273,7 +1506,7 @@ void Island::drawSystem(D2D1_RECT_F panel) {
 void Island::drawNav(D2D1_RECT_F panel, bool record) {
     const float top = panel.bottom - padBottom - navHeight;
     target_->FillRectangle(box(panel.left + padX, top - 6, innerWidth, 1), ink(white(0.12f)));
-    const float start = (panel.left + panel.right) / 2 - (3 * 35 + 2 * 8) / 2.0f;
+    const float start = panel.left + panelWidth / 2 - (3 * 35 + 2 * 8) / 2.0f;
     const Hit hits[]{Hit::navMedia, Hit::navFocus, Hit::navSystem};
     const Screen screens[]{Screen::media, Screen::focus, Screen::system};
     for (int i = 0; i < 3; ++i) {
@@ -1302,7 +1535,7 @@ void Island::drawShared(D2D1_RECT_F panel, float value, float amount) {
     const float scale = std::lerp(12.0f / 16.0f, 1.0f, value);
     const float x = std::lerp(pillLeft + 28, panel.left + 68, value);
     const float y = std::lerp(pillCenterY - 22.4f * 0.75f / 2, panel.top + 15.4f, value);
-    const float width = std::lerp(82.0f / 0.75f, 287.0f, value);
+    const float width = std::lerp(82.0f / 0.75f, 247.0f, value);
     target_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) * D2D1::Matrix3x2F::Translation(x, y) * base_);
     text(title(), titleFont_.get(), box(0, 0, width, 22.4f), rgb(inkColor));
     target_->SetTransform(base_);
@@ -1311,10 +1544,10 @@ void Island::drawShared(D2D1_RECT_F panel, float value, float amount) {
 // ---- Alerts --------------------------------------------------------------------------------------
 
 void Island::notify(IslandAlert alert) {
+    if (suppressed_) return;
     const auto now = Clock::now();
     prepareText();
-    // Copies in quick succession update the bubble that is already showing instead of queueing.
-    if (alert_ && alert_->kind == alert.kind && alert.kind == IslandAlert::Kind::copy) {
+    if (alert_ && alert_->kind == alert.kind && (alert.kind == IslandAlert::Kind::copy || alert.meter)) {
         if (alertInline_) {
             alertUntil_ = now + inlineAlertTime;
         } else if (alertTo_ == 0) {
@@ -1339,7 +1572,7 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
     float width = 12 + 15 + 12;
     if (!alert.title.empty()) width += 7 + measure(alert.title, alertTitleFont_.get());
     if (!alert.value.empty()) width += 7 + measure(alert.value, alertValueFont_.get());
-    alertWidth_ = std::clamp(width + 1, 52.0f, maxBubble);
+    alertWidth_ = alert.meter ? 168.0f : std::clamp(width + 1, 52.0f, maxBubble);
     alert_ = std::move(alert);
     if (update) return;
     // A dot <-> pill morph in flight snaps to its end so the split starts from a settled shape.
@@ -1435,6 +1668,9 @@ void Island::drawSplit(Clock::time_point now, float amount) {
     }
     const auto geometry = shape.finish();
     fillShell(geometry.get());
+    if (!fromPill && captureColor_) {
+        target_->FillGeometry(geometry.get(), ink(rgb(*captureColor_, 1 - easeOut(p))));
+    }
     target_->DrawGeometry(geometry.get(), ink(white(0.13f)), 1);
 
     if (fromPill) {
@@ -1469,7 +1705,9 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity
              withAlpha(rgb(inkColor), copyOpacity));
         x += titleWidth + 7;
     }
-    if (!alert_->value.empty() && end > x) {
+    if (alert_->meter) {
+        drawAlertMeter(x, end, middle, copyOpacity);
+    } else if (!alert_->value.empty() && end > x) {
         text(alert_->value, alertValueFont_.get(), box(x, middle - 10, end - x, 20),
              withAlpha(rgb(mutedColor), copyOpacity));
     }
@@ -1504,14 +1742,69 @@ void Island::drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_CO
     case IslandAlert::Kind::focusDone:
         drawFocusGlyph(pt(8, 8), 16, color);
         break;
+    case IslandAlert::Kind::microphone: {
+        target_->DrawRoundedRectangle(rounded(box(6, 1.5f, 4, 8), 2), ink(color), 1.5f);
+        PathBuilder base(graphics_.get());
+        base.move(pt(3.5f, 7.5f), false).line(pt(3.5f, 8.5f)).arc(pt(12.5f, 8.5f), 4.5f, false, false)
+            .line(pt(12.5f, 7.5f));
+        target_->DrawGeometry(base.finish().get(), ink(color), 1.5f, roundStroke_.get());
+        target_->DrawLine(pt(8, 13), pt(8, 15), ink(color), 1.5f, roundStroke_.get());
+        break;
+    }
+    case IslandAlert::Kind::camera: {
+        target_->DrawRoundedRectangle(rounded(box(1.5f, 4, 9, 8), 1.5f), ink(color), 1.5f);
+        PathBuilder lens(graphics_.get());
+        lens.move(pt(10.5f, 6.5f), false).line(pt(14.5f, 4.5f)).line(pt(14.5f, 11.5f)).line(pt(10.5f, 9.5f));
+        target_->DrawGeometry(lens.finish().get(), ink(color), 1.5f, roundStroke_.get());
+        break;
+    }
+    case IslandAlert::Kind::volume: {
+        fillPolygon({pt(1.5f, 6), pt(4, 6), pt(7.5f, 3), pt(7.5f, 13), pt(4, 10), pt(1.5f, 10)}, color);
+        if (alert_->value == L"Muted") {
+            target_->DrawLine(pt(10.5f, 6), pt(14.5f, 10), ink(color), 1.5f, roundStroke_.get());
+            target_->DrawLine(pt(14.5f, 6), pt(10.5f, 10), ink(color), 1.5f, roundStroke_.get());
+        } else {
+            PathBuilder waves(graphics_.get());
+            waves.move(pt(10, 5.5f), false).arc(pt(10, 10.5f), 3.5f, false, true);
+            waves.move(pt(12.5f, 3.5f), false).arc(pt(12.5f, 12.5f), 6.5f, false, true);
+            target_->DrawGeometry(waves.finish().get(), ink(color), 1.5f, roundStroke_.get());
+        }
+        break;
+    }
+    case IslandAlert::Kind::brightness:
+        target_->DrawEllipse(D2D1::Ellipse(pt(8, 8), 3, 3), ink(color), 1.4f);
+        for (int ray = 0; ray < 8; ++ray) {
+            const float angle = ray * 0.78539816f;
+            const float x = std::cos(angle), y = std::sin(angle);
+            target_->DrawLine(pt(8 + 5 * x, 8 + 5 * y), pt(8 + 6.5f * x, 8 + 6.5f * y),
+                              ink(color), 1.4f, roundStroke_.get());
+        }
+        break;
     }
     target_->SetTransform(base_);
+}
+
+void Island::drawAlertMeter(float left, float right, float middle, float opacity) {
+    const float labelWidth = measure(alert_->value, alertValueFont_.get()) + 1;
+    const float width = right - left - labelWidth - 8;
+    if (width <= 0) return;
+    target_->FillRoundedRectangle(rounded(box(left, middle - 2, width, 4), 2), ink(white(0.16f * opacity)));
+    const float fill = width * *alert_->meter / 100;
+    if (fill > 0) {
+        target_->FillRoundedRectangle(rounded(box(left, middle - 2, fill, 4), 2), ink(withAlpha(accent_, opacity)));
+    }
+    text(alert_->value, alertValueFont_.get(), box(right - labelWidth, middle - 10, labelWidth, 20),
+         withAlpha(rgb(mutedColor), opacity));
 }
 
 // While the panel is open an alert shows as a row at its top instead of a bubble.
 void Island::drawInlineAlert(D2D1_RECT_F panel) {
     const float y = panel.top + padTop;
     drawAlertIcon(alert_->kind, pt(panel.left + padX, y), alert_->color ? rgb(*alert_->color) : accent_);
+    if (alert_->meter) {
+        drawAlertMeter(panel.left + padX + 21, panel.right - padX, y + 7.5f, 1);
+        return;
+    }
     auto line = alert_->title;
     if (!line.empty() && !alert_->value.empty()) line += L" ";
     line += alert_->value;
@@ -1529,12 +1822,16 @@ void Island::draw(HWND window) {
     monitorInfo.cbSize = sizeof(MONITORINFO);
     winrt::check_bool(GetMonitorInfoW(monitor, &monitorInfo));
     const auto work = monitorInfo.rcWork;
-    anchor_ = {work.left + (work.right - work.left) / 2, work.top};
+    lyricsWidth_ = std::clamp((work.right - work.left) / scale_ - panelWidth - 2 * shadowReach,
+                              130.0f, maxLyricsWidth);
+    const float opacity = visibility(now);
+    anchor_ = {work.left + (work.right - work.left) / 2, work.top - std::lround((1 - opacity) * 14 * scale_)};
 
     const float amount = pillAmount(now);
     const float value = panelValue(now);
     const bool panelVisible = open_ || value > 0;
     const bool compactVisible = !open_;
+    if (!panelVisible || panelWidthAt(now) <= panelWidth) lyricLayout_ = nullptr;
 
     // The surface only covers what is drawn this frame.
     auto bounds = grow(compactShape(amount), 2, 2);
@@ -1553,6 +1850,7 @@ void Island::draw(HWND window) {
     base_ = D2D1::Matrix3x2F::Scale(scale_, scale_) *
             D2D1::Matrix3x2F::Translation(static_cast<float>(-origin_.x), static_cast<float>(-origin_.y));
     targets_.clear();
+    lyricViewport_ = {};
     layerDepth_ = 0;
     target_->BeginDraw();
     target_->SetTransform(base_);
@@ -1569,7 +1867,7 @@ void Island::draw(HWND window) {
 
     POINT position{anchor_.x + origin_.x, anchor_.y + origin_.y};
     POINT source{};
-    BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    BLENDFUNCTION blend{AC_SRC_OVER, 0, static_cast<BYTE>(std::lround(opacity * 255)), AC_SRC_ALPHA};
     winrt::check_bool(UpdateLayeredWindow(window, nullptr, &position, &surfaceSize_, surface_, &source,
                                          0, &blend, ULW_ALPHA));
 }
