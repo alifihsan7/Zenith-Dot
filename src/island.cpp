@@ -29,6 +29,17 @@ constexpr float innerWidth = panelWidth - 2 * padX;
 constexpr float navHeight = 31;
 constexpr float shadowReach = 30;
 constexpr float keepOpenMargin = 28;
+constexpr float pi = 3.14159265f;
+
+// Liquid split, from preview V7. The bubble slides out of the pill's right cap on a metaball neck,
+// the neck pinches at pinchAt, then each side's tip retracts into its own cap.
+constexpr float capRadius = pillHeight / 2;
+constexpr float pinchAt = 0.55f;
+constexpr float releaseGap = 10;      // gap between pill and bubble at the pinch and at rest
+constexpr float neckSpread = 0.5f;
+constexpr float handleSize = 2.4f;
+constexpr float maxBubble = 259;
+constexpr float splitWidth = pillWidth + releaseGap + maxBubble;
 
 constexpr auto openDelay = 50ms;
 constexpr auto closeDelay = 185ms;
@@ -37,7 +48,9 @@ constexpr auto pillGrowTime = 280ms;
 constexpr auto pillShrinkTime = 320ms;
 constexpr auto panelTime = 220ms;
 constexpr auto themeTime = 700ms;
-constexpr auto focusDoneTime = 2600ms;
+constexpr auto alertOpenTime = 540ms;
+constexpr auto alertCloseTime = 440ms;
+constexpr auto inlineAlertTime = 2000ms;
 constexpr int focusLength = 25 * 60;
 
 constexpr unsigned inkColor = 0xf5f6f8;
@@ -128,6 +141,195 @@ float progress(Island::Clock::time_point start, Island::Clock::duration length, 
 
 float elapsedMs(Island::Clock::time_point start, Island::Clock::time_point now) {
     return std::chrono::duration<float, std::milli>(now - start).count();
+}
+
+using Point = D2D1_POINT_2F;
+
+Point pt(float x, float y) {
+    return D2D1::Point2F(x, y);
+}
+
+Point add(Point a, Point v, float scale) {
+    return pt(a.x + v.x * scale, a.y + v.y * scale);
+}
+
+Point half(Point a, Point b) {
+    return pt((a.x + b.x) / 2, (a.y + b.y) / 2);
+}
+
+Point flip(Point a) {
+    return pt(a.x, 2 * pillCenterY - a.y);
+}
+
+float distance(Point a, Point b) {
+    return std::hypot(b.x - a.x, b.y - a.y);
+}
+
+float arcHandle(float angle, float radius) {
+    return 4.0f / 3 * std::tan(angle / 4) * radius;
+}
+
+// SVG-style path building onto a Direct2D path geometry.
+class PathBuilder {
+public:
+    explicit PathBuilder(ID2D1Factory* factory) {
+        winrt::check_hresult(factory->CreatePathGeometry(path_.put()));
+        winrt::check_hresult(path_->Open(sink_.put()));
+        sink_->SetFillMode(D2D1_FILL_MODE_WINDING);
+    }
+    PathBuilder& move(Point to, bool filled = true) {
+        end();
+        sink_->BeginFigure(to, filled ? D2D1_FIGURE_BEGIN_FILLED : D2D1_FIGURE_BEGIN_HOLLOW);
+        open_ = true;
+        return *this;
+    }
+    PathBuilder& line(Point to) {
+        sink_->AddLine(to);
+        return *this;
+    }
+    PathBuilder& arc(Point to, float radius, bool large, bool clockwise) {
+        sink_->AddArc(D2D1::ArcSegment(to, D2D1::SizeF(radius, radius), 0,
+            clockwise ? D2D1_SWEEP_DIRECTION_CLOCKWISE : D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
+            large ? D2D1_ARC_SIZE_LARGE : D2D1_ARC_SIZE_SMALL));
+        return *this;
+    }
+    PathBuilder& curve(Point a, Point b, Point to) {
+        sink_->AddBezier(D2D1::BezierSegment(a, b, to));
+        return *this;
+    }
+    PathBuilder& close() {
+        if (open_) sink_->EndFigure(D2D1_FIGURE_END_CLOSED);
+        open_ = false;
+        return *this;
+    }
+    winrt::com_ptr<ID2D1PathGeometry> finish() {
+        end();
+        winrt::check_hresult(sink_->Close());
+        return path_;
+    }
+
+private:
+    void end() {
+        if (open_) sink_->EndFigure(D2D1_FIGURE_END_OPEN);
+        open_ = false;
+    }
+
+    winrt::com_ptr<ID2D1PathGeometry> path_;
+    winrt::com_ptr<ID2D1GeometrySink> sink_;
+    bool open_ = false;
+};
+
+void capsule(PathBuilder& path, D2D1_RECT_F rect) {
+    const float radius = std::min(rect.right - rect.left, rect.bottom - rect.top) / 2;
+    path.move(pt(rect.left + radius, rect.top)).line(pt(rect.right - radius, rect.top))
+        .arc(pt(rect.right - radius, rect.bottom), radius, false, true).line(pt(rect.left + radius, rect.bottom))
+        .arc(pt(rect.left + radius, rect.top), radius, false, true).close();
+}
+
+// The pill's right cap (center bx, radius R) joined to a bubble (center bx + d, radius r) by a
+// metaball neck that stays tangent to both circles. k pulls the neck's waist toward the axis.
+struct Neck {
+    float alpha, beta, la, lb, cx, lenIn, lenOut;
+    Point A, B, dirA, dirB, q0, q2, waist, into, out;
+};
+
+Neck neck(float bx, float d, float r, float k) {
+    constexpr float R = capRadius;
+    constexpr float cy = pillCenterY;
+    Neck n{};
+    n.cx = bx + d;
+    const bool overlap = d < R + r;
+    const float u1 = overlap ? std::acos(std::clamp((R * R + d * d - r * r) / (2 * R * d), -1.0f, 1.0f)) : 0;
+    const float u2 = overlap ? std::acos(std::clamp((r * r + d * d - R * R) / (2 * r * d), -1.0f, 1.0f)) : 0;
+    const float maxSpread = std::acos(std::clamp((R - r) / d, -1.0f, 1.0f));
+    n.alpha = u1 + (maxSpread - u1) * neckSpread;
+    n.beta = u2 + (pi - u2 - maxSpread) * neckSpread;
+    n.A = pt(bx + R * std::cos(n.alpha), cy - R * std::sin(n.alpha));
+    n.B = pt(n.cx - r * std::cos(n.beta), cy - r * std::sin(n.beta));
+    n.dirA = pt(std::sin(n.alpha), std::cos(n.alpha));
+    n.dirB = pt(std::sin(n.beta), -std::cos(n.beta));
+    const float reach = std::min(neckSpread * handleSize, distance(n.A, n.B) / (R + r)) *
+                        std::min(1.0f, 2 * d / (R + r));
+    n.la = R * reach;
+    n.lb = r * reach;
+    // Split the upper curve at its middle so the midpoint can be pinched.
+    const Point p1 = add(n.A, n.dirA, n.la);
+    const Point p2 = add(n.B, n.dirB, -n.lb);
+    n.q0 = half(n.A, p1);
+    const Point q1 = half(p1, p2);
+    n.q2 = half(p2, n.B);
+    const Point r0 = half(n.q0, q1);
+    const Point r1 = half(q1, n.q2);
+    const Point m = half(r0, r1);
+    n.lenIn = distance(r0, m);
+    n.lenOut = distance(m, r1);
+    float span = distance(r0, r1);
+    if (span == 0) span = 1;
+    // Pinch: lower the waist toward the axis, but never below the union of the two circles.
+    const auto depth = [](float x, float c, float radius) {
+        return std::sqrt(std::max(0.0f, radius * radius - (x - c) * (x - c)));
+    };
+    const float floor = std::max(depth(m.x, bx, R), depth(m.x, n.cx, r));
+    n.waist = pt(m.x, cy - std::max(floor, (cy - m.y) * k));
+    float dx = std::lerp(1.0f, (r1.x - r0.x) / span, k);
+    float dy = (r1.y - r0.y) / span * k;
+    float length = std::hypot(dx, dy);
+    if (length == 0) length = 1;
+    dx /= length;
+    dy /= length;
+    n.into = pt(n.waist.x - dx * n.lenIn, n.waist.y - dy * n.lenIn);
+    n.out = pt(n.waist.x + dx * n.lenOut, n.waist.y + dy * n.lenOut);
+    return n;
+}
+
+void connectedPath(PathBuilder& path, float left, float bx, float d, float r, float k) {
+    constexpr float R = capRadius;
+    constexpr float top = pillTop;
+    constexpr float bottom = pillTop + pillHeight;
+    const auto n = neck(bx, d, r, k);
+    const float start = left + R;
+    path.move(pt(start, top)).line(pt(bx, top)).arc(n.A, R, false, true)
+        .curve(n.q0, n.into, n.waist).curve(n.out, n.q2, n.B)
+        .arc(flip(n.B), r, n.beta < pi / 2, true)
+        .curve(flip(n.q2), flip(n.out), flip(n.waist)).curve(flip(n.into), flip(n.q0), flip(n.A))
+        .arc(pt(bx, bottom), R, false, true).line(pt(start, bottom)).arc(pt(start, top), R, false, true).close();
+}
+
+// The neck at the exact pinch moment, relative to bx = 0. The release phase starts from it.
+Neck const& pinchShape() {
+    static const Neck shape = neck(0, 2 * capRadius + releaseGap, capRadius, 0);
+    return shape;
+}
+
+// After the pinch: each side keeps a tip that slides back and rounds into its cap (q: 0 -> 1).
+void releasedPath(PathBuilder& path, float left, float bx, float q, float bubbleLeft, float bubbleWidth) {
+    constexpr float R = capRadius;
+    constexpr float cy = pillCenterY;
+    constexpr float top = pillTop;
+    constexpr float bottom = pillTop + pillHeight;
+    const auto& s = pinchShape();
+    const float phi = q * pi / 2;   // tip tangent: 0 = needle, 90 degrees = round
+    const Point u = pt(std::cos(phi), std::sin(phi));
+    const float start = left + R;
+    const float arcA = arcHandle(s.alpha, R);
+    const Point A = pt(bx + s.A.x, s.A.y);
+    const Point hA = add(A, s.dirA, std::lerp(s.la / 2, arcA, q));
+    const Point T = pt(std::lerp(bx + s.waist.x, bx + R, q), cy);
+    const Point hT = add(T, u, -std::lerp(s.lenIn, arcA, q));
+    path.move(pt(start, top)).line(pt(bx, top)).arc(A, R, false, true)
+        .curve(hA, hT, T).curve(flip(hT), flip(hA), flip(A))
+        .arc(pt(bx, bottom), R, false, true).line(pt(start, bottom)).arc(pt(start, top), R, false, true).close();
+    const float cc = bubbleLeft + R;
+    const float right = bubbleLeft + bubbleWidth - R;
+    const float shift = cc - s.cx;
+    const float arcB = arcHandle(s.beta, R);
+    const Point B = pt(s.B.x + shift, s.B.y);
+    const Point hB = add(B, s.dirB, -std::lerp(s.lb / 2, arcB, q));
+    const Point T2 = pt(std::lerp(s.waist.x + shift, cc - R, q), cy);
+    const Point hT2 = add(T2, pt(u.x, -u.y), std::lerp(s.lenOut, arcB, q));
+    path.move(B).arc(pt(cc, top), R, false, true).line(pt(right, top)).arc(pt(right, bottom), R, false, true)
+        .line(pt(cc, bottom)).arc(flip(B), R, false, true)
+        .curve(flip(hB), flip(hT2), T2).curve(hT2, hB, B).close();
 }
 
 std::wstring timestamp(double seconds) {
@@ -274,7 +476,7 @@ float Island::panelHeight(Clock::time_point now) const {
 }
 
 D2D1_RECT_F Island::panelRect(Clock::time_point now) const {
-    return box(-panelWidth / 2, pillTop, panelWidth, panelHeight(now));
+    return box(-panelWidth / 2, pillTop, panelWidth, panelHeight(now) + inlineInset());
 }
 
 int Island::focusRemaining(Clock::time_point now) const {
@@ -286,7 +488,7 @@ int Island::focusRemaining(Clock::time_point now) const {
 bool Island::moving(Clock::time_point now) const {
     if (!animate_) return false;
     return now - pillStart_ < pillLength_ || now - panelStart_ < panelTime || now - screenStart_ < panelTime ||
-           now - themeStart_ < themeTime;
+           now - themeStart_ < themeTime || (bubbleShowing() && now - alertStart_ < alertLength_);
 }
 
 std::wstring Island::title() const {
@@ -299,7 +501,7 @@ void Island::updatePill(Clock::time_point now) {
     auto mode = PillMode::dot;
     if (media_.hasSession && (media_.playing || open_ || now - lastActive_ < parkDelay)) {
         mode = PillMode::media;
-    } else if (focusUntil_ || now < focusDoneUntil_) {
+    } else if (focusUntil_ || (alert_ && alert_->kind == IslandAlert::Kind::focusDone)) {
         mode = PillMode::focus;
     }
     pillMode_ = mode;
@@ -308,6 +510,7 @@ void Island::updatePill(Clock::time_point now) {
         pillTitle_ = mode == PillMode::media ? title() : L"Focus";
         pillPlaying_ = media_.playing;
     }
+    if (bubbleShowing()) return;   // never reshape while a bubble is split off
     const float target = mode == PillMode::dot ? 0.0f : 1.0f;
     if (target != pillTarget_) {
         pillFrom_ = pillAmount(now);
@@ -339,7 +542,7 @@ void Island::updateTheme(Clock::time_point now) {
 void Island::setOpen(bool open, Clock::time_point now) {
     openAt_.reset();
     closeAt_.reset();
-    if (open_ == open) return;
+    if (open_ == open || (open && bubbleShowing())) return;
     const float shown = panelValue(now);
     // The cover and title travel between the pill and the panel when both show the track.
     const bool trackVisible = media_.hasSession && (open || screen_ == Screen::media);
@@ -390,7 +593,9 @@ void Island::tick() {
         GetCursorPos(&cursor);
         const D2D1_POINT_2F point{(cursor.x - anchor_.x) / scale_, (cursor.y - anchor_.y) / scale_};
         const auto panel = panelRect(now);
-        if (inside(box(panel.left, panel.top, panelWidth, screenHeight(screen_)), point)) keepHeight_ = 0;
+        if (inside(box(panel.left, panel.top, panelWidth, screenHeight(screen_) + inlineInset()), point)) {
+            keepHeight_ = 0;
+        }
         auto keep = panel;
         keep.bottom = std::max(keep.bottom, keep.top + keepHeight_);
         if (inside(grow(keep, keepOpenMargin, keepOpenMargin), point) || dragging_) {
@@ -408,7 +613,25 @@ void Island::tick() {
     if (focusUntil_ && now >= *focusUntil_) {
         focusUntil_.reset();
         focusLeft_ = focusLength;
-        focusDoneUntil_ = now + focusDoneTime;
+        notify({IslandAlert::Kind::focusDone, L"Focus done", L"Take a break", std::nullopt, 3, 2600ms});
+    }
+    if (alert_) {
+        if (alertInline_) {
+            if (now >= alertUntil_) finishAlert(now);
+        } else if (alertTo_ > 0) {
+            if (!alertHoldUntil_ && progress(alertStart_, alertLength_, now) >= 1) {
+                alertHoldUntil_ = now + alert_->hold;
+            }
+            if (alertHoldUntil_ && now >= *alertHoldUntil_) {
+                alertFrom_ = 1;
+                alertTo_ = 0;
+                alertStart_ = now;
+                alertLength_ = alertCloseTime;
+                alertHoldUntil_.reset();
+            }
+        } else if (progress(alertStart_, alertLength_, now) >= 1) {
+            finishAlert(now);
+        }
     }
     if (media_.playing || open_) lastActive_ = now;
     updatePill(now);
@@ -418,7 +641,7 @@ void Island::tick() {
 unsigned Island::frameInterval() const {
     const auto now = Clock::now();
     if (moving(now) || openAt_ || closeAt_ || dragging_) return 10;
-    if (open_) return 50;
+    if (open_ || alert_) return 50;
     if (pillMode_ == PillMode::media && media_.playing && animate_) return 33;
     if (pillMode_ != PillMode::dot) return 250;
     return 0;
@@ -636,6 +859,8 @@ void Island::prepareText() {
     create(buttonFont_, L"Segoe UI", 11, normal, center);
     create(glyphFont_, L"Segoe UI Symbol", 17, normal, center);
     create(letterFont_, L"Segoe UI", 10, strong, center);
+    create(alertTitleFont_, L"Segoe UI", 11, DWRITE_FONT_WEIGHT_BOLD, start);
+    create(alertValueFont_, L"Segoe UI", 11, normal, start);
 }
 
 ID2D1SolidColorBrush* Island::ink(D2D1_COLOR_F color) {
@@ -697,6 +922,20 @@ void Island::fillShell(D2D1_ROUNDED_RECT shape) {
                                             D2D1::Point2F(shape.rect.right, shape.rect.bottom)),
         collection.get(), gradient.put()));
     target_->FillRoundedRectangle(shape, gradient.get());
+}
+
+void Island::fillShell(ID2D1Geometry* shape) {
+    D2D1_RECT_F bounds{};
+    winrt::check_hresult(shape->GetBounds(nullptr, &bounds));
+    const D2D1_GRADIENT_STOP stops[]{{0, D2D1::ColorF(0, 0, 0, 0.94f)}, {1, withAlpha(tint_, 0.9f)}};
+    winrt::com_ptr<ID2D1GradientStopCollection> collection;
+    winrt::check_hresult(target_->CreateGradientStopCollection(stops, 2, collection.put()));
+    winrt::com_ptr<ID2D1LinearGradientBrush> gradient;
+    winrt::check_hresult(target_->CreateLinearGradientBrush(
+        D2D1::LinearGradientBrushProperties(D2D1::Point2F(bounds.left, bounds.top),
+                                            D2D1::Point2F(bounds.right, bounds.bottom)),
+        collection.get(), gradient.put()));
+    target_->FillGeometry(shape, gradient.get());
 }
 
 void Island::fillPolygon(std::initializer_list<D2D1_POINT_2F> points, D2D1_COLOR_F color) {
@@ -772,6 +1011,10 @@ static D2D1_RECT_F compactShape(float amount) {
 }
 
 void Island::drawCompact(Clock::time_point now, float amount, bool hideShared) {
+    if (bubbleShowing()) {
+        drawSplit(now, amount);
+        return;
+    }
     // A nearly transparent hit area: layered windows only receive the pointer over painted pixels.
     const auto hit = amount >= 1 ? box(pillLeft, pillTop - 3, pillWidth, 46) : box(-22, pillTop - 3, 44, 46);
     target_->FillRectangle(hit, ink(D2D1::ColorF(0, 0, 0, 1.0f / 255)));
@@ -795,7 +1038,7 @@ void Island::drawPillContent(Clock::time_point now, bool hideShared) {
     const float right = pillLeft + pillWidth - 12;
     if (pillContent_ == PillMode::focus) {
         drawFocusGlyph({pillLeft + 19, pillCenterY}, 14, accent_);
-        const bool done = !focusUntil_ && now < focusDoneUntil_;
+        const bool done = !focusUntil_ && alert_ && alert_->kind == IslandAlert::Kind::focusDone;
         text(done ? L"0:00" : timestamp(focusRemaining(now)), timerFont_.get(), box(right - 40, pillTop, 40, pillHeight),
              accent_);
         text(pillTitle_, pillTitleFont_.get(), box(pillLeft + 34, pillTop, right - 48 - (pillLeft + 34), pillHeight),
@@ -864,28 +1107,33 @@ void Island::drawPanel(Clock::time_point now, float value, float amount) {
 
     recordPanel_ = open_ && value >= 1;
     const bool hideShared = shareCover_ && value < 1;
+    auto content = full;
+    if (const float inset = inlineInset(); inset > 0) {
+        drawInlineAlert(full);
+        content.top += inset;
+    }
     const float switching = progress(screenStart_, panelTime, now);
     if (switching < 1 && screenFrom_ != screen_) {
         // Cross-fade: the old screen fades out fast, the new one fades in slightly later and rises 3px.
         const float ms = elapsedMs(screenStart_, now);
         pushLayer(nullptr, 1 - easeOut(clamp01(ms / 120)));
-        drawScreen(screenFrom_, full, now, false, false);
+        drawScreen(screenFrom_, content, now, false, false);
         popLayer();
         const float enter = easeOut(clamp01((ms - 48) / 195));
         if (enter > 0) {
             target_->SetTransform(D2D1::Matrix3x2F::Translation(0, 3 * (1 - enter)) * base_);
             pushLayer(nullptr, enter);
-            drawScreen(screen_, full, now, false, recordPanel_);
+            drawScreen(screen_, content, now, false, recordPanel_);
             popLayer();
             target_->SetTransform(base_);
         }
     } else {
-        drawScreen(screen_, full, now, hideShared, recordPanel_);
+        drawScreen(screen_, content, now, hideShared, recordPanel_);
     }
     drawNav(full, recordPanel_);
     popLayer();
 
-    if (shareCover_ && value < 1 && value > 0) drawShared(full, value, amount);
+    if (shareCover_ && value < 1 && value > 0) drawShared(content, value, amount);
 }
 
 void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, bool hideShared, bool record) {
@@ -1060,6 +1308,216 @@ void Island::drawShared(D2D1_RECT_F panel, float value, float amount) {
     target_->SetTransform(base_);
 }
 
+// ---- Alerts --------------------------------------------------------------------------------------
+
+void Island::notify(IslandAlert alert) {
+    const auto now = Clock::now();
+    prepareText();
+    // Copies in quick succession update the bubble that is already showing instead of queueing.
+    if (alert_ && alert_->kind == alert.kind && alert.kind == IslandAlert::Kind::copy) {
+        if (alertInline_) {
+            alertUntil_ = now + inlineAlertTime;
+        } else if (alertTo_ == 0) {
+            alertFrom_ = alertValue(now);
+            alertTo_ = 1;
+            alertStart_ = now;
+            alertLength_ = std::chrono::duration_cast<Clock::duration>(alertOpenTime * (1 - alertFrom_));
+        } else if (alertHoldUntil_) {
+            alertHoldUntil_ = now + alert.hold;
+        }
+        startAlert(std::move(alert), now, true);
+        return;
+    }
+    if (alert_) {
+        if (!queued_ || alert.priority >= queued_->priority) queued_ = std::move(alert);
+        return;
+    }
+    startAlert(std::move(alert), now, false);
+}
+
+void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
+    float width = 12 + 15 + 12;
+    if (!alert.title.empty()) width += 7 + measure(alert.title, alertTitleFont_.get());
+    if (!alert.value.empty()) width += 7 + measure(alert.value, alertValueFont_.get());
+    alertWidth_ = std::clamp(width + 1, 52.0f, maxBubble);
+    alert_ = std::move(alert);
+    if (update) return;
+    // A dot <-> pill morph in flight snaps to its end so the split starts from a settled shape.
+    pillFrom_ = pillTarget_;
+    pillStart_ = {};
+    alertHoldUntil_.reset();
+    alertInline_ = open_;
+    if (alertInline_) {
+        alertUntil_ = now + inlineAlertTime;
+        return;
+    }
+    openAt_.reset();
+    alertFrom_ = 0;
+    alertTo_ = 1;
+    alertStart_ = now;
+    alertLength_ = alertOpenTime;
+}
+
+void Island::finishAlert(Clock::time_point now) {
+    alert_.reset();
+    alertFrom_ = alertTo_ = 0;
+    alertHoldUntil_.reset();
+    updatePill(now);
+    if (queued_) {
+        auto next = std::move(*queued_);
+        queued_.reset();
+        startAlert(std::move(next), now, false);
+    }
+}
+
+float Island::alertValue(Clock::time_point now) const {
+    if (!animate_) return alertTo_;
+    return std::lerp(alertFrom_, alertTo_, progress(alertStart_, alertLength_, now));
+}
+
+bool Island::bubbleShowing() const {
+    return alert_ && !alertInline_;
+}
+
+float Island::inlineInset() const {
+    return alert_ && alertInline_ ? 23.0f : 0.0f;
+}
+
+float Island::measure(std::wstring_view value, IDWriteTextFormat* format) {
+    winrt::com_ptr<IDWriteTextLayout> layout;
+    winrt::check_hresult(fonts_->CreateTextLayout(value.data(), static_cast<UINT32>(value.size()), format, 1000, 40,
+                                                  layout.put()));
+    DWRITE_TEXT_METRICS metrics{};
+    winrt::check_hresult(layout->GetMetrics(&metrics));
+    return metrics.widthIncludingTrailingWhitespace;
+}
+
+void Island::drawSplit(Clock::time_point now, float amount) {
+    const float p = alertValue(now);
+    const float target = alertWidth_;
+    PathBuilder shape(graphics_.get());
+    float left = pillLeft;
+    D2D1_RECT_F area{};
+    float alertOpacity = 0;
+    float copyOpacity = 0;
+    const bool fromPill = amount >= 1;
+    if (fromPill) {
+        // Stretch until the pinch, then widen. The whole shape stays centered and only grows.
+        const float travel = easeInOut(lin(0, pinchAt, p));
+        const float widen = easeInOut(lin(pinchAt, 1, p));
+        const float d = (2 * capRadius + releaseGap) * travel;
+        const float bubbleWidth = std::lerp(pillHeight, target, widen);
+        const float span = p < pinchAt ? pillWidth + d : pillWidth + releaseGap + bubbleWidth;
+        left = -span / 2;
+        const float bx = left + pillWidth - capRadius;
+        alertOpacity = lin(pinchAt - 0.1f, pinchAt + 0.12f, p);
+        copyOpacity = lin(0.8f, 1, p);
+        if (p < pinchAt) {
+            // The bubble is a full-size copy of the pill's cap sliding out of it.
+            const float k = 1 - std::pow(lin(0.28f, pinchAt, p), 2.0f);
+            area = box(bx + d - capRadius, pillTop, 2 * capRadius, pillHeight);
+            if (d < 0.5f) capsule(shape, box(left, pillTop, pillWidth, pillHeight));
+            else connectedPath(shape, left, bx, d, capRadius, k);
+        } else {
+            const float q = easeOut(lin(pinchAt, pinchAt + 0.28f, p));
+            area = box(left + pillWidth + releaseGap, pillTop, bubbleWidth, pillHeight);
+            releasedPath(shape, left, bx, q, area.left, bubbleWidth);
+        }
+    } else {
+        // From the idle dot the bubble grows out of the dot itself.
+        const float width = std::lerp(dotSize, target, p);
+        const float height = std::lerp(dotSize, pillHeight, p);
+        area = box(-width / 2, pillCenterY - height / 2, width, height);
+        capsule(shape, area);
+        const float t = lin(0.31f, 0.82f, p);
+        alertOpacity = t * t * (3 - 2 * t);
+        copyOpacity = 1;
+    }
+    const auto geometry = shape.finish();
+    fillShell(geometry.get());
+    target_->DrawGeometry(geometry.get(), ink(white(0.13f)), 1);
+
+    if (fromPill) {
+        winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
+        winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(
+            rounded(box(left, pillTop, pillWidth, pillHeight), capRadius), clip.put()));
+        pushLayer(clip.get(), 1);
+        target_->SetTransform(D2D1::Matrix3x2F::Translation(left - pillLeft, 0) * base_);
+        drawPillContent(now, false);
+        target_->SetTransform(base_);
+        popLayer();
+    }
+    drawAlertContent(area, alertOpacity, copyOpacity);
+}
+
+void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity) {
+    if (opacity <= 0 || !alert_) return;
+    const float width = area.right - area.left;
+    const float radius = std::min(width, area.bottom - area.top) / 2;
+    winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
+    winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(rounded(area, radius), clip.put()));
+    pushLayer(clip.get(), opacity);
+    const float middle = (area.top + area.bottom) / 2;
+    // While the bubble is narrow the icon sits centered; the text fades in as it reaches full width.
+    float x = area.left + std::lerp(std::max(0.0f, (width - 15) / 2), 12.0f, copyOpacity);
+    drawAlertIcon(alert_->kind, pt(x, middle - 7.5f), alert_->color ? rgb(*alert_->color) : accent_);
+    x += 15 + 7;
+    const float end = area.right - 12;
+    if (!alert_->title.empty() && end > x) {
+        const float titleWidth = measure(alert_->title, alertTitleFont_.get());
+        text(alert_->title, alertTitleFont_.get(), box(x, middle - 10, std::min(titleWidth + 1, end - x), 20),
+             withAlpha(rgb(inkColor), copyOpacity));
+        x += titleWidth + 7;
+    }
+    if (!alert_->value.empty() && end > x) {
+        text(alert_->value, alertValueFont_.get(), box(x, middle - 10, end - x, 20),
+             withAlpha(rgb(mutedColor), copyOpacity));
+    }
+    popLayer();
+}
+
+// The V7 alert glyphs, drawn in a 16-unit box scaled to 15 DIPs.
+void Island::drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color) {
+    const float scale = 15.0f / 16;
+    target_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) * D2D1::Matrix3x2F::Translation(origin.x, origin.y) *
+                          base_);
+    switch (kind) {
+    case IslandAlert::Kind::copy: {
+        target_->DrawRoundedRectangle(rounded(box(5, 5, 8.5f, 8.5f), 1.5f), ink(color), 1.5f);
+        PathBuilder back(graphics_.get());
+        back.move(pt(11, 3.25f), false).line(pt(11, 3)).arc(pt(9.5f, 1.5f), 1.5f, false, false).line(pt(3, 1.5f))
+            .arc(pt(1.5f, 3), 1.5f, false, false).line(pt(1.5f, 9.5f)).arc(pt(3, 11), 1.5f, false, false)
+            .line(pt(3.25f, 11));
+        target_->DrawGeometry(back.finish().get(), ink(color), 1.5f, roundStroke_.get());
+        break;
+    }
+    case IslandAlert::Kind::charging:
+        fillPolygon({pt(9, 1.5f), pt(3.5f, 9), pt(7.5f, 9), pt(7, 14.5f), pt(12.5f, 7), pt(8.5f, 7)}, color);
+        break;
+    case IslandAlert::Kind::battery:
+    case IslandAlert::Kind::lowBattery:
+        target_->DrawRoundedRectangle(rounded(box(1.5f, 4.5f, 11.5f, 7), 1.5f), ink(color), 1.5f);
+        target_->DrawLine(pt(14.75f, 7), pt(14.75f, 9), ink(color), 1.5f, roundStroke_.get());
+        target_->FillRoundedRectangle(
+            rounded(box(3, 6, kind == IslandAlert::Kind::lowBattery ? 2.0f : 7.0f, 4), 0.5f), ink(color));
+        break;
+    case IslandAlert::Kind::focusDone:
+        drawFocusGlyph(pt(8, 8), 16, color);
+        break;
+    }
+    target_->SetTransform(base_);
+}
+
+// While the panel is open an alert shows as a row at its top instead of a bubble.
+void Island::drawInlineAlert(D2D1_RECT_F panel) {
+    const float y = panel.top + padTop;
+    drawAlertIcon(alert_->kind, pt(panel.left + padX, y), alert_->color ? rgb(*alert_->color) : accent_);
+    auto line = alert_->title;
+    if (!line.empty() && !alert_->value.empty()) line += L" ";
+    line += alert_->value;
+    text(line, alertValueFont_.get(), box(panel.left + padX + 21, y - 2, innerWidth - 21, 19), rgb(inkColor));
+}
+
 // ---- Frame ---------------------------------------------------------------------------------------
 
 void Island::draw(HWND window) {
@@ -1082,6 +1540,7 @@ void Island::draw(HWND window) {
     auto bounds = grow(compactShape(amount), 2, 2);
     bounds = unite(bounds, amount >= 1 ? box(pillLeft, pillTop - 3, pillWidth, 46) : box(-22, pillTop - 3, 44, 46));
     if (panelVisible) bounds = unite(bounds, grow(panelRect(now), shadowReach, shadowReach));
+    if (bubbleShowing()) bounds = unite(bounds, box(-splitWidth / 2 - 2, pillTop - 2, splitWidth + 4, pillHeight + 4));
     bounds.top = std::max(bounds.top, 0.0f);
     origin_ = {static_cast<LONG>(std::floor(bounds.left * scale_)), static_cast<LONG>(std::floor(bounds.top * scale_))};
     const int width = static_cast<int>(std::ceil(bounds.right * scale_)) - origin_.x;

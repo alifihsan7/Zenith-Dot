@@ -6,6 +6,8 @@ A Windows 11 overlay that sits as a dot at the top center of the primary display
 - **Focus:** a 25-minute timer. While it runs, the pill shows the time left.
 - **System:** CPU, memory, and power status.
 
+Short notices split off the pill as a liquid bubble, or grow out of the dot: plugging in or unplugging the charger, low battery at 20% and 10%, the end of a Focus session, and copying something (with a short preview). While the panel is open they show as a row at its top instead. Clipboard content is never stored, and content that password managers mark as private is not announced.
+
 The accent colour follows the current cover. The tray menu has media controls and Exit.
 
 The app uses C++20, Win32, Direct2D, DirectWrite, and C++/WinRT. It runs as one desktop process. The frame timer stops when the dot settles. Windows media events drive session updates, and the app reads power status every ten seconds and when Windows reports a change.
@@ -45,6 +47,8 @@ In the extracted build package or `dist` directory, run `.\install.ps1` from Pow
 - Hover the pill: the panel opens after a short delay, and the cover and title move into place. Move a little past the panel's edge and it should stay open, then close once the pointer is well away. Click outside it to close it right away.
 - Switch between Now Playing, Focus, and System. Drag the timeline to seek where the player allows it. With two players open, click the other app's logo to show it.
 - Pause playback: the pill should show a pause glyph, then shrink to the dot after five seconds.
+- Copy some text: a "Copied" bubble should stretch out of the pill, pinch off, show the first line, and merge back after about two seconds. Copy with the panel open: the notice should appear as a row at the top of the panel. Copy a password from a password manager: no notice.
+- Unplug and reconnect the charger: "On Battery" and then a green "Charging" bubble, each with the battery level.
 - Open System and check the battery percentage and AC status. Unplug and reconnect the charger. On a desktop without a battery, confirm the panel reports that state.
 - Install, sign out, sign back in, and confirm there is one Zenith Dot process. Launch it again from Start and check that the process count stays at one.
 - Compare private working set after a minute at idle and during playback. For an Electron baseline, include its renderer and helper processes.

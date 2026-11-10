@@ -27,6 +27,17 @@ struct IslandCommand {
     std::wstring appId;
 };
 
+// A short notice that splits off the pill as a liquid bubble (or shows inside the open panel).
+struct IslandAlert {
+    enum class Kind { copy, charging, battery, lowBattery, focusDone };
+    Kind kind = Kind::copy;
+    std::wstring title;
+    std::wstring value;
+    std::optional<unsigned> color;   // icon colour (0xRRGGBB); the accent when empty
+    int priority = 1;                // a waiting alert is replaced only by one of equal or higher priority
+    std::chrono::milliseconds hold{1800};
+};
+
 // The island UI from preview V7: an idle dot, a pill while something is going on, and a panel on hover.
 // Layout is in DIPs in "stage" space: x = 0 is the monitor's center line, y = 0 the work area's top.
 class Island {
@@ -42,6 +53,7 @@ public:
     void setMedia(MediaState const& media);
     void setPower(PowerState const& power);
     void setSystem(SystemStats const& stats);
+    void notify(IslandAlert alert);
 
     // Runs time-based behavior: hover delays, closing, the focus timer, and parking the pill. Call before draw.
     void tick();
@@ -91,6 +103,12 @@ private:
     Target const* targetAt(D2D1_POINT_2F point) const;
     float timelineFraction(D2D1_POINT_2F point) const;
     std::wstring title() const;
+    void startAlert(IslandAlert alert, Clock::time_point now, bool update);
+    void finishAlert(Clock::time_point now);
+    float alertValue(Clock::time_point now) const;
+    bool bubbleShowing() const;
+    float inlineInset() const;
+    float measure(std::wstring_view value, IDWriteTextFormat* format);
 
     void prepareSurface(int width, int height);
     void prepareText();
@@ -109,6 +127,11 @@ private:
     void drawChipGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color);
     void drawButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record);
     void fillShell(D2D1_ROUNDED_RECT shape);
+    void fillShell(ID2D1Geometry* shape);
+    void drawSplit(Clock::time_point now, float amount);
+    void drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity);
+    void drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color);
+    void drawInlineAlert(D2D1_RECT_F panel);
     void fillPolygon(std::initializer_list<D2D1_POINT_2F> points, D2D1_COLOR_F color);
     void pushLayer(ID2D1Geometry* mask, float opacity);
     void popLayer();
@@ -173,7 +196,19 @@ private:
     // Focus timer.
     int focusLeft_ = 25 * 60;
     std::optional<Clock::time_point> focusUntil_;
-    Clock::time_point focusDoneUntil_{};
+
+    // Alerts. A bubble opens (alertTo_ = 1), holds, then closes (alertTo_ = 0); while the panel is
+    // open the alert shows inline instead until alertUntil_.
+    std::optional<IslandAlert> alert_;
+    std::optional<IslandAlert> queued_;
+    bool alertInline_ = false;
+    float alertFrom_ = 0;
+    float alertTo_ = 0;
+    Clock::time_point alertStart_{};
+    Clock::duration alertLength_{};
+    std::optional<Clock::time_point> alertHoldUntil_;
+    Clock::time_point alertUntil_{};
+    float alertWidth_ = 52;
 
     // Last frame: hit targets in stage DIPs and where the surface sits.
     std::vector<Target> targets_;
@@ -204,6 +239,8 @@ private:
     winrt::com_ptr<IDWriteTextFormat> buttonFont_;
     winrt::com_ptr<IDWriteTextFormat> glyphFont_;
     winrt::com_ptr<IDWriteTextFormat> letterFont_;
+    winrt::com_ptr<IDWriteTextFormat> alertTitleFont_;
+    winrt::com_ptr<IDWriteTextFormat> alertValueFont_;
     std::vector<winrt::com_ptr<IDWriteInlineObject>> ellipses_;
     HDC surface_ = nullptr;
     HBITMAP bitmap_ = nullptr;

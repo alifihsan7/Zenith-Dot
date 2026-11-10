@@ -32,6 +32,7 @@ private:
     void refreshMotion();
     void addTray();
     void showMenu(POINT point);
+    std::optional<IslandAlert> clipboardAlert();
 
     HWND window_ = nullptr;
     HPOWERNOTIFY powerNotification_ = nullptr;
@@ -45,6 +46,7 @@ private:
     std::chrono::steady_clock::time_point systemSampled_{};
     Island island_;
     bool tracking_ = false;
+    unsigned lowWarned_ = 0;   // the low-battery threshold (20 or 10) already announced this discharge
 };
 
 int App::run(HINSTANCE instance) {
@@ -67,6 +69,7 @@ int App::run(HINSTANCE instance) {
     powerNotification_ = RegisterPowerSettingNotification(window_, &GUID_ACDC_POWER_SOURCE,
                                                            DEVICE_NOTIFY_WINDOW_HANDLE);
     SetTimer(window_, powerTimer, 10'000, nullptr);
+    AddClipboardFormatListener(window_);
     addTray();
     frame();
     ShowWindow(window_, SW_SHOWNOACTIVATE);
@@ -117,8 +120,28 @@ void App::run(IslandCommand const& command) {
 void App::refreshPower() {
     const auto state = readPower();
     if (power_ == state) return;
+    const auto previous = power_;
     power_ = state;
     island_.setPower(power_);
+    const auto level = power_.percent ? std::to_wstring(*power_.percent) + L"%" : std::wstring{};
+    if (previous.pluggedIn && power_.pluggedIn && previous.pluggedIn != power_.pluggedIn) {
+        if (*power_.pluggedIn) {
+            island_.notify({IslandAlert::Kind::charging, L"Charging", level, 0x30d158u, 2});
+        } else {
+            island_.notify({IslandAlert::Kind::battery, L"On Battery", level, std::nullopt, 2});
+        }
+    }
+    // Low battery: once at 20% and once more at 10% per discharge.
+    if (power_.pluggedIn != false || !power_.percent || *power_.percent > 20) {
+        lowWarned_ = 0;
+    } else {
+        const unsigned threshold = *power_.percent <= 10 ? 10 : 20;
+        if (lowWarned_ == 0 || threshold < lowWarned_) {
+            lowWarned_ = threshold;
+            island_.notify({IslandAlert::Kind::lowBattery, L"Low Battery", level,
+                            threshold == 10 ? 0xff453au : 0xff9f0au, 3});
+        }
+    }
     frame();
 }
 
@@ -163,6 +186,59 @@ void App::showMenu(POINT point) {
     } else if (selected >= previousTrack && selected <= nextTrack && monitor_) {
         monitor_->control(controls[selected - previousTrack]);
     }
+}
+
+// "Copied" plus a short preview. Nothing is kept. Content that password managers mark as private
+// (excluded from monitoring or from clipboard history) is not announced at all.
+std::optional<IslandAlert> App::clipboardAlert() {
+    static const UINT excluded = RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
+    static const UINT history = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
+    if (IsClipboardFormatAvailable(excluded)) return std::nullopt;
+    IslandAlert alert{IslandAlert::Kind::copy, L"Copied"};
+    if (!OpenClipboard(window_)) return alert;
+    bool hidden = false;
+    if (const auto flag = IsClipboardFormatAvailable(history) ? GetClipboardData(history) : nullptr) {
+        if (const auto value = static_cast<DWORD const*>(GlobalLock(flag))) {
+            hidden = *value == 0;
+            GlobalUnlock(flag);
+        }
+    }
+    if (hidden) {
+        CloseClipboard();
+        return std::nullopt;
+    }
+    if (const auto data = GetClipboardData(CF_UNICODETEXT)) {
+        if (const auto text = static_cast<wchar_t const*>(GlobalLock(data))) {
+            // First non-empty line, trimmed, at most 60 characters.
+            std::wstring_view all(text, wcsnlen(text, GlobalSize(data) / sizeof(wchar_t)));
+            while (!all.empty()) {
+                const auto end = all.find_first_of(L"\r\n");
+                auto line = all.substr(0, end);
+                const auto first = line.find_first_not_of(L" \t");
+                if (first != std::wstring_view::npos) {
+                    line = line.substr(first, line.find_last_not_of(L" \t") - first + 1);
+                    alert.value = std::wstring(line.substr(0, 60));
+                    break;
+                }
+                if (end == std::wstring_view::npos) break;
+                all.remove_prefix(end + 1);
+            }
+            GlobalUnlock(data);
+        }
+    } else if (const auto drop = static_cast<HDROP>(GetClipboardData(CF_HDROP))) {
+        const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+        wchar_t name[MAX_PATH]{};
+        if (count == 1 && DragQueryFileW(drop, 0, name, MAX_PATH)) {
+            const auto slash = std::wstring_view(name).find_last_of(L"\\/");
+            alert.value = slash == std::wstring_view::npos ? name : name + slash + 1;
+        } else if (count > 1) {
+            alert.value = std::to_wstring(count) + L" files";
+        }
+    } else if (IsClipboardFormatAvailable(CF_DIB) || IsClipboardFormatAvailable(CF_BITMAP)) {
+        alert.value = L"Image";
+    }
+    CloseClipboard();
+    return alert;
 }
 
 LRESULT CALLBACK App::dispatch(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -214,6 +290,12 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     case MediaMonitor::notification:
         if (monitor_) monitor_->refresh(wparam);
+        return 0;
+    case WM_CLIPBOARDUPDATE:
+        if (auto alert = clipboardAlert()) {
+            island_.notify(std::move(*alert));
+            frame();
+        }
         return 0;
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;
@@ -267,6 +349,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_DESTROY:
         KillTimer(window_, powerTimer);
         KillTimer(window_, frameTimer);
+        RemoveClipboardFormatListener(window_);
         if (monitor_) monitor_->stop();
         if (powerNotification_) UnregisterPowerSettingNotification(powerNotification_);
         Shell_NotifyIconW(NIM_DELETE, &tray_);
