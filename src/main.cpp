@@ -198,6 +198,20 @@ void App::frame() {
 void App::updateMedia() {
     media_ = browserTabs_.combine(nativeMedia_);
     island_.setMedia(media_);
+    std::optional<IslandAlert> download;
+    if (const auto status = browserTabs_.download()) {
+        const auto count = std::to_wstring(status->count);
+        const auto kind = status->completedId ? IslandAlert::Kind::downloadDone : IslandAlert::Kind::download;
+        std::wstring title;
+        if (status->completedId) title = status->count == 1 ? L"Download complete" : count + L" downloads complete";
+        else if (status->count > 1) title = count + L" downloads";
+        else title = status->filename.empty() ? L"Downloading" : status->filename;
+        download = IslandAlert{kind, std::move(title), L"", 0x8ac7ffu};
+        if (status->progress >= 0) download->meter = static_cast<unsigned>(status->progress);
+        if (status->paused) download->value = L"Paused";
+        else if (status->progress >= 0) download->value = std::to_wstring(status->progress) + L"%";
+    }
+    island_.setDownload(std::move(download));
     frame();
 }
 
@@ -225,6 +239,7 @@ void App::run(IslandCommand const& command) {
         if (!media_.sourceId.empty()) browserTabs_.activate(media_.sourceId);
         else activateMediaWindow(window_, media_.appId);
         break;
+    case IslandCommand::Kind::showDownload: browserTabs_.showDownload(); break;
     case IslandCommand::Kind::retryLyrics: if (lyrics_) lyrics_->retry(); break;
     case IslandCommand::Kind::editScratchpad:
         if (const auto bounds = island_.scratchEditorRect()) {

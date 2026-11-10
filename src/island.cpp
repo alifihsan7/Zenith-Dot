@@ -50,6 +50,7 @@ constexpr float releaseGap = 10;      // gap between pill and bubble at the pinc
 constexpr float neckSpread = 0.5f;
 constexpr float handleSize = 2.4f;
 constexpr float maxBubble = 259;
+constexpr float downloadBubbleWidth = 192;
 
 constexpr auto openDelay = 50ms;
 constexpr auto closeDelay = 185ms;
@@ -700,7 +701,7 @@ void Island::updatePill(Clock::time_point now) {
         else pillTitle_ = screenLabel(screen_);
         pillPlaying_ = media_.playing;
     }
-    if (bubbleShowing()) return;   // never reshape while a bubble is split off
+    if (bubbleShowing() && !downloadAlert()) return;
     const float target = mode == PillMode::dot ? 0.0f : 1.0f;
     if (target != pillTarget_) {
         pillFrom_ = pillAmount(now);
@@ -712,7 +713,7 @@ void Island::updatePill(Clock::time_point now) {
 }
 
 void Island::updatePillLyric(Clock::time_point now, float workWidth) {
-    if (bubbleShowing() || (pillMode_ == PillMode::dot && pillAmount(now) > 0)) return;
+    if ((bubbleShowing() && !downloadAlert()) || (pillMode_ == PillMode::dot && pillAmount(now) > 0)) return;
     const float t = pillLyricProgress(now);
     if (t >= 1) previousPillLyric_ = {};
 
@@ -725,7 +726,8 @@ void Island::updatePillLyric(Clock::time_point now, float workWidth) {
     }
     const float reserved = captureSlot * (static_cast<int>(microphoneColor_.has_value()) +
                                           static_cast<int>(cameraColor_.has_value()));
-    const float maxWidth = std::clamp(workWidth - maxBubble - 60 - reserved, 180.0f, maxPillLyricWidth);
+    const float sideSpace = downloadAlert() ? 2 * (downloadBubbleWidth + releaseGap + 4) : maxBubble + 60;
+    const float maxWidth = std::clamp(workWidth - sideSpace - reserved, 180.0f, maxPillLyricWidth);
     const float maxHeight = std::min(maxPillLyricHeight, maxWidth / 2);
     if (line == pillLyric_.text && (line.empty() || maxWidth == pillLyricMaxWidth_)) return;
 
@@ -829,7 +831,7 @@ void Island::setCaptureColors(std::optional<unsigned> microphone, std::optional<
 void Island::setOpen(bool open, Clock::time_point now) {
     openAt_.reset();
     closeAt_.reset();
-    if (open_ == open || (open && (suppressed_ || bubbleShowing()))) return;
+    if (open_ == open || (open && (suppressed_ || (bubbleShowing() && !downloadAlert())))) return;
     const bool lyricsVisible = wantsLyrics();
     const float shown = panelValue(now);
     if (open) {
@@ -846,6 +848,7 @@ void Island::setOpen(bool open, Clock::time_point now) {
                   pillAmount(now) >= 1 && pillContent_ == PillMode::media &&
                   !pillLyric_.layout && !previousPillLyric_.layout;
     open_ = open;
+    if (open && downloadAlert()) alertInline_ = true;
     sourcePickerOpen_ = false;
     if (!open && !suppressed_) idlePillUntil_ = now + idlePillHold + (animate_ ? panelCloseTime : 0ms);
     updateLyricVisibility(lyricsVisible, now);
@@ -948,18 +951,23 @@ void Island::tick() {
     if (quick_.expire(now)) notify({IslandAlert::Kind::timerDone, L"Timer done", L"", std::nullopt, 3, 2600ms});
     if (alert_) {
         if (alertInline_) {
-            if (now >= alertUntil_) finishAlert(now);
+            const bool expired = downloadAlert() ? (!download_ || queued_) : now >= alertUntil_;
+            if (expired) finishAlert(now);
             else if (!open_ && panelValue(now) <= 0) {
                 auto alert = std::move(*alert_);
-                alert.hold = std::chrono::duration_cast<std::chrono::milliseconds>(alertUntil_ - now);
+                if (!downloadAlert()) {
+                    alert.hold = std::chrono::duration_cast<std::chrono::milliseconds>(alertUntil_ - now);
+                }
                 startAlert(std::move(alert), now, false);
             }
         } else if (alertTo_ > 0) {
-            if (!alertHoldUntil_ && progress(alertStart_, alertLength_, now) >= 1) {
+            if (!downloadAlert() && !alertHoldUntil_ && progress(alertStart_, alertLength_, now) >= 1) {
                 alertHoldUntil_ = now + alert_->hold;
             }
-            if (alertHoldUntil_ && now >= *alertHoldUntil_) {
-                alertFrom_ = 1;
+            const bool expired = downloadAlert() ? (!download_ || queued_) :
+                alertHoldUntil_ && now >= *alertHoldUntil_;
+            if (expired) {
+                alertFrom_ = alertValue(now);
                 alertTo_ = 0;
                 alertStart_ = now;
                 alertLength_ = alertCloseTime;
@@ -968,6 +976,10 @@ void Island::tick() {
         } else if (progress(alertStart_, alertLength_, now) >= 1) {
             finishAlert(now);
         }
+    }
+    if (!suppressed_ && !alert_ && download_) {
+        prepareText();
+        startAlert(*download_, now, false);
     }
     if (media_.playing) lastActive_ = now;
     updatePill(now);
@@ -980,11 +992,11 @@ unsigned Island::frameInterval() const {
     if (animate_ && now - visibilityStart_ < visibilityTime) return 10;
     if (suppressed_) return timerRunning ? 1000 : 0;
     if (moving(now) || openAt_ || closeAt_ || dragging_) return 10;
-    if (panelPinned() && !alert_) {
+    if (panelPinned() && (!alert_ || (downloadAlert() && download_ && !queued_))) {
         if (screen_ == Screen::media && (media_.playing || (wantsLyrics() && now < lyricFollowAt_))) return 50;
         return screen_ == Screen::system || scratchEditing_ || timerRunning ? 1000 : 0;
     }
-    if (open_ || alert_) return 50;
+    if (open_ || (alert_ && (!downloadAlert() || !download_ || queued_ || alertTo_ == 0))) return 50;
     if (now < idlePillUntil_) return 16;
     if (pillMode_ == PillMode::preview) return 50;
     if (wantsLyricPill() && media_.playing) return 50;
@@ -1204,6 +1216,7 @@ IslandCommand Island::pointerUp(POINT client) {
     case Hit::toggle: command.kind = IslandCommand::Kind::toggle; break;
     case Hit::next: command.kind = IslandCommand::Kind::next; break;
     case Hit::cover: command.kind = IslandCommand::Kind::openSource; break;
+    case Hit::showDownload: command.kind = IslandCommand::Kind::showDownload; break;
     case Hit::sourcePicker:
         sourcePickerOpen_ = !sourcePickerOpen_;
         sourceOffset_ = 0;
@@ -2323,11 +2336,22 @@ void Island::clearAlerts() {
     alertFrom_ = alertTo_ = 0;
 }
 
+void Island::setDownload(std::optional<IslandAlert> download) {
+    if (download_ == download) return;
+    download_ = std::move(download);
+    if (downloadAlert() && download_ && (alertInline_ || alertTo_ > 0)) alert_ = *download_;
+}
+
+bool Island::downloadAlert() const {
+    return alert_ && (alert_->kind == IslandAlert::Kind::download || alert_->kind == IslandAlert::Kind::downloadDone);
+}
+
 void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
     float width = 12 + 15 + 12;
     if (!alert.title.empty()) width += 7 + measure(alert.title, alertTitleFont_.get());
     if (!alert.value.empty()) width += 7 + measure(alert.value, alertValueFont_.get());
-    alertWidth_ = alert.meter ? 168.0f : std::clamp(width + 1, 52.0f, maxBubble);
+    const bool download = alert.kind == IslandAlert::Kind::download || alert.kind == IslandAlert::Kind::downloadDone;
+    alertWidth_ = download ? downloadBubbleWidth : alert.meter ? 168.0f : std::clamp(width + 1, 52.0f, maxBubble);
     alert_ = std::move(alert);
     if (update) return;
     // A dot <-> pill morph in flight snaps to its end so the split starts from a settled shape.
@@ -2402,7 +2426,7 @@ void Island::drawSplit(Clock::time_point now, float amount) {
         const float d = (2 * capRadius + releaseGap) * travel;
         const float bubbleWidth = std::lerp(pillHeight, std::max(pillHeight, target / scale), widen);
         const float span = p < pinchAt ? width + d : width + releaseGap + bubbleWidth;
-        left = (captureWidth(now) / scale - span) / 2;
+        left = (captureWidth(now) / scale - (downloadAlert() ? width : span)) / 2;
         const float bx = left + width - capRadius;
         alertOpacity = lin(pinchAt - 0.1f, pinchAt + 0.12f, p);
         copyOpacity = lin(0.8f, 1, p);
@@ -2447,6 +2471,18 @@ void Island::drawSplit(Clock::time_point now, float amount) {
         pushLayer(clip.get(), 1);
         drawCompactContent(now, capsule, false);
         popLayer();
+        if (downloadAlert()) addTarget(compactHit(capsule, amount), Hit::pill);
+    }
+    if (downloadAlert() && alertTo_ > 0) {
+        if (alert_->kind == IslandAlert::Kind::downloadDone && p >= 1 && download_) {
+            if (hovered(Hit::showDownload)) {
+                const auto radius = (area.bottom - area.top) / 2;
+                target_->DrawRoundedRectangle(rounded(area, radius), ink(rgb(0x8ac7ff, 0.75f)), 1);
+            }
+            addTarget(area, Hit::showDownload);
+        } else if (!fromPill && alert_->kind == IslandAlert::Kind::download) {
+            addTarget(area, Hit::pill);
+        }
     }
     drawAlertContent(area, alertOpacity, copyOpacity);
 }
@@ -2464,6 +2500,11 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity
     drawAlertIcon(alert_->kind, pt(x, middle - 7.5f), alert_->color ? rgb(*alert_->color) : accent_);
     x += 15 + 7;
     const float end = area.right - 12;
+    if (downloadAlert()) {
+        drawDownloadContent(x, end, middle, copyOpacity);
+        popLayer();
+        return;
+    }
     if (!alert_->title.empty() && end > x) {
         const float titleWidth = measure(alert_->title, alertTitleFont_.get());
         text(alert_->title, alertTitleFont_.get(), box(x, middle - 10, std::min(titleWidth + 1, end - x), 20),
@@ -2479,12 +2520,44 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity
     popLayer();
 }
 
+void Island::drawDownloadContent(float left, float right, float middle, float opacity) {
+    const float width = right - left;
+    if (width <= 0 || opacity <= 0) return;
+    const auto accent = rgb(0x8ac7ff, opacity);
+    const float labelWidth = alert_->value.empty() ? 0.0f : measure(alert_->value, alertValueFont_.get()) + 1;
+    const float titleWidth = width - (labelWidth > 0 ? labelWidth + 7 : 0);
+    if (titleWidth <= 0) return;
+    const float y = middle - (alert_->meter ? 13 : 10);
+    text(alert_->title, alertTitleFont_.get(), box(left, y, titleWidth, 20), rgb(inkColor, opacity));
+    if (labelWidth > 0) text(alert_->value, alertValueFont_.get(), box(right - labelWidth, y, labelWidth, 20), accent);
+    if (alert_->meter) {
+        target_->FillRoundedRectangle(rounded(box(left, middle + 8, width, 2), 1), ink(white(0.16f * opacity)));
+        const float fill = width * *alert_->meter / 100;
+        if (fill > 0) target_->FillRoundedRectangle(rounded(box(left, middle + 8, fill, 2), 1), ink(accent));
+    }
+}
+
 // The V7 alert glyphs, drawn in a 16-unit box scaled to 15 DIPs.
 void Island::drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color) {
     const float scale = 15.0f / 16;
     target_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) * D2D1::Matrix3x2F::Translation(origin.x, origin.y) *
                           base_);
     switch (kind) {
+    case IslandAlert::Kind::download: {
+        PathBuilder arrow(graphics_.get());
+        arrow.move(pt(8, 2), false).line(pt(8, 10));
+        arrow.move(pt(5, 7), false).line(pt(8, 10)).line(pt(11, 7));
+        arrow.move(pt(2.5f, 11), false).line(pt(2.5f, 13.5f)).line(pt(13.5f, 13.5f)).line(pt(13.5f, 11));
+        target_->DrawGeometry(arrow.finish().get(), ink(color), 1.5f, roundStroke_.get());
+        break;
+    }
+    case IslandAlert::Kind::downloadDone: {
+        PathBuilder folder(graphics_.get());
+        folder.move(pt(2, 4), false).line(pt(6, 4)).line(pt(7.5f, 5.5f)).line(pt(14, 5.5f))
+            .line(pt(14, 12.5f)).line(pt(2, 12.5f)).line(pt(2, 4));
+        target_->DrawGeometry(folder.finish().get(), ink(color), 1.5f, roundStroke_.get());
+        break;
+    }
     case IslandAlert::Kind::capsLock:
     case IslandAlert::Kind::numLock:
         target_->DrawRoundedRectangle(rounded(box(1.5f, 1.5f, 13, 13), 2.5f), ink(color), 1.4f);
@@ -2575,6 +2648,16 @@ void Island::drawAlertMeter(float left, float right, float middle, float opacity
 void Island::drawInlineAlert(D2D1_RECT_F panel) {
     const float y = panel.top + padTop;
     drawAlertIcon(alert_->kind, pt(panel.left + padX, y), alert_->color ? rgb(*alert_->color) : accent_);
+    if (downloadAlert()) {
+        const float right = panel.right - padX;
+        drawDownloadContent(panel.left + padX + 21, right, y + 7.5f, 1);
+        if (recordPanel_ && alert_->kind == IslandAlert::Kind::downloadDone) {
+            const auto row = box(panel.left + padX - 3, y - 4, right - (panel.left + padX) + 6, 23);
+            if (hovered(Hit::showDownload)) target_->DrawRoundedRectangle(rounded(row, 6), ink(rgb(0x8ac7ff, 0.6f)), 1);
+            addTarget(row, Hit::showDownload);
+        }
+        return;
+    }
     if (alert_->meter) {
         drawAlertMeter(panel.left + padX + 21, panel.right - padX, y + 7.5f, 1);
         return;
@@ -2623,7 +2706,8 @@ void Island::draw(HWND window) {
         const float bubble = std::max(alertWidth_, height);
         const float width = amount >= 1 ? size.width + releaseGap * height / pillHeight + bubble : bubble;
         const float extra = amount >= 1 ? captureWidth(now) : 0;
-        bounds = unite(bounds, grow(box((extra - width) / 2, pillTop, width, height), 2, 2));
+        const float centered = downloadAlert() && amount >= 1 ? size.width : width;
+        bounds = unite(bounds, grow(box((extra - centered) / 2, pillTop, width, height), 2, 2));
     }
     bounds.top = std::max(bounds.top, 0.0f);
     origin_ = {static_cast<LONG>(std::floor(bounds.left * scale_)), static_cast<LONG>(std::floor(bounds.top * scale_))};

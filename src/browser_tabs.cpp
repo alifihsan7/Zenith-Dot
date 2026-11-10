@@ -148,6 +148,7 @@ bool BrowserTabs::receive(HWND sender, COPYDATASTRUCT const& message) {
     if (message.dwData != snapshotMessage || message.cbData == 0 || message.cbData > messageLimit ||
         !message.lpData || !isPeer(sender, hostClass)) return false;
     std::vector<Tab> incoming;
+    BrowserDownload download;
     try {
         const auto bytes = std::string_view(static_cast<char const*>(message.lpData), message.cbData);
         JsonObject snapshot{nullptr};
@@ -155,6 +156,21 @@ bool BrowserTabs::receive(HWND sender, COPYDATASTRUCT const& message) {
         const auto browser = snapshot.GetNamedString(L"browser", L"");
         if (browser != L"chrome.exe" && browser != L"msedge.exe" && browser != L"brave.exe") return false;
         const auto entries = snapshot.GetNamedArray(L"tabs");
+        if (snapshot.HasKey(L"download")) {
+            const auto value = snapshot.GetNamedObject(L"download");
+            download.count = static_cast<unsigned>(std::clamp(number(value, L"count"), 0.0, double(INT_MAX)));
+            download.filename = text(value, L"filename");
+            const auto slash = download.filename.find_last_of(L"\\/");
+            if (slash != std::wstring::npos) download.filename.erase(0, slash + 1);
+            download.paused = value.GetNamedBoolean(L"paused", false);
+            const auto progress = value.GetNamedNumber(L"progress", -1);
+            if (std::isfinite(progress) && progress >= 0 && progress <= 99) download.progress = static_cast<int>(progress);
+            if (value.GetNamedBoolean(L"complete", false)) {
+                const auto id = value.GetNamedNumber(L"id", -1);
+                if (id >= 0 && id <= INT_MAX && std::floor(id) == id) download.completedId = static_cast<unsigned>(id);
+                else download.count = 0;
+            }
+        }
         const auto now = std::chrono::steady_clock::now();
         for (const auto& entry : entries) {
             if (incoming.size() == 16) break;
@@ -185,6 +201,8 @@ bool BrowserTabs::receive(HWND sender, COPYDATASTRUCT const& message) {
     } catch (winrt::hresult_error const&) {
         return false;
     }
+    if (download.count) downloads_.insert_or_assign(sender, std::move(download));
+    else downloads_.erase(sender);
     std::erase_if(tabs_, [&](Tab const& tab) { return tab.host == sender; });
     tabs_.insert(tabs_.end(), std::make_move_iterator(incoming.begin()), std::make_move_iterator(incoming.end()));
     std::ranges::sort(tabs_, {}, [](Tab const& tab) { return std::pair{reinterpret_cast<UINT_PTR>(tab.host), tab.number}; });
@@ -194,8 +212,9 @@ bool BrowserTabs::receive(HWND sender, COPYDATASTRUCT const& message) {
 
 bool BrowserTabs::prune() {
     const auto removed = std::erase_if(tabs_, [](Tab const& tab) { return !IsWindow(tab.host); });
+    const auto removedDownloads = std::erase_if(downloads_, [](auto const& entry) { return !IsWindow(entry.first); });
     if (removed && !find(selected_)) selected_.clear();
-    return removed != 0;
+    return removed != 0 || removedDownloads != 0;
 }
 
 BrowserTabs::Tab const* BrowserTabs::find(std::wstring const& id) const {
@@ -264,6 +283,25 @@ void BrowserTabs::seek(std::wstring const& source, double seconds) const {
 
 void BrowserTabs::activate(std::wstring const& source) const {
     send(source, L"activate", 0);
+}
+
+std::map<HWND, BrowserDownload>::const_iterator BrowserTabs::downloadSource() const {
+    const auto active = std::ranges::find_if(downloads_, [](auto const& entry) { return !entry.second.completedId; });
+    return active == downloads_.end() ? downloads_.begin() : active;
+}
+
+BrowserDownload const* BrowserTabs::download() const {
+    const auto source = downloadSource();
+    return source == downloads_.end() ? nullptr : &source->second;
+}
+
+void BrowserTabs::showDownload() const {
+    const auto source = downloadSource();
+    if (source == downloads_.end() || !source->second.completedId) return;
+    JsonObject command;
+    command.SetNamedValue(L"id", JsonValue::CreateNumberValue(*source->second.completedId));
+    command.SetNamedValue(L"action", JsonValue::CreateStringValue(L"showDownload"));
+    copyData(source->first, window_, commandMessage, winrt::to_string(command.Stringify()), 70);
 }
 
 }

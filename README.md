@@ -54,7 +54,13 @@ Chrome, Edge, and Brave publish a shared Windows media session for ordinary tabs
 2. Open `chrome://extensions`, `edge://extensions`, or `brave://extensions`. Turn on Developer mode, choose **Load unpacked**, and select the package's `browser` folder. If the extension is already installed from another folder, replace it with the copy from this package.
 3. Reload existing media tabs. Play two HTML media streams and hover Zenith Dot. Click a numbered browser logo to select that tab, then use play/pause or the seek bar where the media supports it.
 
-The extension sends playback metadata and timing to the local native messaging host. It starts the companion when it has media to report. Clicking the cover activates the selected browser tab and its window. Without the extension, the cover can return to the browser window Windows reports as the media source. Previous and Next are available through Windows media sessions. Browser tab controls use the page's HTML audio or video element. If Windows reports different artwork metadata for a browser tab, Zenith Dot shows the browser icon until the track details match.
+The extension sends playback metadata and timing to the local native messaging host. It starts the companion when it has media or downloads to report. Clicking the cover activates the selected browser tab and its window. Without the extension, the cover can return to the browser window Windows reports as the media source. Previous and Next are available through Windows media sessions. Browser tab controls use the page's HTML audio or video element. If Windows reports different artwork metadata for a browser tab, Zenith Dot shows the browser icon until the track details match.
+
+## Download Bubble
+
+Reload the unpacked extension after updating it and accept its Downloads permission if the browser prompts you. Start a download in Brave, Chrome, or Edge. Zenith Dot shows the filename and progress, or the active download count and combined progress when several files are transferring in the same browser profile. Files with an unknown size show without a percentage. When the download bubble says **Download complete**, click it to reveal the file in Explorer. For a batch, it reveals the most recently completed file.
+
+Download summaries stay local. The extension sends filenames without their directory paths and skips private-window downloads. It checks progress about once per second during transfers and stops checking when transfers finish or all are paused.
 
 ## Lyrics
 
