@@ -3,6 +3,7 @@
 #include <ole2.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <wincodec.h>
 
 #include <algorithm>
 #include <cstring>
@@ -14,6 +15,7 @@ namespace {
 
 constexpr size_t maxItems = 64;
 constexpr size_t maxBytes = 16 * 1024 * 1024;
+constexpr uint64_t maxImagePixels = 32'000'000;
 
 FORMATETC format(CLIPFORMAT type) { return {type, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL}; }
 
@@ -122,6 +124,60 @@ winrt::com_ptr<IDataObject> fileItem(std::wstring const& path, size_t bytes) {
     return takeItem(CF_HDROP, data);
 }
 
+std::shared_ptr<DropThumbnail> makeThumbnail(IWICImagingFactory& factory, IWICBitmapSource& source) {
+    UINT width = 0, height = 0;
+    if (FAILED(source.GetSize(&width, &height)) || !width || !height ||
+        static_cast<uint64_t>(width) * height > maxImagePixels) return {};
+    const double scale = std::min({1.0, 72.0 / width, 54.0 / height});
+    auto thumbnail = std::make_shared<DropThumbnail>();
+    thumbnail->width = std::max(1u, static_cast<unsigned>(width * scale));
+    thumbnail->height = std::max(1u, static_cast<unsigned>(height * scale));
+    winrt::com_ptr<IWICBitmapScaler> scaler;
+    winrt::com_ptr<IWICFormatConverter> converter;
+    if (FAILED(factory.CreateBitmapScaler(scaler.put())) ||
+        FAILED(scaler->Initialize(&source, thumbnail->width, thumbnail->height, WICBitmapInterpolationModeFant)) ||
+        FAILED(factory.CreateFormatConverter(converter.put())) ||
+        FAILED(converter->Initialize(scaler.get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
+                                     nullptr, 0, WICBitmapPaletteTypeCustom))) return {};
+    const UINT stride = thumbnail->width * 4;
+    const UINT bytes = stride * thumbnail->height;
+    thumbnail->pixels.resize(bytes);
+    if (FAILED(converter->CopyPixels(nullptr, stride, bytes, thumbnail->pixels.data()))) return {};
+    return thumbnail;
+}
+
+std::shared_ptr<DropThumbnail> fileThumbnail(std::wstring const& path) {
+    const auto dot = path.find_last_of(L'.');
+    if (dot == std::wstring::npos) return {};
+    const auto* extension = path.c_str() + dot;
+    constexpr wchar_t const* imageTypes[]{L".png", L".jpg", L".jpeg", L".bmp", L".gif", L".webp", L".tif", L".tiff"};
+    if (std::ranges::none_of(imageTypes, [extension](auto type) { return _wcsicmp(extension, type) == 0; })) return {};
+    winrt::com_ptr<IWICImagingFactory> factory;
+    winrt::com_ptr<IWICBitmapDecoder> decoder;
+    winrt::com_ptr<IWICBitmapFrameDecode> frame;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(factory.put()))) ||
+        FAILED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
+                                                  WICDecodeMetadataCacheOnDemand, decoder.put())) ||
+        FAILED(decoder->GetFrame(0, frame.put()))) return {};
+    return makeThumbnail(*factory, *frame);
+}
+
+bool encodePng(IWICImagingFactory& factory, IWICBitmapSource& source, std::wstring const& path) {
+    winrt::com_ptr<IWICStream> stream;
+    winrt::com_ptr<IWICBitmapEncoder> encoder;
+    winrt::com_ptr<IWICBitmapFrameEncode> frame;
+    winrt::com_ptr<IPropertyBag2> options;
+    return SUCCEEDED(factory.CreateStream(stream.put())) &&
+           SUCCEEDED(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE)) &&
+           SUCCEEDED(factory.CreateEncoder(GUID_ContainerFormatPng, nullptr, encoder.put())) &&
+           SUCCEEDED(encoder->Initialize(stream.get(), WICBitmapEncoderNoCache)) &&
+           SUCCEEDED(encoder->CreateNewFrame(frame.put(), options.put())) &&
+           SUCCEEDED(frame->Initialize(options.get())) &&
+           SUCCEEDED(frame->WriteSource(&source, nullptr)) &&
+           SUCCEEDED(frame->Commit()) && SUCCEEDED(encoder->Commit());
+}
+
 }
 
 struct DropZone::Target : winrt::implements<Target, IDropTarget> {
@@ -180,23 +236,80 @@ private:
 DropZone::~DropZone() { detach(); }
 
 bool DropZone::attach(HWND window, Hover hover, Changed changed) {
+    changed_ = std::move(changed);
     auto target = winrt::make<Target>(*this, std::move(hover));
     if (FAILED(RegisterDragDrop(window, target.get()))) return false;
     window_ = window;
     target_ = std::move(target);
-    changed_ = std::move(changed);
     return true;
 }
 
 void DropZone::detach() {
     if (window_) RevokeDragDrop(std::exchange(window_, nullptr));
     target_ = nullptr;
+    for (const auto& item : items_) if (item.temporary) DeleteFileW(item.imagePath.c_str());
     items_.clear();
+    for (const auto& path : pendingDeletes_) DeleteFileW(path.c_str());
+    pendingDeletes_.clear();
+    if (!imageFolder_.empty()) RemoveDirectoryW(std::exchange(imageFolder_, {}).c_str());
+}
+
+size_t DropZone::remainingBytes() const {
+    size_t remaining = maxBytes;
+    for (const auto& item : items_) remaining -= item.bytes;
+    return remaining;
+}
+
+bool DropZone::prepareImageFolder() {
+    if (!imageFolder_.empty()) return true;
+    wchar_t temp[MAX_PATH + 1]{};
+    const DWORD length = GetTempPathW(static_cast<DWORD>(std::size(temp)), temp);
+    GUID guid{};
+    wchar_t suffix[40]{};
+    if (!length || length >= std::size(temp) || FAILED(CoCreateGuid(&guid)) ||
+        !StringFromGUID2(guid, suffix, static_cast<int>(std::size(suffix)))) return false;
+    auto folder = std::wstring(temp, length) + L"ZenithDot-" + suffix;
+    if (!CreateDirectoryW(folder.c_str(), nullptr)) return false;
+    imageFolder_ = std::move(folder);
+    return true;
+}
+
+void DropZone::deleteTemporary(std::wstring const& path) {
+    if (!path.empty() && !DeleteFileW(path.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND)
+        pendingDeletes_.push_back(path);
+}
+
+bool DropZone::addImage(HBITMAP bitmap) {
+    if (!bitmap || items_.size() >= maxItems || !remainingBytes()) return false;
+    winrt::com_ptr<IWICImagingFactory> factory;
+    winrt::com_ptr<IWICBitmap> image;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(factory.put()))) ||
+        FAILED(factory->CreateBitmapFromHBITMAP(bitmap, nullptr, WICBitmapIgnoreAlpha, image.put()))) return false;
+    auto thumbnail = makeThumbnail(*factory, *image);
+    if (!thumbnail || !prepareImageFolder()) return false;
+
+    auto label = L"Capture " + std::to_wstring(++imageNumber_) + L".png";
+    auto path = imageFolder_ + L"\\" + label;
+    struct UncommittedFile {
+        std::wstring const& path;
+        bool keep = false;
+        ~UncommittedFile() { if (!keep) DeleteFileW(path.c_str()); }
+    } temporary{path};
+    if (!encodePng(*factory, *image, path)) return false;
+    WIN32_FILE_ATTRIBUTE_DATA attributes{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) || attributes.nFileSizeHigh) return false;
+    const size_t itemBytes = sizeof(DROPFILES) + (path.size() + 2) * sizeof(wchar_t);
+    const size_t bytes = itemBytes + attributes.nFileSizeLow + thumbnail->pixels.size();
+    if (bytes > remainingBytes()) return false;
+    items_.push_back({fileItem(path, itemBytes), {std::move(label), false, std::move(thumbnail)}, bytes, path, true});
+    temporary.keep = true;
+    publish();
+    return true;
 }
 
 bool DropZone::append(CLIPFORMAT type, HGLOBAL data) {
-    size_t remaining = maxBytes;
-    for (const auto& item : items_) remaining -= item.bytes;
+    size_t remaining = remainingBytes();
     const size_t size = GlobalSize(data);
     if (size == 0 || size > remaining || items_.size() >= maxItems) return false;
 
@@ -218,14 +331,19 @@ bool DropZone::append(CLIPFORMAT type, HGLOBAL data) {
             const auto slash = path.find_last_of(L"\\/");
             auto label = slash == std::wstring::npos ? path : path.substr(slash + 1);
             if (label.empty()) label = path;
-            incoming.push_back({fileItem(path, bytes), {std::move(label), false}, bytes});
-            remaining -= bytes;
+            auto thumbnail = fileThumbnail(path);
+            if (thumbnail && thumbnail->pixels.size() > remaining - bytes) thumbnail.reset();
+            const auto entryBytes = bytes + (thumbnail ? thumbnail->pixels.size() : 0);
+            auto item = fileItem(path, bytes);
+            if (!thumbnail) path.clear();
+            incoming.push_back({std::move(item), {std::move(label), false, std::move(thumbnail)}, entryBytes, std::move(path)});
+            remaining -= entryBytes;
         }
     } else {
         auto label = textPreview(data);
         if (label.empty()) return false;
         auto item = takeItem(type, OleDuplicateData(data, type, GMEM_MOVEABLE));
-        incoming.push_back({std::move(item), {std::move(label), true}, size});
+        incoming.push_back({std::move(item), {std::move(label), true, {}}, size, {}});
     }
     items_.reserve(items_.size() + incoming.size());
     for (auto& item : incoming) items_.push_back(std::move(item));
@@ -253,13 +371,20 @@ void DropZone::drag(size_t index) {
 
 void DropZone::remove(size_t index) {
     if (index >= items_.size()) return;
+    if (items_[index].temporary) deleteTemporary(items_[index].imagePath);
     items_.erase(items_.begin() + static_cast<std::ptrdiff_t>(index));
     publish();
 }
 
 void DropZone::clear() {
+    for (const auto& item : items_) if (item.temporary) deleteTemporary(item.imagePath);
     items_.clear();
     publish();
+}
+
+void DropZone::openImage(size_t index, HWND owner) const {
+    if (index >= items_.size() || items_[index].imagePath.empty()) return;
+    ShellExecuteW(owner, L"open", items_[index].imagePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 }

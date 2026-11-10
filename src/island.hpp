@@ -27,7 +27,7 @@ namespace zenith {
 // Something a click on the island asks the app to do.
 struct IslandCommand {
     enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, editScratchpad,
-                      audioPicker, notificationSettings, removeDrop, clearDrop };
+                      audioPicker, notificationSettings, removeDrop, clearDrop, openDropImage };
     Kind kind = Kind::none;
     double seconds = 0;
     std::wstring appId;
@@ -102,7 +102,7 @@ private:
     enum class Hit { none, pill, previous, toggle, next, timeline, cover, sourcePicker, sourceMenu, source, navMedia, navTimers,
                      navScratch, navSystem, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
                      timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, scratchEdit,
-                     navDrop, dropItem, removeDrop, clearDrop, panelPin, audioPicker, notificationSettings };
+                     navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings };
     enum class Screen { media, timers, scratch, drop, system };
     static constexpr Screen screens[]{Screen::media, Screen::timers, Screen::scratch, Screen::drop, Screen::system};
     enum class PillMode { dot, media, focus, timer, preview, privacy, idle };
@@ -278,6 +278,7 @@ private:
     bool dropHover_ = false;
     bool popupOpen_ = false;
     std::vector<DropPreview> dropItems_;
+    std::map<DropThumbnail const*, winrt::com_ptr<ID2D1Bitmap>> dropBitmaps_;
     size_t dropOffset_ = 0;
     int dropWheelRemainder_ = 0;
     D2D1_RECT_F dropViewport_{};
@@ -353,6 +354,7 @@ private:
     winrt::com_ptr<ID2D1DCRenderTarget> target_;
     winrt::com_ptr<ID2D1SolidColorBrush> brush_;
     winrt::com_ptr<ID2D1StrokeStyle> roundStroke_;
+    winrt::com_ptr<ID2D1StrokeStyle> dropDash_;
     std::array<winrt::com_ptr<ID2D1Layer>, 4> layers_;
     size_t layerDepth_ = 0;
     D2D1_MATRIX_3X2_F base_ = D2D1::Matrix3x2F::Identity();

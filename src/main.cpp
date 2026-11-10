@@ -64,7 +64,7 @@ private:
     void queueClipboard(bool listenerEvent = false);
     void refreshClipboard();
     void updateLockKey(RAWKEYBOARD const& keyboard, HANDLE device);
-    std::optional<IslandAlert> clipboardAlert(bool& busy);
+    std::optional<IslandAlert> clipboardAlert(bool& busy, HBITMAP& image);
 
     HWND window_ = nullptr;
     HPOWERNOTIFY powerNotification_ = nullptr;
@@ -91,6 +91,7 @@ private:
     bool hidden_ = false;
     bool clipboardListening_ = false;
     DWORD clipboardSequence_ = 0;
+    DWORD stagedImageSequence_ = 0;
     std::optional<unsigned> clipboardAttempts_;
     unsigned captureTick_ = 0;
     unsigned lowWarned_ = 0;   // the low-battery threshold (20 or 10) already announced this discharge
@@ -228,6 +229,7 @@ void App::run(IslandCommand const& command) {
     case IslandCommand::Kind::audioPicker: showAudioPicker(); break;
     case IslandCommand::Kind::clearDrop: dropZone_.clear(); break;
     case IslandCommand::Kind::removeDrop: dropZone_.remove(command.index); break;
+    case IslandCommand::Kind::openDropImage: dropZone_.openImage(command.index, window_); break;
     case IslandCommand::Kind::notificationSettings:
         ShellExecuteW(window_, L"open", L"ms-settings:notifications", nullptr, nullptr, SW_SHOWNORMAL);
         break;
@@ -400,9 +402,8 @@ void App::showAudioPicker() {
     }
 }
 
-// "Copied" plus a short preview. Nothing is kept. Content that password managers mark as private
-// (excluded from monitoring or from clipboard history) is not announced at all.
-std::optional<IslandAlert> App::clipboardAlert(bool& busy) {
+// Private clipboard formats are excluded before either previewing text or staging an image.
+std::optional<IslandAlert> App::clipboardAlert(bool& busy, HBITMAP& image) {
     static const UINT excluded = RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
     static const UINT history = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
     busy = !OpenClipboard(window_);
@@ -426,6 +427,21 @@ std::optional<IslandAlert> App::clipboardAlert(bool& busy) {
         }
     }
     if (hidden) return std::nullopt;
+    if (!IsClipboardFormatAvailable(CF_UNICODETEXT) && !IsClipboardFormatAvailable(CF_HDROP) &&
+        (IsClipboardFormatAvailable(CF_BITMAP) || IsClipboardFormatAvailable(CF_DIB) ||
+         IsClipboardFormatAvailable(CF_DIBV5))) {
+        const auto bitmap = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP));
+        const DWORD sequence = GetClipboardSequenceNumber();
+        if (sequence && sequence == stagedImageSequence_) return std::nullopt;
+        BITMAP size{};
+        if (bitmap && GetObjectW(bitmap, sizeof(size), &size) && size.bmWidth > 0 && size.bmHeight > 0 &&
+            static_cast<uint64_t>(size.bmWidth) * size.bmHeight <= 32'000'000) {
+            image = static_cast<HBITMAP>(CopyImage(bitmap, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION));
+        }
+        alert.value = L"Image";
+        return alert;
+    }
+    if (suppressed()) return std::nullopt;
     if (const auto data = GetClipboardData(CF_UNICODETEXT)) {
         if (const auto text = static_cast<wchar_t const*>(GlobalLock(data))) {
             // First non-empty line, trimmed, at most 60 characters.
@@ -453,8 +469,6 @@ std::optional<IslandAlert> App::clipboardAlert(bool& busy) {
         } else if (count > 1) {
             alert.value = std::to_wstring(count) + L" files";
         }
-    } else if (IsClipboardFormatAvailable(CF_DIB) || IsClipboardFormatAvailable(CF_BITMAP)) {
-        alert.value = L"Image";
     }
     return alert;
 }
@@ -473,20 +487,28 @@ void App::queueClipboard(bool listenerEvent) {
 
 void App::refreshClipboard() {
     if (!clipboardAttempts_) return;
-    if (suppressed()) {
+    if (hidden_) {
         clipboardSequence_ = GetClipboardSequenceNumber();
         KillTimer(window_, clipboardTimer);
         clipboardAttempts_.reset();
         return;
     }
     bool busy = false;
-    auto alert = clipboardAlert(busy);
+    struct Bitmap {
+        HBITMAP value = nullptr;
+        ~Bitmap() { if (value) DeleteObject(value); }
+    } image;
+    auto alert = clipboardAlert(busy, image.value);
     if (busy && ++*clipboardAttempts_ < clipboardRetryLimit) {
         if (SetTimer(window_, clipboardTimer, clipboardRetryInterval, nullptr)) return;
     }
     KillTimer(window_, clipboardTimer);
     clipboardAttempts_.reset();
     if (alert) {
+        if (image.value && dropZone_.addImage(image.value)) {
+            stagedImageSequence_ = clipboardSequence_;
+            alert->value = L"Image in Drop Zone";
+        }
         island_.notify(std::move(*alert));
         frame();
     }

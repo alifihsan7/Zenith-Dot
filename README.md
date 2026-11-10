@@ -5,14 +5,14 @@ A Windows 11 overlay that sits as a dot at the top center of the primary display
 - **Now Playing:** cover, title, artist, a seekable timeline, and playback controls. Click the cover to return to the media app. Click the source logo beside **Lyrics** to switch between apps or browser tabs. Your selected source stays visible while its session is open, even if another player is running. With no media session, the shorter **Not Playing** panel keeps the feature tabs available.
 - **Timers:** choose Focus, Break, or Quick Timer from one tab. Focus and Break start at 25 and 5 minutes. Quick Timer offers 1, 5, and 10 minute presets, or use − and + to set 1–120 minutes. It can run alongside a Focus or Break countdown. The pill shows the selected active timer.
 - **Scratchpad:** one note that saves locally as you type. While editing, press Esc to close the panel and return focus to the previous app.
-- **Drop Zone.** Drop files from Explorer or text from another app onto the island. Each file gets its own row, and new drops join the existing items. Drag a row to another app, use × to remove it, or choose **Clear all**. The list holds up to 64 items in memory until Zenith Dot exits.
+- **Drop Zone.** Drop files or text onto the dashed area. Screenshots and other images copied on their own also appear in the list with a thumbnail. Click a thumbnail to open the image, or drag the rest of the row to another app. Use × to remove one item or **Clear all** to empty the list. Up to 64 items can share the list. Clipboard images are exported as temporary PNGs that Zenith removes when you clear them or exit.
 - **System:** CPU, memory, power, audio output, and Windows notification mode. Click the output name to select a device. The picker changes the default for system and media audio and also offers a shortcut to Sound settings. The notification row opens Windows notification settings.
 
 Click the pin icon beside the panel tabs to keep Zenith Dot open while you use another app. The filled icon indicates that the panel is pinned. Click it again to restore hover dismissal. When the panel closes, the next hover restores the last tab and any open Lyrics column. If you scrolled manually, the reading position is kept for the same track.
 
 Scroll over the compact pill or anywhere in the open panel to move one tab at a time. Over the pill, the new tab's icon and name appear briefly before the panel opens. Lyrics, the Scratchpad editor, and a Drop Zone list with more than four rows use the wheel to scroll their own content.
 
-Short notices split off the pill as a liquid bubble, or grow out of the dot: plugging in or unplugging the charger, low battery at 20% and 10%, the end of a Focus session, and copying something (with a short preview). While the panel is open they show as a row at its top instead. Clipboard content is never stored, and content that password managers mark as private is not announced.
+Short notices split off the pill as a liquid bubble, or grow out of the dot: plugging in or unplugging the charger, low battery at 20% and 10%, the end of a Focus session, and copying something (with a short preview). While the panel is open they show as a row at its top instead. Copied text only appears in the notice. Zenith ignores clipboard content marked as private by the source app.
 
 When the panel closes, it shrinks to a pill. The pill stays visible while an activity is running and shrinks to the black dot when idle.
 
@@ -99,6 +99,7 @@ Temporary connection or service failures are retried automatically. If the looku
 - Scroll over the compact pill and over the tab bar. Check the selected tab, the compact preview, and that scrolling inside Lyrics still moves the text.
 - Pause playback: the pill should show a pause glyph, then shrink to the dot after five seconds.
 - Copy some text: a "Copied" bubble should stretch out of the pill, pinch off, show the first line, and merge back after about two seconds. Copy with the panel open: the notice should appear as a row at the top of the panel. Copy a password from a password manager: no notice.
+- Capture a screenshot with Windows+Shift+S and open **Drop Zone**. Check that one thumbnail appears, click it to open the image, and drag its row into Explorer. Add another file or text and check that they share the list. Clear the list and check that the dashed area returns to its empty layout.
 - Unplug and reconnect the charger: "On Battery" and then a green "Charging" bubble, each with the battery level.
 - Open System and check the battery percentage and AC status. Unplug and reconnect the charger. On a desktop without a battery, confirm the panel reports that state.
 - Enter and leave fullscreen in a video player on the primary display. The island should fade out, close its panel, and return after you exit fullscreen. Notices raised during fullscreen should expire without appearing afterwards.
