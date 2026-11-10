@@ -992,8 +992,10 @@ unsigned Island::frameInterval() const {
     if (animate_ && now - visibilityStart_ < visibilityTime) return 10;
     if (suppressed_) return timerRunning ? 1000 : 0;
     if (moving(now) || openAt_ || closeAt_ || dragging_) return 10;
+    const bool downloadMoving = animate_ && alert_ && alert_->kind == IslandAlert::Kind::download;
     if (panelPinned() && (!alert_ || (downloadAlert() && download_ && !queued_))) {
         if (screen_ == Screen::media && (media_.playing || (wantsLyrics() && now < lyricFollowAt_))) return 50;
+        if (downloadMoving) return 100;
         return screen_ == Screen::system || scratchEditing_ || timerRunning ? 1000 : 0;
     }
     if (open_ || (alert_ && (!downloadAlert() || !download_ || queued_ || alertTo_ == 0))) return 50;
@@ -1001,6 +1003,7 @@ unsigned Island::frameInterval() const {
     if (pillMode_ == PillMode::preview) return 50;
     if (wantsLyricPill() && media_.playing) return 50;
     if (pillMode_ == PillMode::media && media_.playing && animate_) return 33;
+    if (downloadMoving) return 100;
     if (pillMode_ == PillMode::focus || pillMode_ == PillMode::timer) return timerRunning ? 1000 : 0;
     if (pillMode_ == PillMode::privacy) return 0;
     if (pillMode_ != PillMode::dot) return 250;
@@ -2523,18 +2526,18 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity
 void Island::drawDownloadContent(float left, float right, float middle, float opacity) {
     const float width = right - left;
     if (width <= 0 || opacity <= 0) return;
-    const auto accent = rgb(0x8ac7ff, opacity);
-    const float labelWidth = alert_->value.empty() ? 0.0f : measure(alert_->value, alertValueFont_.get()) + 1;
-    const float titleWidth = width - (labelWidth > 0 ? labelWidth + 7 : 0);
-    if (titleWidth <= 0) return;
-    const float y = middle - (alert_->meter ? 13 : 10);
-    text(alert_->title, alertTitleFont_.get(), box(left, y, titleWidth, 20), rgb(inkColor, opacity));
-    if (labelWidth > 0) text(alert_->value, alertValueFont_.get(), box(right - labelWidth, y, labelWidth, 20), accent);
-    if (alert_->meter) {
-        target_->FillRoundedRectangle(rounded(box(left, middle + 8, width, 2), 1), ink(white(0.16f * opacity)));
-        const float fill = width * *alert_->meter / 100;
-        if (fill > 0) target_->FillRoundedRectangle(rounded(box(left, middle + 8, fill, 2), 1), ink(accent));
-    }
+    const bool active = alert_->kind == IslandAlert::Kind::download;
+    text(alert_->title, alertTitleFont_.get(), box(left, middle - (active ? 13 : 10), width, 20),
+         rgb(inkColor, opacity));
+    if (!active) return;
+
+    const auto y = middle + 8;
+    const float segment = width * 0.22f;
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch());
+    const float phase = static_cast<float>((elapsed % 2400ms).count()) / 1200.0f;
+    const float offset = animate_ ? (width - segment) * easeInOut(1 - std::abs(phase - 1)) : 0;
+    target_->FillRoundedRectangle(rounded(box(left, y, width, 2), 1), ink(white(0.16f * opacity)));
+    target_->FillRoundedRectangle(rounded(box(left + offset, y, segment, 2), 1), ink(rgb(0x8ac7ff, opacity)));
 }
 
 // The V7 alert glyphs, drawn in a 16-unit box scaled to 15 DIPs.
