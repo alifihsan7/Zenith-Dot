@@ -101,6 +101,7 @@ public:
     unsigned frameInterval() const;
     bool visible() const;
     bool wantsSystemStats() const;
+    bool wantsPrayerClock() const;
 
     // Pointer input in window client pixels. The bool results say whether a redraw is needed.
     bool pointerMove(POINT client);

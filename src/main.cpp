@@ -198,6 +198,7 @@ void App::frame() {
         applyVisibility();
     }
     island_.tick();
+    if (island_.wantsPrayerClock()) refreshPrayers();
     if (scratchpad_.window() && !island_.scratchEditorRect()) {
         scratchpad_.close();
         island_.setScratchEditing(false);

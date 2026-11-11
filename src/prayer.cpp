@@ -1,5 +1,6 @@
 #include "prayer.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cwchar>
 #include <numbers>
@@ -55,15 +56,15 @@ std::chrono::sys_days prayerDate(unsigned city, std::chrono::system_clock::time_
     return std::chrono::floor<std::chrono::days>(now + std::chrono::hours(cities[city - 1].utcOffset));
 }
 
-std::optional<PrayerSchedule> prayerSchedule(unsigned index, std::chrono::sys_days date) {
+namespace {
+
+int calculatePrayer(City const& city, std::chrono::sys_days date, std::size_t index) {
     using namespace std::chrono;
-    if (!index || index > std::size(cities)) return std::nullopt;
-    const auto& city = cities[index - 1];
     const double latitude = city.latitude * radians;
     const double days = (date - sys_days{year{2000}/January/1}).count() - city.utcOffset / 24.0;
-    const auto calculate = [&](size_t prayer, double estimate) {
+    const auto calculate = [&](double estimate) {
         const auto sun = solarPosition(days + (estimate - 12) / 24, city);
-        switch (prayer) {
+        switch (index) {
         case 0: return sun.noon - sun.hourAngle(latitude, -20 * radians);
         case 1: return sun.noon;
         case 2: {
@@ -75,12 +76,38 @@ std::optional<PrayerSchedule> prayerSchedule(unsigned index, std::chrono::sys_da
         }
     };
     constexpr std::array guesses{5, 12, 15, 18, 19};
-    PrayerSchedule schedule{city.name, date, {}, city.utcOffset};
-    for (size_t i = 0; i < schedule.times.size(); ++i) {
-        const double hours = calculate(i, calculate(i, guesses[i]));
-        schedule.times[i] = static_cast<int>(std::ceil(60 * hours)) + 1;
+    const double hours = calculate(calculate(guesses[index]));
+    return static_cast<int>(std::ceil(60 * hours)) + 1;
+}
+
+}
+
+std::optional<PrayerSchedule> prayerSchedule(unsigned index, std::chrono::sys_days date) {
+    using namespace std::chrono;
+    if (!index || index > std::size(cities)) return std::nullopt;
+    const auto& city = cities[index - 1];
+    PrayerSchedule schedule{city.name, date, {}, city.utcOffset, calculatePrayer(city, date + days(1), 0)};
+    for (std::size_t i = 0; i < schedule.times.size(); ++i) {
+        schedule.times[i] = calculatePrayer(city, date, i);
     }
     return schedule;
+}
+
+PrayerProgress prayerProgress(PrayerSchedule const& schedule, std::chrono::system_clock::time_point now) {
+    using namespace std::chrono;
+    const auto local = now + hours(schedule.utcOffset);
+    const auto localDate = floor<days>(local);
+    const auto elapsed = duration_cast<duration<double, minutes::period>>(local - localDate).count();
+    const auto next = localDate == schedule.date
+        ? std::ranges::upper_bound(schedule.times, elapsed)
+        : schedule.times.end();
+    if (next != schedule.times.end()) {
+        return {elapsed, static_cast<std::size_t>(next - schedule.times.begin()), *next,
+                ceil<minutes>(schedule.date + minutes(*next) - local), false};
+    }
+    const auto nextDate = schedule.date + days(1);
+    const auto remaining = std::max(minutes::zero(), ceil<minutes>(nextDate + minutes(schedule.tomorrowSubuh) - local));
+    return {elapsed, 0, schedule.tomorrowSubuh, remaining, nextDate > localDate};
 }
 
 std::wstring prayerTimeText(int minute) {

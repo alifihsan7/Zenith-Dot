@@ -33,7 +33,7 @@ constexpr float mediaPanelWidth = 344;
 // System: system info on the left, sound on the right.
 constexpr float systemPanelWidth = 530;
 constexpr float systemHeight = 228;
-constexpr float prayerPanelHeight = 152;
+constexpr float prayerPanelHeight = 176;
 constexpr float systemLeftWidth = 196;
 constexpr float systemRightGap = 29;      // gap, divider, gap
 constexpr float systemRightWidth = systemPanelWidth - 28 - systemLeftWidth - systemRightGap;
@@ -1153,6 +1153,7 @@ unsigned Island::frameInterval() const {
     if (animate_ && now - visibilityStart_ < visibilityTime) return 10;
     if (suppressed_) return timerRunning ? 1000 : 0;
     if (moving(now) || openAt_ || closeAt_ || dragging_) return 10;
+    if (wantsPrayerClock() && !alert_) return 1000;
     if (panelPinned() && !alert_) {
         if (screen_ == Screen::media && (media_.playing || (wantsLyrics() && now < lyricFollowAt_))) return 50;
         return screen_ == Screen::system || scratchEditing_ || timerRunning ? 1000 : 0;
@@ -1170,6 +1171,10 @@ unsigned Island::frameInterval() const {
     if (pillMode_ == PillMode::focus || pillMode_ == PillMode::timer) return timerRunning ? 1000 : 0;
     if (pillMode_ == PillMode::privacy) return 0;
     return 0;
+}
+
+bool Island::wantsPrayerClock() const {
+    return open_ && screen_ == Screen::prayer && prayerSchedule_.has_value();
 }
 
 bool Island::wantsSystemStats() const {
@@ -2518,8 +2523,13 @@ void Island::drawPrayerSchedule(D2D1_RECT_F panel) {
         return;
     }
     const auto& schedule = *prayerSchedule_;
+    const auto progress = prayerProgress(schedule, std::chrono::system_clock::now());
     const auto heading = std::wstring(L"Prayer times · ") + schedule.city;
+    const auto nowText = std::wstring(L"Now ") + prayerTimeText(static_cast<int>(progress.localMinute));
     text(heading, bodyFont_.get(), box(area.left, area.top, area.right - area.left, 17), rgb(inkColor));
+
+    constexpr auto clockColor = 0x91caffu;
+    text(nowText, bodyEndFont_.get(), box(area.left, area.top, area.right - area.left, 17), rgb(clockColor));
 
     constexpr float labelWidth = 58;
     constexpr float labelGap = 4;
@@ -2527,7 +2537,7 @@ void Island::drawPrayerSchedule(D2D1_RECT_F panel) {
     constexpr float rise = 24;
     const float left = area.left + labelWidth / 2;
     const float right = area.right - labelWidth / 2;
-    const float baseline = area.top + 48;
+    const float baseline = area.top + 56;
     PathBuilder arc(graphics_.get());
     arc.move(pt(left, baseline), false)
         .curve(pt(std::lerp(left, right, 1.0f / 3), baseline - 4 * rise / 3),
@@ -2535,26 +2545,42 @@ void Island::drawPrayerSchedule(D2D1_RECT_F panel) {
                pt(right, baseline));
     target_->DrawGeometry(arc.finish().get(), ink(white(0.36f)), 1.5f, roundStroke_.get());
 
-    const int first = schedule.times.front();
-    const int duration = std::max(1, schedule.times.back() - first);
+    const auto pointAt = [&](float minute) {
+        constexpr auto dayMinutes = std::chrono::duration_cast<std::chrono::minutes>(std::chrono::days(1)).count();
+        const float t = minute / static_cast<float>(dayMinutes);
+        return pt(std::lerp(left, right, t), baseline - 4 * rise * t * (1 - t));
+    };
+
     float nextLabel = left;
     for (size_t i = 0; i < schedule.times.size(); ++i) {
-        const float t = static_cast<float>(schedule.times[i] - first) / duration;
-        const float x = std::lerp(left, right, t);
-        const float y = baseline - 4 * rise * t * (1 - t);
+        const auto point = pointAt(static_cast<float>(schedule.times[i]));
         const auto remaining = static_cast<float>(schedule.times.size() - 1 - i);
-        const float label = std::clamp(x, nextLabel, right - remaining * labelStep);
+        const float label = std::clamp(point.x, nextLabel, right - remaining * labelStep);
         nextLabel = label + labelStep;
-        target_->DrawLine(pt(x, y), pt(label, y + 9), ink(white(0.36f)), 1);
-        target_->FillEllipse(D2D1::Ellipse(pt(x, y), 3, 3), ink(rgb(inkColor)));
+        const bool upcoming = !progress.tomorrow && i == progress.nextIndex;
+        target_->DrawLine(point, pt(label, point.y + 9), ink(white(0.36f)), 1);
+        target_->FillEllipse(D2D1::Ellipse(point, 3, 3), ink(rgb(upcoming ? clockColor : inkColor)));
+        if (upcoming) target_->DrawEllipse(D2D1::Ellipse(point, 5.5f, 5.5f), ink(rgb(clockColor)), 1);
 
         const auto centered = [&](std::wstring_view value, float top, unsigned color) {
             const float width = std::ceil(measure(value, bodyFont_.get())) + 2;
             text(value, bodyFont_.get(), box(label - width / 2, top, width, 16), rgb(color));
         };
-        centered(prayerNames[i], y + 10, mutedColor);
-        centered(prayerTimeText(schedule.times[i]), y + 26, inkColor);
+        centered(prayerNames[i], point.y + 10, upcoming ? clockColor : mutedColor);
+        centered(prayerTimeText(schedule.times[i]), point.y + 26, upcoming ? clockColor : inkColor);
     }
+    const auto current = pointAt(static_cast<float>(progress.localMinute));
+    const auto pointer = pt(current.x, current.y - 8);
+    fillPolygon({pt(pointer.x - 3, pointer.y - 6), pt(pointer.x + 3, pointer.y - 6), pointer}, rgb(clockColor));
+
+    const auto hours = std::chrono::duration_cast<std::chrono::hours>(progress.remaining);
+    const auto minutes = progress.remaining - hours;
+    auto footer = std::wstring(prayerNames[progress.nextIndex]);
+    if (progress.tomorrow) footer += L" tomorrow at " + prayerTimeText(progress.nextMinute) + L" ·";
+    footer += L" in ";
+    if (hours.count()) footer += std::to_wstring(hours.count()) + L"h ";
+    footer += std::to_wstring(minutes.count()) + L"m";
+    text(footer, bodyFont_.get(), box(area.left, area.top + 100, area.right - area.left, 18), rgb(clockColor));
 }
 
 void Island::drawAppVolume(size_t index, D2D1_RECT_F row, bool record) {
