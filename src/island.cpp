@@ -47,8 +47,9 @@ constexpr float mediaCoverSize = 58;
 constexpr float mediaCoverTop = 12;
 constexpr float mediaTitleLeft = 84;
 constexpr float mediaTitleTop = 23;
-constexpr float mediaActionsTop = 162;
+constexpr float mediaControlsCenterY = 152;
 constexpr float mediaActionHeight = 32;
+constexpr float mediaActionsTop = mediaControlsCenterY - mediaActionHeight / 2;
 constexpr size_t sourceColumns = 8;
 constexpr size_t visibleSources = 2 * sourceColumns;
 constexpr float maxLyricsWidth = 338;
@@ -515,7 +516,6 @@ void Island::setMedia(MediaState const& media) {
     // The media screen changes height when a session comes or goes; animate that like a screen change.
     if (open_ && screen_ == Screen::media && media.hasSession != media_.hasSession) {
         heightFrom_ = panelHeight(now);
-        centerFrom_ = panelCenterAt(now);
         screenFrom_ = screen_;
         screenStart_ = animate_ ? now : Clock::time_point{};
         widthFrom_ = panelWidthAt(now);
@@ -778,13 +778,7 @@ float Island::panelWidthAt(Clock::time_point now) const {
 
 D2D1_RECT_F Island::panelRect(Clock::time_point now) const {
     const float width = panelWidthAt(now);
-    return box(panelCenterAt(now) - width / 2, pillTop, width, panelHeight(now) + inlineInset());
-}
-
-float Island::panelCenterAt(Clock::time_point now) const {
-    const float center = screen_ == Screen::media && preferences_.enabled(Screen::media) &&
-                         media_.hasSession && lyricsOpen_ ? lyricsCenterShift_ : 0;
-    return animate_ ? std::lerp(centerFrom_, center, sampleSpring(widthStart_, shapeTime, now, 0, 1).value) : center;
+    return box(-width / 2, pillTop, width, panelHeight(now) + inlineInset());
 }
 
 bool Island::moving(Clock::time_point now) const {
@@ -1041,7 +1035,6 @@ void Island::showScreen(Screen screen, Clock::time_point now) {
     const bool lyricsVisible = wantsLyrics();
     heightFrom_ = panelHeight(now);
     widthFrom_ = panelWidthAt(now);
-    centerFrom_ = panelCenterAt(now);
     keepHeight_ = std::max(keepHeight_, heightFrom_);
     screenFrom_ = screen_;
     screen_ = screen;
@@ -1486,7 +1479,6 @@ IslandCommand Island::pointerUp(POINT client) {
     case Hit::lyrics: {
         const bool lyricsVisible = wantsLyrics();
         widthFrom_ = panelWidthAt(now);
-        centerFrom_ = panelCenterAt(now);
         widthStart_ = animate_ ? now : Clock::time_point{};
         lyricsOpen_ = !lyricsOpen_;
         updateLyricVisibility(lyricsVisible, now);
@@ -2175,7 +2167,7 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
     }
 
     // Transport: previous, play/pause on an accent disc, next.
-    const float middleY = y + 133;
+    const float middleY = y + mediaControlsCenterY;
     constexpr float transportRadius = 22;
     const float centerX = x + mediaPanelWidth / 2;
     const Hit buttons[]{Hit::previous, Hit::toggle, Hit::next};
@@ -3217,8 +3209,6 @@ void Island::draw(HWND window) {
     const float workWidth = (work.right - work.left) / scale_;
     lyricsWidth_ = std::clamp(workWidth - mediaPanelWidth - 16.0f,
                               130.0f, maxLyricsWidth);
-    const float expandedWidth = mediaPanelWidth + lyricsWidth_;
-    lyricsCenterShift_ = std::clamp((workWidth - expandedWidth) / 2 - 8, 0.0f, lyricsWidth_ / 2);
     const float opacity = visibility(now);
     anchor_ = {work.left + (work.right - work.left) / 2, work.top - std::lround((1 - opacity) * 14 * scale_)};
     prepareText();

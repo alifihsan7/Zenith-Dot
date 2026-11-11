@@ -165,7 +165,6 @@ private:
     MotionSample panelMotion(Clock::time_point now) const;
     float panelHeight(Clock::time_point now) const;
     float panelWidthAt(Clock::time_point now) const;
-    float panelCenterAt(Clock::time_point now) const;
     float lyricScroll(Clock::time_point now) const;
     bool scrollLyrics(int delta);
     void moveLyricScroll(float offset, Clock::time_point now);
@@ -325,7 +324,6 @@ private:
     Clock::time_point screenStart_{};
     float heightFrom_ = 0;
     float widthFrom_ = 0;
-    float centerFrom_ = 0;
     Clock::time_point widthStart_{};
     bool lyricsOpen_ = false;
     bool sourcePickerOpen_ = false;
@@ -349,7 +347,6 @@ private:
     float scratchScrollLimit_ = 0;
     LyricsView const* lyrics_ = nullptr;
     float lyricsWidth_ = 0;
-    float lyricsCenterShift_ = 0;
     float lyricScrollFrom_ = 0;
     float lyricScrollTo_ = 0;
     float lyricScrollShown_ = 0;
