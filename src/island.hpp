@@ -31,7 +31,7 @@ class SettingsExample;
 
 // Something a click on the island asks the app to do.
 struct IslandCommand {
-    enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, editScratchpad,
+    enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, adjustLyricsDelay, editScratchpad,
                       audioPicker, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute,
                       autoCycle };
     Kind kind = Kind::none;
@@ -117,7 +117,7 @@ private:
     friend class SettingsExample;
     enum class Hit { none, pill, previous, toggle, next, timeline, cover, sourcePicker, sourceMenu, source, navMedia, navTimers,
                      navScratch, navSystem, navPrayer, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
-                     timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, scratchEdit,
+                     timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, lyricsDelay, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
                      appVolume, appMute, autoCycle };
     using Screen = Feature;

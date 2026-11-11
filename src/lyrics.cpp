@@ -22,6 +22,30 @@ using namespace winrt::Windows::Data::Json;
 using namespace winrt::Windows::Foundation;
 using namespace winrt::Windows::Web::Http;
 
+constexpr int maxDelaySteps = 60;
+constexpr wchar_t lyricsDelayKey[] = L"Software\\Zenith Dot\\Lyrics Delay";
+
+std::wstring trackDelayKey(std::wstring_view title, std::wstring_view artist, std::wstring_view album, unsigned duration) {
+    uint64_t hash = 14695981039346656037ull;
+    const auto mix = [&](uint64_t value) { hash = (hash ^ value) * 1099511628211ull; };
+    for (const auto field : {title, artist, album}) {
+        mix(field.size());
+        for (const wchar_t character : field) mix(static_cast<uint16_t>(character));
+    }
+    mix(duration);
+    wchar_t value[17]{};
+    swprintf_s(value, L"%016llx", static_cast<unsigned long long>(hash));
+    return value;
+}
+
+int loadDelay(std::wstring const& key) {
+    DWORD encoded = 0;
+    DWORD size = sizeof(encoded);
+    if (RegGetValueW(HKEY_CURRENT_USER, lyricsDelayKey, key.c_str(), RRF_RT_REG_DWORD, nullptr, &encoded, &size)
+        != ERROR_SUCCESS || encoded > 2u * maxDelaySteps) return 0;
+    return static_cast<int>(encoded) - maxDelaySteps;
+}
+
 std::wstring urlEncode(std::wstring_view value) {
     constexpr wchar_t hex[] = L"0123456789ABCDEF";
     std::wstring result;
@@ -233,6 +257,19 @@ void Lyrics::retry() {
     if (open_ && view_.status == LyricsStatus::error) view_.status = LyricsStatus::idle;
 }
 
+void Lyrics::adjustDelay(int steps) {
+    if (view_.status != LyricsStatus::ready || delayKey_.empty()) return;
+    const int updated = std::clamp(view_.delaySteps + steps, -maxDelaySteps, maxDelaySteps);
+    if (updated == view_.delaySteps) return;
+    view_.delaySteps = updated;
+    if (!updated) {
+        RegDeleteKeyValueW(HKEY_CURRENT_USER, lyricsDelayKey, delayKey_.c_str());
+    } else {
+        const auto encoded = static_cast<DWORD>(updated + maxDelaySteps);
+        RegSetKeyValueW(HKEY_CURRENT_USER, lyricsDelayKey, delayKey_.c_str(), REG_DWORD, &encoded, sizeof(encoded));
+    }
+}
+
 void Lyrics::update(MediaState const& media, bool panelOpen, bool pillActive) {
     if (stopped_) return;
     const bool open = panelOpen || pillActive;
@@ -248,6 +285,9 @@ void Lyrics::update(MediaState const& media, bool panelOpen, bool pillActive) {
         artist_ = media.artist;
         album_ = media.album;
         duration_ = duration;
+        delayKey_ = title_.empty() || artist_.empty() || duration_ == 0
+            ? std::wstring{} : trackDelayKey(title_, artist_, album_, duration_);
+        view_.delaySteps = delayKey_.empty() ? 0 : loadDelay(delayKey_);
         cancel();
         view_.status = LyricsStatus::idle;
         view_.lines.clear();
@@ -334,6 +374,7 @@ Lyrics::Action Lyrics::lookup(unsigned revision, std::wstring title, std::wstrin
         result.status = LyricsStatus::plain;
     }
     result.revision = view_.revision + 1;
+    result.delaySteps = view_.delaySteps;
     view_ = std::move(result);
     if (view_.status == LyricsStatus::unavailable) retryAfter_ = std::chrono::steady_clock::now() + 30s;
     changed_();

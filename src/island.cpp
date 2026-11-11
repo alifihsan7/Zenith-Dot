@@ -843,7 +843,7 @@ void Island::updatePillLayout(Clock::time_point now, float workWidth) {
     std::wstring_view line;
     if (wantsLyricPill() && lyrics_ && lyrics_->status == LyricsStatus::ready && media_.duration > 0) {
         const auto& lines = lyrics_->lines;
-        const auto next = std::ranges::upper_bound(lines, media_.positionAt(now), {}, &LyricLine::seconds);
+        const auto next = std::ranges::upper_bound(lines, media_.positionAt(now) - lyrics_->delaySeconds(), {}, &LyricLine::seconds);
         if (next != lines.begin()) line = (next - 1)->text;
         if (line.find_first_not_of(L" \t\r\n") == std::wstring_view::npos || line.size() > 4096) line = {};
     }
@@ -1479,10 +1479,15 @@ IslandCommand Island::pointerUp(POINT client) {
     }
     case Hit::lyricLine:
         command.kind = IslandCommand::Kind::seek;
-        command.seconds = lyrics_->lines[index].seconds;
+        command.seconds = std::clamp(lyrics_->lines[index].seconds + lyrics_->delaySeconds(), 0.0, media_.duration);
         lyricFollowAt_ = now + 500ms;
         break;
     case Hit::retryLyrics: command.kind = IslandCommand::Kind::retryLyrics; break;
+    case Hit::lyricsDelay:
+        command.kind = IslandCommand::Kind::adjustLyricsDelay;
+        command.index = index;
+        lyricFollowAt_ = {};
+        break;
     case Hit::scratchEdit: command.kind = IslandCommand::Kind::editScratchpad; break;
     case Hit::panelPin:
         panelPinned_ = !panelPinned_;
@@ -2269,7 +2274,7 @@ void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double positio
     if (!lyrics_) return;
     const float x = panel.left + mediaPanelWidth + 8, y = panel.top + 16;
     const float width = lyricsWidth_ - padX - 8;
-    constexpr float viewportHeight = mediaPanelHeight - padBottom - navHeight - 16 - 34 - 6;
+    constexpr float viewportBottom = mediaPanelHeight - padBottom - navHeight - 16 - 6;
     text(L"Lyrics", titleFont_.get(), box(x, y, width, 22), rgb(inkColor));
     const bool synced = lyrics_->status == LyricsStatus::ready;
     const bool plain = lyrics_->status == LyricsStatus::plain;
@@ -2288,11 +2293,29 @@ void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double positio
     prepareLyricLayout(width);
     if (plain && width >= 130) {
         text(L"Unsynced", bodyEndFont_.get(), box(x + 57, y, width - 57, 22), rgb(mutedColor));
-    } else if (synced && media_.canSeek && width >= 170) {
-        text(L"Click a line to seek", bodyEndFont_.get(), box(x + 57, y, width - 57, 22), rgb(mutedColor));
+    }
+    const float viewportTop = synced ? 50.0f : 34.0f;
+    const float viewportHeight = viewportBottom - viewportTop;
+    if (synced) {
+        constexpr float controlWidth = 100;
+        constexpr float buttonWidth = 24;
+        const float left = x + width - controlWidth;
+        text(L"Delay", buttonFont_.get(), box(left, y, controlWidth, 22), rgb(mutedColor));
+        if (media_.canSeek && width >= 220) {
+            text(L"Click a line to seek", bodyFont_.get(), box(x, y + 21, width - controlWidth - 8, 24),
+                 rgb(mutedColor));
+        }
+        wchar_t delay[16]{};
+        const double seconds = lyrics_->delaySeconds();
+        swprintf_s(delay, seconds == 0 ? L"%.1f s" : L"%+.1f s", seconds);
+        const bool record = recordPanel_ && wantsLyrics();
+        drawButton(box(left, y + 21, buttonWidth, 24), L"−", Hit::lyricsDelay, record, 0);
+        text(delay, buttonFont_.get(), box(left + buttonWidth, y + 21, controlWidth - 2 * buttonWidth, 24), rgb(inkColor));
+        drawButton(box(left + controlWidth - buttonWidth, y + 21, buttonWidth, 24),
+                   L"+", Hit::lyricsDelay, record, 1);
     }
     const auto& lines = lyrics_->lines;
-    const auto next = std::ranges::upper_bound(lines, position, {}, &LyricLine::seconds);
+    const auto next = std::ranges::upper_bound(lines, position - lyrics_->delaySeconds(), {}, &LyricLine::seconds);
     const auto active = (next - lines.begin()) - 1;
     if (active != activeLyric_) {
         if (activeLyric_ >= 0 && lyricRanges_[activeLyric_].length != 0) {
@@ -2323,7 +2346,7 @@ void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double positio
         const float limit = std::max(0.0f, lyricContentHeight_ - viewportHeight);
         moveLyricScroll(std::clamp(activeLyricTop_ - lead, 0.0f, limit), now);
     }
-    lyricViewport_ = box(x, y + 34, width, viewportHeight);
+    lyricViewport_ = box(x, y + viewportTop, width, viewportHeight);
     lyricScrollShown_ = std::clamp(lyricScroll(now), 0.0f, std::max(0.0f, lyricContentHeight_ - viewportHeight));
     target_->PushAxisAlignedClip(lyricViewport_, D2D1_ANTIALIAS_MODE_ALIASED);
     target_->DrawTextLayout(pt(x, lyricViewport_.top - lyricScrollShown_), lyricLayout_.get(),

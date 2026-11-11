@@ -286,6 +286,9 @@ void App::run(IslandCommand const& command) {
         else activateMediaWindow(window_, media_.appId);
         break;
     case IslandCommand::Kind::retryLyrics: if (lyrics_) lyrics_->retry(); break;
+    case IslandCommand::Kind::adjustLyricsDelay:
+        if (lyrics_) lyrics_->adjustDelay(command.index == 0 ? -1 : 1);
+        break;
     case IslandCommand::Kind::editScratchpad:
         if (const auto bounds = island_.scratchEditorRect()) {
             island_.setScratchEditing(scratchpad_.open(window_, *bounds));
