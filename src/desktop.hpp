@@ -21,6 +21,16 @@ struct AudioOutput {
     bool active = false;
 };
 
+// One app's audio on the default output, merged across its sessions (as in the Windows volume mixer).
+struct AppVolume {
+    std::wstring id;     // the executable path, or "system" for system sounds
+    std::wstring name;
+    float volume = 1;    // 0..1
+    bool muted = false;
+    bool active = false; // currently playing
+    bool operator==(AppVolume const&) const = default;
+};
+
 bool fullscreenOnPrimary(HWND overlay);
 bool activateMediaWindow(HWND overlay, std::wstring const& appId);
 CaptureActivity readCaptureActivity();
@@ -42,6 +52,8 @@ public:
     std::wstring const& audioOutput() const;
     std::vector<AudioOutput> audioOutputs() const;
     bool selectAudioOutput(std::wstring const& id);
+    std::vector<AppVolume> appVolumes() const;
+    bool setAppVolume(std::wstring const& id, std::optional<float> volume, std::optional<bool> muted);
     CaptureActivity captureActivity() const;
     std::optional<bool> notificationsQuiet() const;
     bool isCurrentVolume(LPARAM generation) const;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "desktop.hpp"
 #include "media.hpp"
 #include "lyrics.hpp"
 #include "scratchpad.hpp"
@@ -27,9 +28,9 @@ namespace zenith {
 // Something a click on the island asks the app to do.
 struct IslandCommand {
     enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, editScratchpad,
-                      audioPicker, notificationSettings, removeDrop, clearDrop, openDropImage };
+                      audioPicker, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute };
     Kind kind = Kind::none;
-    double seconds = 0;
+    double seconds = 0;              // seek position; for appVolume the level 0..1, for appMute 1 = mute
     std::wstring appId;
     size_t index = 0;
 };
@@ -64,6 +65,9 @@ public:
     void setPower(PowerState const& power);
     void setSystem(SystemStats const& stats);
     void setAudioOutput(std::wstring const& output);
+    void setAppVolumes(std::vector<AppVolume> apps);
+    // A command produced while dragging (an app volume slider), to apply before the button is released.
+    std::optional<IslandCommand> takeLiveCommand();
     bool setWindowsNotificationsQuiet(std::optional<bool> quiet);
     void setSuppressed(bool suppressed);
     void setCaptureColors(std::optional<unsigned> microphone, std::optional<unsigned> camera);
@@ -103,7 +107,8 @@ private:
     enum class Hit { none, pill, previous, toggle, next, timeline, cover, sourcePicker, sourceMenu, source, navMedia, navTimers,
                      navScratch, navSystem, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
                      timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, scratchEdit,
-                     navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings };
+                     navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
+                     appVolume, appMute };
     enum class Screen { media, timers, scratch, drop, system };
     static constexpr Screen screens[]{Screen::media, Screen::timers, Screen::scratch, Screen::drop, Screen::system};
     enum class PillMode { dot, media, focus, timer, preview, privacy, idle };
@@ -184,6 +189,8 @@ private:
     void drawDropZone(D2D1_RECT_F panel, bool record);
     void drawCaptureIndicators(D2D1_POINT_2F right, float mic, float camera);
     void drawSystem(D2D1_RECT_F panel, bool record);
+    void drawAppVolume(size_t index, D2D1_RECT_F row, bool record);
+    float volumeFraction(D2D1_POINT_2F point) const;
     void drawNav(D2D1_RECT_F panel, bool record);
     void drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color);
     static std::wstring_view screenLabel(Screen screen);
@@ -218,6 +225,14 @@ private:
     PowerState power_;
     SystemStats system_;
     std::wstring audioOutput_;
+    std::vector<AppVolume> appVolumes_;
+    size_t appOffset_ = 0;
+    int appWheelRemainder_ = 0;
+    D2D1_RECT_F appViewport_{};
+    std::wstring volumeDragId_;          // the app whose slider is being dragged
+    float volumeDragValue_ = 0;
+    D2D1_RECT_F volumeTrack_{};
+    std::optional<IslandCommand> liveCommand_;
     std::optional<bool> windowsNotificationsQuiet_;
     bool animate_ = true;
     bool suppressed_ = false;

@@ -12,6 +12,7 @@
 #include <shobjidl.h>
 #include <wbemidl.h>
 #include <mmreg.h>
+#include <winver.h>
 #include <initguid.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <propkey.h>
@@ -21,7 +22,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cwctype>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <string_view>
 #include <thread>
@@ -136,6 +139,73 @@ std::wstring processLabel(DWORD pid, wchar_t const* fallback) {
     CloseHandle(process);
     if (!found) return fallback;
     return captureName({path, length}, true);
+}
+
+std::wstring processPath(DWORD pid) {
+    const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process) return {};
+    wchar_t path[MAX_PATH * 2]{};
+    DWORD length = static_cast<DWORD>(std::size(path));
+    const BOOL found = QueryFullProcessImageNameW(process, 0, path, &length);
+    CloseHandle(process);
+    return found ? std::wstring(path, length) : std::wstring{};
+}
+
+// The executable's FileDescription ("Brave Browser"), or its file name without ".exe".
+std::wstring appDescription(std::wstring const& path) {
+    DWORD ignored = 0;
+    const DWORD size = GetFileVersionInfoSizeW(path.c_str(), &ignored);
+    if (size) {
+        std::vector<uint8_t> data(size);
+        void* translation = nullptr;
+        UINT bytes = 0;
+        if (GetFileVersionInfoW(path.c_str(), 0, size, data.data()) &&
+            VerQueryValueW(data.data(), L"\\VarFileInfo\\Translation", &translation, &bytes) &&
+            translation && bytes >= 2 * sizeof(WORD)) {
+            const auto* words = static_cast<WORD const*>(translation);
+            wchar_t key[64]{};
+            swprintf_s(key, L"\\StringFileInfo\\%04x%04x\\FileDescription", words[0], words[1]);
+            wchar_t* value = nullptr;
+            UINT length = 0;
+            if (VerQueryValueW(data.data(), key, reinterpret_cast<void**>(&value), &length) && value && length > 1) {
+                std::wstring description(value, wcsnlen(value, length));
+                while (!description.empty() && iswspace(description.back())) description.pop_back();
+                if (!description.empty()) return description;
+            }
+        }
+    }
+    return captureName(path, true);
+}
+
+// Calls visit(path or "system", session) for each live session on the default output.
+template <typename Visit>
+void forEachAppSession(IMMDeviceEnumerator& devices, Visit&& visit) {
+    winrt::com_ptr<IMMDevice> output;
+    winrt::com_ptr<IAudioSessionManager2> manager;
+    winrt::com_ptr<IAudioSessionEnumerator> sessions;
+    int count = 0;
+    if (FAILED(devices.GetDefaultAudioEndpoint(eRender, eMultimedia, output.put())) ||
+        FAILED(output->Activate(__uuidof(IAudioSessionManager2), CLSCTX_INPROC_SERVER, nullptr, manager.put_void())) ||
+        FAILED(manager->GetSessionEnumerator(sessions.put())) || FAILED(sessions->GetCount(&count))) return;
+    for (int i = 0; i < count; ++i) {
+        winrt::com_ptr<IAudioSessionControl> session;
+        AudioSessionState state{};
+        if (FAILED(sessions->GetSession(i, session.put())) || FAILED(session->GetState(&state)) ||
+            state == AudioSessionStateExpired) continue;
+        const auto details = session.try_as<IAudioSessionControl2>();
+        if (!details) continue;
+        std::wstring id;
+        if (details->IsSystemSoundsSession() == S_OK) {
+            id = L"system";
+        } else {
+            DWORD pid = 0;
+            if (FAILED(details->GetProcessId(&pid)) || !pid || pid == GetCurrentProcessId()) continue;
+            id = processPath(pid);
+            if (id.empty()) continue;
+        }
+        const auto volume = session.try_as<ISimpleAudioVolume>();
+        if (volume) visit(id, state == AudioSessionStateActive, *volume);
+    }
 }
 
 std::wstring activeMicrophone(IMMDeviceEnumerator& devices, std::wstring registryApp) {
@@ -495,6 +565,7 @@ struct DesktopMonitor::State {
     winrt::com_ptr<CameraActivity> cameraActivity;
     winrt::com_ptr<IMFSensorActivityMonitor> cameraMonitor;
     std::wstring audioOutput;
+    mutable std::map<std::wstring, std::wstring> appNames;   // executable path -> display name
     winrt::Windows::UI::Notifications::ToastNotificationManagerForUser notifications{nullptr};
     winrt::Windows::UI::Notifications::ToastNotificationManagerForUser::NotificationModeChanged_revoker notificationMode;
     LPARAM generation = 0;
@@ -607,6 +678,46 @@ bool DesktopMonitor::selectAudioOutput(std::wstring const& id) {
         return false;
     }
     return true;
+}
+
+std::vector<AppVolume> DesktopMonitor::appVolumes() const {
+    if (!state_->enumerator) return {};
+    std::vector<AppVolume> apps;
+    forEachAppSession(*state_->enumerator, [&](std::wstring const& id, bool active, ISimpleAudioVolume& session) {
+        float level = 1;
+        BOOL mute = FALSE;
+        if (FAILED(session.GetMasterVolume(&level)) || FAILED(session.GetMute(&mute))) return;
+        auto app = std::ranges::find(apps, id, &AppVolume::id);
+        if (app == apps.end()) {
+            auto& name = state_->appNames[id];
+            if (name.empty()) name = id == L"system" ? L"System sounds" : appDescription(id);
+            apps.push_back({id, name, level, mute != FALSE, active});
+            return;
+        }
+        // An app with several sessions is muted only if all of them are, and shows its loudest one.
+        app->volume = std::max(app->volume, level);
+        app->muted = app->muted && mute;
+        app->active = app->active || active;
+    });
+    // Playing apps first, system sounds last, otherwise alphabetical so rows don't jump around.
+    std::ranges::stable_sort(apps, [](AppVolume const& a, AppVolume const& b) {
+        const bool systemA = a.id == L"system", systemB = b.id == L"system";
+        if (systemA != systemB) return systemB;
+        if (a.active != b.active) return a.active;
+        return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
+    });
+    return apps;
+}
+
+bool DesktopMonitor::setAppVolume(std::wstring const& id, std::optional<float> volume, std::optional<bool> muted) {
+    if (!state_->enumerator) return false;
+    bool changed = false;
+    forEachAppSession(*state_->enumerator, [&](std::wstring const& session, bool, ISimpleAudioVolume& control) {
+        if (_wcsicmp(session.c_str(), id.c_str()) != 0) return;
+        if (volume && SUCCEEDED(control.SetMasterVolume(std::clamp(*volume, 0.0f, 1.0f), nullptr))) changed = true;
+        if (muted && SUCCEEDED(control.SetMute(*muted, nullptr))) changed = true;
+    });
+    return changed;
 }
 
 std::optional<bool> DesktopMonitor::notificationsQuiet() const {

@@ -183,6 +183,7 @@ void App::frame() {
     const auto now = std::chrono::steady_clock::now();
     if (island_.wantsSystemStats() && now - systemSampled_ >= 1s) {
         island_.setSystem(system_.sample());
+        island_.setAppVolumes(desktop_.appVolumes());
         systemSampled_ = now;
     }
     const bool shown = IsWindowVisible(window_) != FALSE;
@@ -243,6 +244,15 @@ void App::run(IslandCommand const& command) {
         break;
     case IslandCommand::Kind::notificationSettings:
         ShellExecuteW(window_, L"open", L"ms-settings:notifications", nullptr, nullptr, SW_SHOWNORMAL);
+        break;
+    case IslandCommand::Kind::appVolume:
+        // Moving the slider unmutes, as in the Windows volume mixer.
+        desktop_.setAppVolume(command.appId, static_cast<float>(command.seconds), false);
+        island_.setAppVolumes(desktop_.appVolumes());
+        break;
+    case IslandCommand::Kind::appMute:
+        desktop_.setAppVolume(command.appId, std::nullopt, command.seconds != 0);
+        island_.setAppVolumes(desktop_.appVolumes());
         break;
     case IslandCommand::Kind::none: break;
     }
@@ -739,6 +749,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
             tracking_ = TrackMouseEvent(&tracking) != FALSE;
         }
         if (island_.pointerMove({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)})) {
+            if (const auto live = island_.takeLiveCommand()) run(*live);
             SetCursor(LoadCursorW(nullptr, island_.overControl() ? IDC_HAND : IDC_ARROW));
             frame();
         }
@@ -760,6 +771,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
             if (DragDetect(window_, point) && IsWindow(window_)) dropZone_.drag(*item);
         } else if (island_.pointerDown(point)) {
             SetCapture(window_);
+            if (const auto live = island_.takeLiveCommand()) run(*live);
         }
         frame();
         return 0;

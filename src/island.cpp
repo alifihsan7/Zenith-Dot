@@ -26,6 +26,16 @@ constexpr float pillLeft = -pillWidth / 2;
 constexpr float dotSize = 12;
 constexpr float panelWidth = 369;
 constexpr float mediaPanelWidth = 344;
+// System: system info on the left, sound on the right.
+constexpr float systemPanelWidth = 530;
+constexpr float systemHeight = 228;
+constexpr float systemLeftWidth = 196;
+constexpr float systemRightGap = 29;      // gap, divider, gap
+constexpr float systemRightWidth = systemPanelWidth - 28 - systemLeftWidth - systemRightGap;
+constexpr float systemContentBottom = 179;
+constexpr float appRowsTop = 89;
+constexpr float appRowHeight = 30;
+constexpr size_t visibleAppRows = 3;
 constexpr float mediaPanelHeight = 181;
 constexpr float mediaIdleHeight = 88;
 constexpr float mediaTitleWidth = 182;
@@ -402,7 +412,9 @@ bool loadIcon(std::wstring const& appId, int side, std::vector<uint8_t>& pixels,
         factory = nullptr;
         return !path.empty() && SUCCEEDED(SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(factory.put())));
     };
-    if (!open(L"shell:AppsFolder\\" + appId)) {
+    // A full executable path (app volume rows) opens directly; media sources use AppUserModelIDs.
+    const bool path = appId.size() > 2 && appId[1] == L':';
+    if (path ? !open(appId) : !open(L"shell:AppsFolder\\" + appId)) {
         auto exe = appName(appId) + L".exe";
         if (!open(processPath(exe))) return false;
     }
@@ -489,6 +501,18 @@ void Island::setSystem(SystemStats const& stats) {
 }
 
 void Island::setAudioOutput(std::wstring const& output) { audioOutput_ = output; }
+
+void Island::setAppVolumes(std::vector<AppVolume> apps) {
+    const size_t limit = apps.size() - std::min(apps.size(), visibleAppRows);
+    appOffset_ = std::min(appOffset_, limit);
+    if ((pressed_ == Hit::appMute) && (pressedIndex_ >= apps.size() || pressedIndex_ >= appVolumes_.size() ||
+        apps[pressedIndex_].id != appVolumes_[pressedIndex_].id)) pressed_ = Hit::none;
+    appVolumes_ = std::move(apps);
+}
+
+std::optional<IslandCommand> Island::takeLiveCommand() {
+    return std::exchange(liveCommand_, std::nullopt);
+}
 
 bool Island::setWindowsNotificationsQuiet(std::optional<bool> quiet) {
     if (windowsNotificationsQuiet_ == quiet) return false;
@@ -634,7 +658,7 @@ float Island::screenHeight(Screen screen) const {
     case Screen::scratch: return 216.0f;
     case Screen::drop: return dropItems_.empty() ? dropEmptyHeight :
         dropFilledBaseHeight + dropRowHeight * static_cast<float>(std::min(dropItems_.size(), visibleDropRows));
-    case Screen::system: return 249;
+    case Screen::system: return systemHeight;
     }
     return 146.0f;
 }
@@ -645,7 +669,8 @@ float Island::panelHeight(Clock::time_point now) const {
 
 float Island::panelWidthAt(Clock::time_point now) const {
     const float width = screen_ == Screen::media
-        ? mediaPanelWidth + (media_.hasSession && lyricsOpen_ ? lyricsWidth_ : 0) : panelWidth;
+        ? mediaPanelWidth + (media_.hasSession && lyricsOpen_ ? lyricsWidth_ : 0)
+        : screen_ == Screen::system ? systemPanelWidth : panelWidth;
     return animate_ ? std::lerp(widthFrom_, width, panelEase(progress(widthStart_, panelTime, now))) : width;
 }
 
@@ -860,6 +885,7 @@ void Island::setOpen(bool open, Clock::time_point now) {
     panelStart_ = now;
     hovered_ = pressed_ = Hit::none;
     dragging_ = false;
+    volumeDragId_.clear();
     buttonWasDown_ = true;
     updatePill(now);
 }
@@ -1034,8 +1060,21 @@ float Island::timelineFraction(D2D1_POINT_2F point) const {
     return clamp01((point.x - timelineRect_.left) / std::max(1.0f, timelineRect_.right - timelineRect_.left));
 }
 
+float Island::volumeFraction(D2D1_POINT_2F point) const {
+    return clamp01((point.x - volumeTrack_.left) / std::max(1.0f, volumeTrack_.right - volumeTrack_.left));
+}
+
 bool Island::pointerMove(POINT client) {
     const auto point = stagePoint(client);
+    if (dragging_ && !volumeDragId_.empty()) {
+        const float value = volumeFraction(point);
+        if (value != volumeDragValue_) {
+            volumeDragValue_ = value;
+            IslandCommand command{IslandCommand::Kind::appVolume, value, volumeDragId_};
+            liveCommand_ = std::move(command);
+        }
+        return true;
+    }
     if (dragging_) {
         dragFraction_ = timelineFraction(point);
         return true;
@@ -1106,6 +1145,16 @@ bool Island::scroll(POINT client, int delta) {
         sourceOffset_ = static_cast<size_t>(std::clamp(row - steps, 0, limit)) * sourceColumns;
         return steps != 0;
     }
+    if (open_ && screen_ == Screen::system && appVolumes_.size() > visibleAppRows && inside(appViewport_, point)) {
+        wheelRemainder_ = 0;
+        appWheelRemainder_ += delta;
+        const int steps = appWheelRemainder_ / WHEEL_DELTA;
+        appWheelRemainder_ %= WHEEL_DELTA;
+        const int limit = static_cast<int>(appVolumes_.size() - visibleAppRows);
+        appOffset_ = static_cast<size_t>(std::clamp(static_cast<int>(appOffset_) - steps, 0, limit));
+        return steps != 0;
+    }
+    appWheelRemainder_ = 0;
     if (open_ && screen_ == Screen::drop && dropItems_.size() > visibleDropRows && inside(dropViewport_, point)) {
         wheelRemainder_ = 0;
         dropWheelRemainder_ += delta;
@@ -1180,6 +1229,14 @@ bool Island::pointerDown(POINT client) {
         dragFraction_ = timelineFraction(point);
         return true;
     }
+    if (target->hit == Hit::appVolume && target->index < appVolumes_.size()) {
+        dragging_ = true;
+        volumeDragId_ = appVolumes_[target->index].id;
+        volumeTrack_ = grow(target->rect, -6, 0);
+        volumeDragValue_ = volumeFraction(point);
+        liveCommand_ = IslandCommand{IslandCommand::Kind::appVolume, volumeDragValue_, volumeDragId_};
+        return true;
+    }
     if (target->hit == Hit::lyricLine) {
         lyricScrollFrom_ = lyricScrollTo_ = lyricScrollShown_;
         lyricScrollStart_ = {};
@@ -1192,6 +1249,13 @@ bool Island::pointerDown(POINT client) {
 IslandCommand Island::pointerUp(POINT client) {
     const auto now = Clock::now();
     IslandCommand command;
+    if (dragging_ && !volumeDragId_.empty()) {
+        dragging_ = false;
+        command = {IslandCommand::Kind::appVolume, volumeFraction(stagePoint(client)), std::move(volumeDragId_)};
+        volumeDragId_.clear();
+        liveCommand_.reset();
+        return command;
+    }
     if (dragging_) {
         dragging_ = false;
         dragFraction_ = timelineFraction(stagePoint(client));
@@ -1278,6 +1342,13 @@ IslandCommand Island::pointerUp(POINT client) {
         command.index = index;
         break;
     case Hit::notificationSettings: command.kind = IslandCommand::Kind::notificationSettings; break;
+    case Hit::appMute:
+        if (index < appVolumes_.size()) {
+            command.kind = IslandCommand::Kind::appMute;
+            command.appId = appVolumes_[index].id;
+            command.seconds = appVolumes_[index].muted ? 0 : 1;
+        }
+        break;
     default: break;
     }
     return command;
@@ -1286,6 +1357,7 @@ IslandCommand Island::pointerUp(POINT client) {
 void Island::pointerCancel() {
     pressed_ = Hit::none;
     dragging_ = false;
+    volumeDragId_.clear();
 }
 
 bool Island::overControl() const {
@@ -2184,18 +2256,20 @@ void Island::drawDropZone(D2D1_RECT_F panel, bool record) {
 }
 
 void Island::drawSystem(D2D1_RECT_F panel, bool record) {
-    const float x = panel.left;
+    const float x = panel.left + padX;
     const float y = panel.top;
-    text(L"System", titleFont_.get(), box(x + padX, y + padTop, innerWidth, 22.4f), rgb(inkColor));
-    const std::pair<wchar_t const*, unsigned> rows[]{{L"CPU", system_.cpu}, {L"RAM", system_.memory}};
+    constexpr float left = systemLeftWidth;
+    text(L"System", titleFont_.get(), box(x, y + padTop, left, 22.4f), rgb(inkColor));
+    const std::pair<wchar_t const*, unsigned> stats[]{{L"CPU", system_.cpu}, {L"RAM", system_.memory}};
     float top = y + 44.4f;
-    for (const auto& [label, value] : rows) {
-        text(label, bodyFont_.get(), box(x + 14, top, 37, 17), rgb(inkColor));
-        const auto bar = box(x + 59, top + 5.5f, 248, 6);
+    for (const auto& [label, value] : stats) {
+        text(label, bodyFont_.get(), box(x, top, 37, 17), rgb(inkColor));
+        constexpr float barWidth = left - 45 - 46;
+        const auto bar = box(x + 45, top + 5.5f, barWidth, 6);
         target_->FillRoundedRectangle(rounded(bar, 3), ink(white(0.12f)));
-        target_->FillRoundedRectangle(rounded(D2D1::RectF(bar.left, bar.top, bar.left + 248 * std::min(value, 100u) / 100.0f,
-                                                          bar.bottom), 3), ink(accent_));
-        text(std::to_wstring(value) + L"%", bodyEndFont_.get(), box(x + 315, top, 40, 17), rgb(inkColor));
+        target_->FillRoundedRectangle(rounded(D2D1::RectF(bar.left, bar.top,
+            bar.left + barWidth * std::min(value, 100u) / 100.0f, bar.bottom), 3), ink(accent_));
+        text(std::to_wstring(value) + L"%", bodyEndFont_.get(), box(x + left - 40, top, 40, 17), rgb(inkColor));
         top += 26;
     }
     std::wstring status = L"Power status unavailable";
@@ -2212,14 +2286,92 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
         status += std::to_wstring(minutes % 60) + L"m left";
     }
     const auto level = power_.percent ? std::to_wstring(*power_.percent) + L"%" : std::wstring{};
-    text(status, bodyFont_.get(), box(x + 14, y + 96.4f, 260, 17), rgb(readoutColor));
-    text(level, strongEndFont_.get(), box(x + 275, y + 96.4f, 80, 17), rgb(readoutColor));
-    text(L"Audio Output", bodyFont_.get(), box(x + padX, y + 120, innerWidth, 17), rgb(inkColor));
-    drawButton(box(x + padX, y + 139, innerWidth, 28),
-               audioOutput_.empty() ? L"Choose output  ▾" : audioOutput_ + L"  ▾", Hit::audioPicker, record);
+    text(status, bodyFont_.get(), box(x, y + 96.4f, left - 42, 17), rgb(readoutColor));
+    text(level, strongEndFont_.get(), box(x + left - 40, y + 96.4f, 40, 17), rgb(readoutColor));
     const auto notificationLabel = !windowsNotificationsQuiet_ ? L"Notification status unavailable" :
         *windowsNotificationsQuiet_ ? L"Do Not Disturb on" : L"Do Not Disturb off";
-    drawButton(box(x + padX, y + 176, innerWidth, 25), notificationLabel, Hit::notificationSettings, record);
+    drawButton(box(x, y + systemContentBottom - 25, left, 25), notificationLabel, Hit::notificationSettings, record);
+
+    const float divider = x + left + systemRightGap / 2;
+    target_->FillRectangle(box(divider, y + 16, 1, systemContentBottom - 16), ink(white(0.08f)));
+
+    const float right = x + left + systemRightGap;
+    constexpr float width = systemRightWidth;
+    text(L"Audio Output", bodyFont_.get(), box(right, y + 15, width, 17), rgb(inkColor));
+    drawButton(box(right, y + 34, width, 28),
+               audioOutput_.empty() ? L"Choose output  ▾" : audioOutput_ + L"  ▾", Hit::audioPicker, record);
+    text(L"App Volume", bodyFont_.get(), box(right, y + 70, width, 17), rgb(inkColor));
+    const auto count = appVolumes_.size();
+    const auto end = std::min(count, appOffset_ + visibleAppRows);
+    if (count > visibleAppRows) {
+        text(std::to_wstring(appOffset_ + 1) + L"–" + std::to_wstring(end) + L" of " + std::to_wstring(count),
+             bodyEndFont_.get(), box(right, y + 70, width, 17), rgb(mutedColor));
+    }
+    const auto rows = box(right, y + appRowsTop, width, appRowHeight * visibleAppRows);
+    if (record) appViewport_ = rows;
+    if (appVolumes_.empty()) {
+        text(L"No apps are playing audio", bodyFont_.get(), box(right, rows.top, width, appRowHeight), rgb(mutedColor));
+        return;
+    }
+    for (size_t index = appOffset_; index < end; ++index) {
+        drawAppVolume(index, box(right, rows.top + appRowHeight * static_cast<float>(index - appOffset_),
+                                 width, appRowHeight), record);
+    }
+}
+
+void Island::drawAppVolume(size_t index, D2D1_RECT_F row, bool record) {
+    const auto& app = appVolumes_[index];
+    const bool dragged = !volumeDragId_.empty() && volumeDragId_ == app.id;
+    const bool muted = app.muted && !dragged;
+    const float level = dragged ? volumeDragValue_ : app.volume;
+    const float middle = (row.top + row.bottom) / 2;
+
+    // App icon; click to mute. A muted app's icon dims and gets a slash.
+    const auto tile = box(row.left, middle - 12, 24, 24);
+    if (hovered(Hit::appMute, index) || pressed(Hit::appMute, index)) {
+        target_->FillRoundedRectangle(rounded(tile, 6), ink(white(0.1f)));
+    }
+    const float iconOpacity = muted ? 0.4f : 1.0f;
+    const auto glyph = box(tile.left + 3, tile.top + 3, 18, 18);
+    if (app.id == L"system") {
+        const auto color = withAlpha(rgb(inkColor), iconOpacity);
+        const float gx = glyph.left + 1, gy = glyph.top + 1;
+        fillPolygon({pt(gx + 1.5f, gy + 6), pt(gx + 4, gy + 6), pt(gx + 7.5f, gy + 3), pt(gx + 7.5f, gy + 13),
+                     pt(gx + 4, gy + 10), pt(gx + 1.5f, gy + 10)}, color);
+        PathBuilder waves(graphics_.get());
+        waves.move(pt(gx + 10, gy + 5.5f), false).arc(pt(gx + 10, gy + 10.5f), 3.5f, false, true);
+        target_->DrawGeometry(waves.finish().get(), ink(color), 1.5f, roundStroke_.get());
+    } else if (auto* logo = icon(app.id); logo && bitmap(*logo)) {
+        target_->DrawBitmap(logo->bitmap.get(), glyph, iconOpacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    } else {
+        target_->FillRoundedRectangle(rounded(glyph, 5), ink(withAlpha(accent_, iconOpacity)));
+        text(app.name.substr(0, 1), letterFont_.get(), glyph, rgb(0x0b0d11));
+    }
+    if (muted) {
+        target_->DrawLine(pt(tile.left + 4, tile.bottom - 4), pt(tile.right - 4, tile.top + 4), ink(rgb(0xff6961)),
+                          1.6f, roundStroke_.get());
+    }
+    if (record) addTarget(tile, Hit::appMute, index);
+
+    text(app.name, bodyFont_.get(), box(row.left + 31, row.top, 86, appRowHeight),
+         rgb(muted ? mutedColor : inkColor));
+
+    // Slider: a 4 DIP track with a 12 DIP thumb; the whole row height is draggable.
+    const float trackLeft = row.left + 124;
+    const float trackRight = row.right - 44;
+    const float fill = trackLeft + (trackRight - trackLeft) * clamp01(level);
+    const auto color = muted ? rgb(0x6b7280) : accent_;
+    target_->FillRoundedRectangle(rounded(D2D1::RectF(trackLeft, middle - 2, trackRight, middle + 2), 2),
+                                  ink(white(0.17f)));
+    if (fill > trackLeft) {
+        target_->FillRoundedRectangle(rounded(D2D1::RectF(trackLeft, middle - 2, fill, middle + 2), 2), ink(color));
+    }
+    const float thumb = dragged || hovered(Hit::appVolume, index) ? 7.0f : 6.0f;
+    target_->FillEllipse(D2D1::Ellipse(pt(fill, middle), thumb, thumb), ink(color));
+    if (record) addTarget(D2D1::RectF(trackLeft - 6, row.top, trackRight + 6, row.bottom), Hit::appVolume, index);
+
+    const auto value = muted ? std::wstring(L"Muted") : std::to_wstring(std::lround(level * 100)) + L"%";
+    text(value, bodyEndFont_.get(), box(row.right - 40, row.top, 40, appRowHeight), rgb(muted ? mutedColor : inkColor));
 }
 
 std::wstring_view Island::screenLabel(Screen screen) {
@@ -2250,7 +2402,7 @@ void Island::drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color
 }
 
 void Island::drawNav(D2D1_RECT_F panel, bool record) {
-    const float navWidth = screen_ == Screen::media ? mediaPanelWidth : panelWidth;
+    const float navWidth = screen_ == Screen::media ? mediaPanelWidth : panel.right - panel.left;
     const float top = panel.bottom - padBottom - navHeight;
     drawCaptureIndicators(pt(panel.left + padX + 26, top + navHeight / 2),
                           microphoneColor_ ? 1.0f : 0.0f, cameraColor_ ? 1.0f : 0.0f);
@@ -2679,6 +2831,7 @@ void Island::draw(HWND window) {
     scratchEditor_.reset();
     lyricViewport_ = {};
     dropViewport_ = {};
+    appViewport_ = {};
     sourceMenuRect_ = {};
     panelWheel_ = {};
     closingPanel_ = {};
