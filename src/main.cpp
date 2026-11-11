@@ -25,6 +25,7 @@ constexpr UINT_PTR frameTimer = 2;
 constexpr UINT_PTR fullscreenTimer = 3;
 constexpr UINT_PTR clipboardTimer = 5;
 static_assert(clipboardTimer != MediaMonitor::artworkTimer);
+static_assert(clipboardTimer != MediaMonitor::trackTimer);
 constexpr UINT clipboardRetryInterval = 40;
 constexpr unsigned clipboardRetryLimit = 25;
 constexpr unsigned microphoneColor = 0xff9f0a;
@@ -608,6 +609,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         return TRUE;
     case WM_TIMER:
         if (wparam == MediaMonitor::artworkTimer && monitor_) monitor_->retryArtwork();
+        if (wparam == MediaMonitor::trackTimer && monitor_) monitor_->retryTrack();
         if (wparam == powerTimer) {
             if (!clipboardListening_) clipboardListening_ = AddClipboardFormatListener(window_) != FALSE;
             const bool changed = island_.setWindowsNotificationsQuiet(desktop_.notificationsQuiet());

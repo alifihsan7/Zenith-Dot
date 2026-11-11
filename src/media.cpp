@@ -132,6 +132,7 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::start() {
 void MediaMonitor::stop() {
     stopped_ = true;
     KillTimer(window_, artworkTimer);
+    stopTrackRefresh();
     if (artworkRead_) artworkRead_.Cancel();
     artworkRead_ = nullptr;
     sessionsChanged_.revoke();
@@ -180,6 +181,7 @@ bool MediaMonitor::selectSession() {
     }
     if (selected_ == next) return false;
 
+    stopTrackRefresh();
     metadataChanged_.revoke();
     timelineChanged_.revoke();
     selected_ = next;
@@ -199,6 +201,7 @@ bool MediaMonitor::selectSession() {
 void MediaMonitor::updateState() {
     const auto now = std::chrono::steady_clock::now();
     const auto previousPosition = state_.positionAt(now);
+    bool restarted = false;
     state_.hasSession = static_cast<bool>(selected_);
     state_.appId = selected_ ? appIdOf(selected_) : std::wstring{};
     state_.playing = false;
@@ -242,6 +245,8 @@ void MediaMonitor::updateState() {
                     const auto age = winrt::clock::now() - updated;
                     state_.position += std::max(0.0, std::chrono::duration<double>(age).count()) * state_.rate;
                 }
+                restarted = updated != timelineUpdated_ && state_.playing &&
+                    previousPosition >= 4 && state_.position >= 0 && state_.position < 2;
                 timelineUpdated_ = updated;
                 state_.position = std::clamp(state_.position, 0.0, state_.duration);
             } else {
@@ -253,6 +258,7 @@ void MediaMonitor::updateState() {
         }
     }
     changed_(state_);
+    if (restarted && !trackProbesLeft_) refreshTrack();
 }
 
 void MediaMonitor::refresh(WPARAM reason) {
@@ -282,6 +288,23 @@ void MediaMonitor::retryArtwork() {
     if (!stopped_ && selected_ && !readingMetadata_ && !state_.cover) readMetadata();
 }
 
+void MediaMonitor::refreshTrack() {
+    trackProbesLeft_ = 12;
+    if (!SetTimer(window_, trackTimer, 150, nullptr)) stopTrackRefresh();
+    if (!readingMetadata_) readMetadata(true);
+}
+
+void MediaMonitor::retryTrack() {
+    if (!trackProbesLeft_) return;
+    if (--trackProbesLeft_ == 0) stopTrackRefresh();
+    if (!stopped_ && selected_ && !readingMetadata_) readMetadata(true);
+}
+
+void MediaMonitor::stopTrackRefresh() {
+    KillTimer(window_, trackTimer);
+    trackProbesLeft_ = 0;
+}
+
 bool MediaMonitor::Artwork::matches(MediaState const& state) const {
     return appId == state.appId && title == state.title && artist == state.artist && album == state.album;
 }
@@ -299,19 +322,31 @@ void MediaMonitor::rememberArtwork() {
     artwork_.push_back({state_.appId, state_.title, state_.artist, state_.album, state_.theme, state_.cover});
 }
 
-winrt::Windows::Foundation::IAsyncAction MediaMonitor::readMetadata() {
+winrt::Windows::Foundation::IAsyncAction MediaMonitor::readMetadata(bool trackProbe) {
     const auto lifetime = shared_from_this();
     readingMetadata_ = true;
     while (!stopped_ && selected_) {
         const auto session = selected_;
-        const auto revision = metadataRevision_;
+        auto revision = metadataRevision_;
         try {
             const auto properties = co_await session.TryGetMediaPropertiesAsync();
             if (properties && !stopped_ && session == selected_ && revision == metadataRevision_) {
                 const auto title = properties.Title();
                 const auto artist = properties.Artist();
                 const auto album = properties.AlbumTitle();
-                if (state_.title != title.c_str() || state_.artist != artist.c_str() || state_.album != album.c_str()) {
+                const bool newTrack =
+                    state_.title != title.c_str() || state_.artist != artist.c_str() || state_.album != album.c_str();
+                if (trackProbe && !newTrack) break;
+                if (newTrack) {
+                    ++trackVersion_;
+                    stopTrackRefresh();
+                    if (trackProbe) {
+                        KillTimer(window_, artworkTimer);
+                        artworkRetries_ = 0;
+                        revision = ++metadataRevision_;
+                        if (artworkRead_) artworkRead_.Cancel();
+                        artworkRead_ = nullptr;
+                    }
                     state_.title = title.c_str();
                     state_.artist = artist.c_str();
                     state_.album = album.c_str();
@@ -327,9 +362,10 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::readMetadata() {
             // Some players stop exposing metadata as their session closes.
         }
         if (revision == metadataRevision_) {
-            scheduleArtworkRetry(revision);
+            if (!trackProbe) scheduleArtworkRetry(revision);
             break;
         }
+        trackProbe = false;
     }
     readingMetadata_ = false;
 }
@@ -410,7 +446,7 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::seek(double seconds) {
 winrt::Windows::Foundation::IAsyncAction MediaMonitor::control(MediaCommand command) {
     const auto lifetime = shared_from_this();
     const auto session = selected_;
-    const auto revision = metadataRevision_;
+    const auto trackVersion = trackVersion_;
     try {
         if (session) {
             bool handled = false;
@@ -421,12 +457,13 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::control(MediaCommand comm
             }
             if (handled) {
                 if (!stopped_ && session == selected_ && command != MediaCommand::toggle &&
-                    revision == metadataRevision_) requestMetadata();
+                    trackVersion == trackVersion_) refreshTrack();
                 co_return;
             }
         }
         if (!stopped_ && session == selected_ && (!session || manager_.GetCurrentSession() == session)) {
             sendMediaKey(command);
+            if (session && command != MediaCommand::toggle && trackVersion == trackVersion_) refreshTrack();
         }
     } catch (winrt::hresult_error const&) {
         // A closed session can no longer be safely targeted.
