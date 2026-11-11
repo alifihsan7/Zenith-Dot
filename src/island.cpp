@@ -17,6 +17,10 @@ using namespace std::chrono_literals;
 constexpr float pillTop = 8;
 constexpr float pillWidth = 147;
 constexpr float pillHeight = 40;
+constexpr float pausedPillWidth = 46;
+constexpr float pausedPillHeight = 32;
+constexpr float pillTrackLeft = 28;
+constexpr float pillTrackRight = 38;
 constexpr float maxPillLyricWidth = 720;
 constexpr float maxPillLyricHeight = 160;
 constexpr float pillLyricIconSpace = 24;
@@ -74,6 +78,8 @@ constexpr auto inlineAlertTime = 2000ms;
 constexpr auto visibilityTime = 200ms;
 constexpr auto lyricScrollTime = 190ms;
 constexpr auto pillLyricTime = 250ms;
+constexpr auto pillLyricSwitchTime = 750ms;
+constexpr auto compactPauseDelay = 3s;
 constexpr int timerPresets[]{1, 5, 10};
 constexpr int quickMinMinutes = 1;
 constexpr int quickMaxMinutes = 120;
@@ -462,6 +468,12 @@ void Island::setAnimate(bool animate) {
 
 void Island::setMedia(MediaState const& media) {
     const auto now = Clock::now();
+    if (!media.hasSession || media.playing) {
+        pauseCompactAt_ = {};
+    } else if (!media_.hasSession || media_.playing || media_.appId != media.appId ||
+               media_.sourceId != media.sourceId || media_.title != media.title) {
+        pauseCompactAt_ = now + compactPauseDelay;
+    }
     if (pressed_ == Hit::source && (pressedIndex_ >= media.sources.size() || pressedIndex_ >= media_.sources.size() ||
         media.sources[pressedIndex_].appId != media_.sources[pressedIndex_].appId ||
         media.sources[pressedIndex_].id != media_.sources[pressedIndex_].id)) pressed_ = Hit::none;
@@ -615,8 +627,8 @@ float Island::pillAmount(Clock::time_point now) const {
     return pillMotion(now).value;
 }
 
-float Island::pillLyricProgress(Clock::time_point now) const {
-    return animate_ ? progress(pillLyricStart_, pillLyricTime, now) : 1;
+float Island::pillTransitionProgress(Clock::time_point now) const {
+    return animate_ ? progress(pillTransitionStart_, pillTransitionTime_, now) : 1;
 }
 
 bool Island::pillLyricGrowing() const {
@@ -624,17 +636,25 @@ bool Island::pillLyricGrowing() const {
 }
 
 float Island::pillLyricOut(float t) const {
+    if (pillTransitionTime_ == pillLyricSwitchTime) return easeInOut(lin(0, 0.38f, t));
     return easeInOut(lin(0, pillLyricGrowing() ? 0.72f : 0.55f, t));
 }
 
 float Island::pillLyricIn(float t) const {
+    if (pillTransitionTime_ == pillLyricSwitchTime) return easeInOut(lin(0.40f, 0.86f, t));
     return easeOut(lin(pillLyricGrowing() ? 0.52f : 0.32f, 1, t));
+}
+
+float Island::pillTitleOpacity(Clock::time_point now) const {
+    const float t = pillTransitionProgress(now);
+    const float phase = pillTitleVisible_ ? lin(0.38f, 0.85f, t) : lin(0, 0.42f, t);
+    return std::lerp(pillTitleFrom_, pillTitleVisible_ ? 1.0f : 0.0f, easeInOut(phase));
 }
 
 D2D1_SIZE_F Island::pillSize(Clock::time_point now) const {
     const float extra = captureWidth(now);
     if (pillSizeTarget_.width == 0) return {pillWidth + extra, pillHeight};
-    const float t = pillLyricProgress(now);
+    const float t = pillTransitionProgress(now);
     const auto resize = [t](float from, float to) {
         const float phase = to >= from ? lin(0, 0.64f, t) : lin(0.46f, 1, t);
         return std::lerp(from, to, easeInOut(phase));
@@ -706,7 +726,7 @@ bool Island::moving(Clock::time_point now) const {
     return now - pillStart_ < shapeTime || now - panelStart_ < shapeTime ||
            now - captureStart_ < captureTime || now - screenStart_ < shapeTime ||
            now - widthStart_ < shapeTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
-           now - themeStart_ < themeTime || now - pillLyricStart_ < pillLyricTime ||
+           now - themeStart_ < themeTime || now - pillTransitionStart_ < pillTransitionTime_ ||
            (bubbleShowing() && now - alertStart_ < splitTime);
 }
 
@@ -762,9 +782,9 @@ void Island::updatePill(Clock::time_point now) {
     }
 }
 
-void Island::updatePillLyric(Clock::time_point now, float workWidth) {
+void Island::updatePillLayout(Clock::time_point now, float workWidth) {
     if (bubbleShowing() || (pillMode_ == PillMode::dot && pillAmount(now) > 0)) return;
-    const float t = pillLyricProgress(now);
+    const float t = pillTransitionProgress(now);
     if (t >= 1) previousPillLyric_ = {};
 
     std::wstring_view line;
@@ -776,12 +796,37 @@ void Island::updatePillLyric(Clock::time_point now, float workWidth) {
     }
     const float reserved = captureSlot * (static_cast<int>(microphoneColor_.has_value()) +
                                           static_cast<int>(cameraColor_.has_value()));
+    const bool showTitle = pillMode_ != PillMode::media || media_.playing ||
+                           (pauseCompactAt_ != Clock::time_point{} && now < pauseCompactAt_);
+    D2D1_SIZE_F target{pillWidth, pillHeight};
+    if (pillMode_ == PillMode::media) {
+        const float trackWidth = std::max(pillWidth, workWidth - maxBubble - 60 - reserved);
+        if (pillTrackTitle_.text != pillTitle_ || pillTrackMaxWidth_ != trackWidth) {
+            pillTrackTitle_.text = pillTitle_;
+            pillTrackMaxWidth_ = trackWidth;
+            auto& layout = pillTrackTitle_.layout;
+            layout = nullptr;
+            winrt::check_hresult(fonts_->CreateTextLayout(pillTitle_.data(), static_cast<UINT32>(pillTitle_.size()),
+                pillTitleFont_.get(), trackWidth - pillTrackLeft - pillTrackRight, 10'000, layout.put()));
+            winrt::check_hresult(layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP));
+            const DWRITE_TRIMMING noTrimming{DWRITE_TRIMMING_GRANULARITY_NONE, 0, 0};
+            winrt::check_hresult(layout->SetTrimming(&noTrimming, nullptr));
+            winrt::check_hresult(layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR));
+            DWRITE_TEXT_METRICS metrics{};
+            winrt::check_hresult(layout->GetMetrics(&metrics));
+            pillTrackTitle_.textSize = {metrics.width, metrics.height};
+            pillTrackSize_ = {std::max(pillWidth, std::ceil(metrics.width) + pillTrackLeft + pillTrackRight),
+                              std::max(pillHeight, std::ceil(metrics.height) + 16)};
+        }
+        target = showTitle ? pillTrackSize_ : D2D1::SizeF(pausedPillWidth, pausedPillHeight);
+    }
     const float maxWidth = std::clamp(workWidth - maxBubble - 60 - reserved, 180.0f, maxPillLyricWidth);
     const float maxHeight = std::min(maxPillLyricHeight, maxWidth / 2);
-    if (line == pillLyric_.text && (line.empty() || maxWidth == pillLyricMaxWidth_)) return;
+    const bool sameLyric = line == pillLyric_.text && (line.empty() || maxWidth == pillLyricMaxWidth_);
+    if (sameLyric && (pillLyric_.layout || (showTitle == pillTitleVisible_ &&
+        target.width == pillSizeTarget_.width && target.height == pillSizeTarget_.height))) return;
 
-    PillLyric next;
-    D2D1_SIZE_F target{pillWidth, pillHeight};
+    PillText next;
     if (!line.empty()) {
         next.text = line;
         winrt::check_hresult(fonts_->CreateTextLayout(line.data(), static_cast<UINT32>(line.size()),
@@ -802,6 +847,8 @@ void Island::updatePillLyric(Clock::time_point now, float workWidth) {
             next.layout = nullptr;
         }
     }
+    const bool switchingLyric = static_cast<bool>(pillLyric_.layout) != static_cast<bool>(next.layout);
+    const bool switchingPause = showTitle != pillTitleVisible_;
     const float outgoing = pillLyricOut(t);
     const float incoming = pillLyricIn(t);
     const float oldAlpha = previousPillAlpha_ * (1 - outgoing);
@@ -818,7 +865,10 @@ void Island::updatePillLyric(Clock::time_point now, float workWidth) {
     pillSizeFrom_.width -= captureWidth(now);
     pillSizeTarget_ = target;
     pillLyric_ = std::move(next);
-    pillLyricStart_ = pillMode_ == PillMode::dot ? Clock::time_point{} : now;
+    pillTitleFrom_ = pillTitleOpacity(now);
+    pillTitleVisible_ = showTitle;
+    pillTransitionTime_ = switchingLyric ? pillLyricSwitchTime : switchingPause ? shapeTime : pillLyricTime;
+    pillTransitionStart_ = pillMode_ == PillMode::dot ? Clock::time_point{} : now;
     if (pillMode_ == PillMode::dot) previousPillLyric_ = {};
 }
 
@@ -893,6 +943,7 @@ void Island::setOpen(bool open, Clock::time_point now) {
         }
     }
     shareTitle_ = media_.hasSession && screen_ == Screen::media && pillMode_ == PillMode::media &&
+                  pillTitleVisible_ && pillTrackSize_.height <= pillHeight &&
                   pillAmount(now) >= 1 && pillContent_ == PillMode::media &&
                   !pillLyric_.layout && !previousPillLyric_.layout;
     open_ = open;
@@ -1069,7 +1120,12 @@ unsigned Island::frameInterval() const {
     if (open_ || alert_) return 50;
     if (pillMode_ == PillMode::preview) return 50;
     if (wantsLyricPill()) return 50;
-    if (pillMode_ == PillMode::media) return media_.playing && animate_ ? 33 : 0;
+    if (pillMode_ == PillMode::media) {
+        if (media_.playing) return animate_ ? 33 : 0;
+        if (pillTitleVisible_ && pauseCompactAt_ != Clock::time_point{}) {
+            return static_cast<unsigned>(std::max(1ms, std::chrono::ceil<std::chrono::milliseconds>(pauseCompactAt_ - now)).count());
+        }
+    }
     if (pillMode_ == PillMode::focus || pillMode_ == PillMode::timer) return timerRunning ? 1000 : 0;
     if (pillMode_ == PillMode::privacy) return 0;
     return 0;
@@ -1711,11 +1767,11 @@ static D2D1_RECT_F compactHit(D2D1_RECT_F shape, float amount) {
 void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideTitle) {
     const auto center = pt((shape.left + shape.right) / 2, (shape.top + shape.bottom) / 2);
     const float extra = captureWidth(now);
-    const float t = pillLyricProgress(now);
+    const float t = pillTransitionProgress(now);
     const float fadeOut = pillLyricOut(t);
     const float oldOpacity = previousPillAlpha_ * (1 - fadeOut);
     const float newOpacity = pillLyricIn(t);
-    const auto drawLyric = [&](PillLyric const& lyric, float opacity, float offset) {
+    const auto drawLyric = [&](PillText const& lyric, float opacity, float offset) {
         if (!lyric.layout || opacity <= 0) return;
         target_->DrawTextLayout(pt(center.x + (pillLyricIconSpace - lyric.textSize.width - extra) / 2,
                                    center.y - lyric.textSize.height / 2 + offset),
@@ -1735,7 +1791,7 @@ void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool h
     if (mediaOpacity > 0) {
         target_->SetTransform(D2D1::Matrix3x2F::Translation(center.x - extra / 2, center.y - pillCenterY) * base_);
         if (mediaOpacity < 1) pushLayer(nullptr, mediaOpacity);
-        drawPillContent(now, hideTitle);
+        drawPillContent(now, shape.right - shape.left - extra, hideTitle);
         if (mediaOpacity < 1) popLayer();
         target_->SetTransform(base_);
     }
@@ -1765,9 +1821,8 @@ void Island::drawLyricsGlyph(D2D1_POINT_2F origin, D2D1_COLOR_F color) {
     target_->DrawLine(pt(x + 9, y + 12), pt(x + 13.5f, y + 12), ink(color), 1.4f, roundStroke_.get());
 }
 
-void Island::drawPillContent(Clock::time_point now, bool hideTitle) {
-    const float edge = pillLeft + pillWidth - 12;
-    const float right = edge;
+void Island::drawPillContent(Clock::time_point now, float width, bool hideTitle) {
+    const float right = pillLeft + pillWidth - 12;
     if (pillContent_ == PillMode::privacy) {
         text(pillTitle_, pillTitleFont_.get(), box(pillLeft + 14, pillTop, right - pillLeft - 14, pillHeight), rgb(inkColor));
         return;
@@ -1796,13 +1851,18 @@ void Island::drawPillContent(Clock::time_point now, bool hideTitle) {
              rgb(inkColor));
         return;
     }
-    target_->FillEllipse(D2D1::Ellipse({pillLeft + 16, pillCenterY}, 4, 4), ink(accent_));
-    float titleEnd = right;
+    const float trackWidth = std::clamp(width, pausedPillWidth, std::max(pillWidth, pillTrackSize_.width));
+    const float trackLeft = -trackWidth / 2;
+    const float trackRight = trackWidth / 2;
+    const float full = lin(pausedPillWidth, pillWidth, trackWidth);
+    const float dotRadius = std::lerp(3.0f, 4.0f, full);
+    target_->FillEllipse(D2D1::Ellipse({trackLeft + std::lerp(14.0f, 16.0f, full), pillCenterY},
+                                      dotRadius, dotRadius), ink(accent_));
     if (pillPlaying_) {
         // Four bars, each scaling between 40% and 100% (V7's 0.75s alternate ease-in-out loop).
         constexpr float heights[]{8, 14, 10, 6};
         constexpr float delays[]{0, -0.39f, -0.24f, -0.55f};
-        const float left = right - 17.5f;
+        const float left = trackRight - 29.5f;
         const double seconds = std::chrono::duration<double>(now.time_since_epoch()).count();
         for (int bar = 0; bar < 4; ++bar) {
             float scale = 1;
@@ -1816,18 +1876,19 @@ void Island::drawPillContent(Clock::time_point now, bool hideTitle) {
             target_->FillRoundedRectangle(
                 rounded(box(left + bar * 5, pillCenterY - height / 2, 2.5f, height), 1.25f), ink(accent_));
         }
-        titleEnd = left - 8;
     } else {
         // Paused: the panel's pause glyph (two bars), scaled for the pill.
-        const float left = right - 10;
+        const float left = trackRight - std::lerp(19.0f, 22.0f, full);
         for (const float x : {left, left + 5.5f}) {
             target_->FillRoundedRectangle(rounded(box(x, pillCenterY - 5, 2.5f, 10), 1), ink(rgb(mutedColor)));
         }
-        titleEnd = left - 8;
     }
-    if (!hideTitle) {
-        text(pillTitle_, pillTitleFont_.get(), box(pillLeft + 28, pillTop, titleEnd - (pillLeft + 28), pillHeight),
-             rgb(inkColor));
+    if (!hideTitle && pillTrackTitle_.layout) {
+        const float opacity = pillTitleOpacity(now);
+        if (opacity > 0) {
+            target_->DrawTextLayout(pt(trackLeft + pillTrackLeft, pillCenterY - pillTrackTitle_.textSize.height / 2),
+                                    pillTrackTitle_.layout.get(), ink(rgb(inkColor, opacity)));
+        }
     }
 }
 
@@ -2102,7 +2163,7 @@ void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double positio
     if (!lyrics_) return;
     const float x = panel.left + mediaPanelWidth + 8, y = panel.top + 16;
     const float width = lyricsWidth_ - padX - 8;
-    constexpr float viewportHeight = mediaPanelHeight - 16 - 34 - padX;
+    constexpr float viewportHeight = mediaPanelHeight - padBottom - navHeight - 16 - 34 - 6;
     text(L"Lyrics", titleFont_.get(), box(x, y, width, 22), rgb(inkColor));
     const bool synced = lyrics_->status == LyricsStatus::ready;
     const bool plain = lyrics_->status == LyricsStatus::plain;
@@ -2478,12 +2539,11 @@ void Island::drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color
 }
 
 void Island::drawNav(D2D1_RECT_F panel, bool record) {
-    const float navWidth = screen_ == Screen::media ? mediaPanelWidth : panel.right - panel.left;
     const float top = panel.bottom - padBottom - navHeight;
     drawCaptureIndicators(pt(panel.left + padX + 26, top + navHeight / 2),
                           microphoneColor_ ? 1.0f : 0.0f, cameraColor_ ? 1.0f : 0.0f);
     constexpr auto count = std::size(screens);
-    const float start = panel.left + navWidth / 2 - (count * 35 + (count - 1) * 8) / 2.0f;
+    const float start = (panel.left + panel.right - (count * 35 + (count - 1) * 8)) / 2.0f;
     const Hit hits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem};
     for (size_t i = 0; i < count; ++i) {
         const auto rect = box(start + static_cast<float>(i) * 43, top, 35, navHeight);
@@ -2494,7 +2554,7 @@ void Island::drawNav(D2D1_RECT_F panel, bool record) {
         drawScreenGlyph(screens[i], rect, color);
         if (record) addTarget(rect, hits[i]);
     }
-    const auto pin = box(panel.left + navWidth - padX - 34, top + 1, 34, 29);
+    const auto pin = box(panel.right - padX - 34, top + 1, 34, 29);
     drawButton(pin, L"", Hit::panelPin, record);
     const bool pinned = panelPinned();
     const auto color = pinned ? accent_ : rgb(inkColor);
@@ -2512,10 +2572,9 @@ void Island::drawNav(D2D1_RECT_F panel, bool record) {
 void Island::drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float capture, float value) {
     // The title is drawn at its panel size and scaled down to the pill's 12px at the start.
     const float scale = std::lerp(12.0f / 16.0f, 1.0f, value);
-    const float compactCenter = (compact.left + compact.right - capture) / 2;
-    const float x = std::lerp(compactCenter + pillLeft + 28, panel.left + 68, value);
+    const float x = std::lerp(compact.left + pillTrackLeft, panel.left + 68, value);
     const float y = std::lerp((compact.top + compact.bottom - 22.4f * 0.75f) / 2, panel.top + 14.4f, value);
-    const float compactWidth = pillWidth - 12 - (pillPlaying_ ? 17.5f : 10.0f) - 8 - 28;
+    const float compactWidth = compact.right - compact.left - capture - pillTrackLeft - pillTrackRight;
     const float width = std::lerp(compactWidth / 0.75f, mediaTitleWidth, value);
     target_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) * D2D1::Matrix3x2F::Translation(x, y) * base_);
     text(title(), titleFont_.get(), box(0, 0, width, 22.4f), rgb(inkColor));
@@ -2581,7 +2640,7 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
         return;
     }
     pillSizeFrom_ = pillSizeTarget_;
-    pillLyricStart_ = {};
+    pillTransitionStart_ = {};
     previousPillLyric_ = {};
     openAt_.reset();
     alertFrom_ = 0;
@@ -2881,13 +2940,15 @@ void Island::draw(HWND window) {
     const float opacity = visibility(now);
     anchor_ = {work.left + (work.right - work.left) / 2, work.top - std::lround((1 - opacity) * 14 * scale_)};
     prepareText();
-    updatePillLyric(now, workWidth);
+    updatePillLayout(now, workWidth);
 
     const float amount = pillAmount(now);
     const float value = panelValue(now);
     const bool panelVisible = open_ || value > 0;
     const bool switchingScreen = screenFrom_ != screen_ && progress(screenStart_, screenFadeTime, now) < 1;
     const bool morphTitle = shareTitle_ && screen_ == Screen::media && media_.hasSession &&
+                            pillTitleVisible_ && pillTrackSize_.height <= pillHeight &&
+                            !pillLyric_.layout && !previousPillLyric_.layout &&
                             !switchingScreen && value > 0 && value < 1;
     if (!panelVisible || panelWidthAt(now) <= mediaPanelWidth) lyricLayout_ = nullptr;
 

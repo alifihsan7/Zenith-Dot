@@ -125,7 +125,7 @@ private:
         std::vector<uint8_t> pixels;
         winrt::com_ptr<ID2D1Bitmap> bitmap;
     };
-    struct PillLyric {
+    struct PillText {
         std::wstring text;
         winrt::com_ptr<IDWriteTextLayout> layout;
         D2D1_SIZE_F textSize{};
@@ -140,10 +140,11 @@ private:
     static MotionSample sampleSpring(Clock::time_point start, Clock::duration duration, Clock::time_point now,
                                      float from, float to, float velocity = 0, Spring spring = Spring::shape);
     MotionSample pillMotion(Clock::time_point now) const;
-    float pillLyricProgress(Clock::time_point now) const;
+    float pillTransitionProgress(Clock::time_point now) const;
     bool pillLyricGrowing() const;
     float pillLyricOut(float progress) const;
     float pillLyricIn(float progress) const;
+    float pillTitleOpacity(Clock::time_point now) const;
     D2D1_SIZE_F pillSize(Clock::time_point now) const;
     float captureWidth(Clock::time_point now) const;
     float captureProgress(Clock::time_point now, float from, bool active) const;
@@ -161,7 +162,7 @@ private:
     D2D1_RECT_F panelRect(Clock::time_point now) const;
     bool moving(Clock::time_point now) const;
     void updatePill(Clock::time_point now);
-    void updatePillLyric(Clock::time_point now, float workWidth);
+    void updatePillLayout(Clock::time_point now, float workWidth);
     void updateTheme(Clock::time_point now);
     void setOpen(bool open, Clock::time_point now);
     void showScreen(Screen screen, Clock::time_point now);
@@ -190,7 +191,7 @@ private:
     void releaseDeviceResources();
     void drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideTitle);
     void drawLyricsGlyph(D2D1_POINT_2F origin, D2D1_COLOR_F color);
-    void drawPillContent(Clock::time_point now, bool hideTitle);
+    void drawPillContent(Clock::time_point now, float width, bool hideTitle);
     void drawIsland(Clock::time_point now, float value, float amount, bool morphTitle);
     void drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record);
     void drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record);
@@ -272,19 +273,26 @@ private:
     PillMode preferredPill_ = PillMode::media;
     std::wstring pillTitle_;
     bool pillPlaying_ = false;
+    Clock::time_point pauseCompactAt_{};
     float pillFrom_ = 0;
     float pillVelocity_ = 0;
     float pillTarget_ = 0;
     Clock::time_point pillStart_{};
     Clock::time_point previewUntil_{};
-    PillLyric pillLyric_;
-    PillLyric previousPillLyric_;
+    PillText pillLyric_;
+    PillText previousPillLyric_;
     float previousPillAlpha_ = 1;
     float previousPillOffset_ = 0;
     D2D1_SIZE_F pillSizeFrom_{};
     D2D1_SIZE_F pillSizeTarget_{};
-    Clock::time_point pillLyricStart_{};
+    Clock::time_point pillTransitionStart_{};
+    Clock::duration pillTransitionTime_{};
     float pillLyricMaxWidth_ = 0;
+    PillText pillTrackTitle_;
+    float pillTrackMaxWidth_ = 0;
+    D2D1_SIZE_F pillTrackSize_{};
+    float pillTitleFrom_ = 1;
+    bool pillTitleVisible_ = true;
 
     // Panel. panelFrom_ animates toward 1 (open) or 0 (closed) from panelStart_.
     bool open_ = false;
