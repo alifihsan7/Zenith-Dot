@@ -2934,24 +2934,35 @@ void Island::drawSplit(Clock::time_point now, float amount) {
 void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity) {
     if (opacity <= 0 || !alert_) return;
     const float width = area.right - area.left;
+    const bool copied = alert_->kind == IslandAlert::Kind::copy;
+    const float contentWidth = copied ? alertWidth_ : width;
+    const float contentLeft = area.left + std::max(0.0f, (width - contentWidth) / 2);
+    const float iconProgress = copied ? easeInOut(lin(contentWidth - 24, contentWidth - 6, width)) : copyOpacity;
+    if (copied) copyOpacity *= easeInOut(lin(contentWidth - 6, contentWidth, width));
     const float radius = std::min(width, area.bottom - area.top) / 2;
     winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
     winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(rounded(area, radius), clip.put()));
     pushLayer(clip.get(), opacity);
     const float middle = (area.top + area.bottom) / 2;
     // While the bubble is narrow the icon sits centered; the text fades in as it reaches full width.
-    float x = area.left + std::lerp(std::max(0.0f, (width - 15) / 2), 12.0f, copyOpacity);
-    drawAlertIcon(alert_->kind, pt(x, middle - 7.5f), alert_->color ? rgb(*alert_->color) : accent_);
-    x += 15 + 7;
-    const float end = area.right - 12;
+    const float iconLeft = std::lerp(area.left + std::max(0.0f, (width - 15) / 2),
+                                     contentLeft + 12, iconProgress);
+    drawAlertIcon(alert_->kind, pt(iconLeft, middle - 7.5f), alert_->color ? rgb(*alert_->color) : accent_);
+    if (copyOpacity <= 0) {
+        popLayer();
+        return;
+    }
+    float x = (copied ? contentLeft + 12 : iconLeft) + 15 + 7;
+    const float end = contentLeft + contentWidth - 12;
     // A long title (a device name) gives way so the value after it stays readable.
     float valueWidth = 0;
-    if (!alert_->value.empty()) {
+    if (!copied && !alert_->value.empty()) {
         valueWidth = 7 + measure(alert_->value, alertValueFont_.get()) + (alert_->battery ? batteryCellWidth : 0);
     }
     if (!alert_->title.empty() && end > x) {
-        const float titleWidth = std::min(measure(alert_->title, alertTitleFont_.get()) + 1,
-                                          std::max(0.0f, end - x - valueWidth));
+        const float measuredTitle = measure(alert_->title, alertTitleFont_.get());
+        const float titleWidth = copied ? std::ceil(measuredTitle) + 2 :
+            std::min(measuredTitle + 1, std::max(0.0f, end - x - valueWidth));
         text(alert_->title, alertTitleFont_.get(), box(x, middle - 10, titleWidth, 20),
              withAlpha(rgb(inkColor), copyOpacity));
         x += titleWidth + 6;
