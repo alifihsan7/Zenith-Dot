@@ -713,15 +713,21 @@ D2D1_SIZE_F Island::pillSize(Clock::time_point now) const {
             resize(pillSizeFrom_.height, pillSizeTarget_.height)};
 }
 
-float Island::captureProgress(Clock::time_point now, float from, bool active) const {
-    const auto amount = animate_ ? easeInOut(progress(captureStart_, captureTime, now)) : 1.0f;
-    return std::lerp(from, active ? 1.0f : 0.0f, amount);
+float Island::captureProgress(Clock::time_point now, CaptureIndicator const& indicator) const {
+    const auto amount = animate_ ? easeInOut(progress(indicator.start, captureTime, now)) : 1.0f;
+    return std::lerp(indicator.from, indicator.shown ? 1.0f : 0.0f, amount);
+}
+
+std::array<float, 3> Island::captureAmounts(Clock::time_point now) const {
+    std::array<float, 3> amounts{};
+    for (size_t i = 0; i < amounts.size(); ++i) amounts[i] = captureProgress(now, captureIndicators_[i]);
+    return amounts;
 }
 
 float Island::captureWidth(Clock::time_point now) const {
     if (pillContent_ == PillMode::media || pillContent_ == PillMode::privacy) return 0;
-    return captureSlot * (captureProgress(now, microphoneFrom_, microphoneColor_.has_value()) +
-                          captureProgress(now, cameraFrom_, cameraColor_.has_value()));
+    const auto [screen, camera, mic] = captureAmounts(now);
+    return captureSlot * (screen + camera + mic);
 }
 
 D2D1_RECT_F Island::compactShape(Clock::time_point now, float amount) const {
@@ -735,11 +741,10 @@ D2D1_RECT_F Island::compactShape(Clock::time_point now, float amount) const {
 
 std::optional<D2D1_RECT_F> Island::mediaPrivacyShape(Clock::time_point now, D2D1_RECT_F anchor) const {
     if (pillContent_ != PillMode::media) return std::nullopt;
-    const float mic = captureProgress(now, microphoneFrom_, microphoneColor_.has_value());
-    const float camera = captureProgress(now, cameraFrom_, cameraColor_.has_value());
-    const float presence = std::max(mic, camera);
+    const auto [screen, camera, mic] = captureAmounts(now);
+    const float presence = std::max({screen, camera, mic});
     if (presence <= .01f) return std::nullopt;
-    const float width = 2 * privacyPadding * presence + captureSlot * (mic + camera);
+    const float width = 2 * privacyPadding * presence + captureSlot * (screen + camera + mic);
     const float centerY = (anchor.top + anchor.bottom) / 2;
     return box(anchor.right + privacyGap, centerY - privacyHeight / 2, width, privacyHeight);
 }
@@ -788,7 +793,8 @@ D2D1_RECT_F Island::panelRect(Clock::time_point now) const {
 bool Island::moving(Clock::time_point now) const {
     if (!animate_) return false;
     return now - pillStart_ < shapeTime || now - panelStart_ < shapeTime ||
-           now - captureStart_ < captureTime || now - screenStart_ < shapeTime ||
+           std::ranges::any_of(captureIndicators_, [now](auto const& item) { return now - item.start < captureTime; }) ||
+           now - screenStart_ < shapeTime ||
            now - widthStart_ < shapeTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
            now - themeStart_ < themeTime || now - pillTransitionStart_ < pillTransitionTime_ ||
            (bubbleShowing() && now - alertStart_ < splitTime);
@@ -819,7 +825,7 @@ void Island::updatePill(Clock::time_point now) {
         mode = PillMode::focus;
     } else if (timerActive) {
         mode = PillMode::timer;
-    } else if (microphoneColor_ || cameraColor_) {
+    } else if (std::ranges::any_of(captureIndicators_, &CaptureIndicator::shown)) {
         mode = PillMode::privacy;
     }
     pillMode_ = mode;
@@ -858,8 +864,7 @@ void Island::updatePillLayout(Clock::time_point now, float workWidth) {
         if (next != lines.begin()) line = (next - 1)->text;
         if (line.find_first_not_of(L" \t\r\n") == std::wstring_view::npos || line.size() > 4096) line = {};
     }
-    const auto captureCount = static_cast<unsigned>(microphoneColor_.has_value()) +
-                              static_cast<unsigned>(cameraColor_.has_value());
+    const auto captureCount = std::ranges::count_if(captureIndicators_, &CaptureIndicator::shown);
     const float captureSlots = captureSlot * static_cast<float>(captureCount);
     const float reserved = captureSlots + (captureCount ? privacyGap + 2 * privacyPadding : 0);
     const auto compactAt = pausedAt_ + std::chrono::seconds(preferences_.pauseSeconds());
@@ -988,15 +993,35 @@ void Island::setSuppressed(bool suppressed) {
     pointerCancel();
 }
 
-void Island::setCaptureColors(std::optional<unsigned> microphone, std::optional<unsigned> camera) {
-    if (microphone == microphoneColor_ && camera == cameraColor_) return;
+bool Island::setCaptureActivity(CaptureActivity const& activity, bool announce) {
     const auto now = Clock::now();
-    microphoneFrom_ = captureProgress(now, microphoneFrom_, microphoneColor_.has_value());
-    cameraFrom_ = captureProgress(now, cameraFrom_, cameraColor_.has_value());
-    captureStart_ = now;
-    microphoneColor_ = microphone;
-    cameraColor_ = camera;
+    const std::wstring_view apps[]{activity.screen, activity.camera, activity.microphone};
+    const wchar_t* titles[]{activity.recording ? L"Recording" : L"Screen Sharing", L"Camera", L"Microphone"};
+    bool changed = false;
+    for (size_t i = 0; i < captureIndicators_.size(); ++i) {
+        auto& item = captureIndicators_[i];
+        if (item.app == apps[i]) continue;
+        const bool started = item.app.empty() && !apps[i].empty();
+        item.app = apps[i];
+        if (started && announce) notify({item.kind, titles[i], item.app, item.color, 2});
+        if (item.app.empty() && queued_ && queued_->kind == item.kind) queued_.reset();
+        changed = true;
+    }
+    if (!changed) return false;
+    updateCaptureIndicators(now);
     updatePill(now);
+    return true;
+}
+
+void Island::updateCaptureIndicators(Clock::time_point now) {
+    for (auto& item : captureIndicators_) {
+        const bool pending = (alert_ && alert_->kind == item.kind) || (queued_ && queued_->kind == item.kind);
+        const bool shown = !item.app.empty() && !pending;
+        if (shown == item.shown) continue;
+        item.from = captureProgress(now, item);
+        item.shown = shown;
+        item.start = now;
+    }
 }
 
 void Island::setOpen(bool open, Clock::time_point now) {
@@ -1176,6 +1201,7 @@ void Island::tick() {
             finishAlert(now);
         }
     }
+    updateCaptureIndicators(now);
     updatePill(now);
     updateTheme(now);
 }
@@ -1908,38 +1934,36 @@ void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool h
         target_->SetTransform(base_);
     }
     if (extra > 0) {
-        drawCaptureIndicators(pt(shape.right - 17, center.y),
-            captureProgress(now, microphoneFrom_, microphoneColor_.has_value()),
-            captureProgress(now, cameraFrom_, cameraColor_.has_value()));
+        drawCaptureIndicators(pt(shape.right - 17, center.y), captureAmounts(now));
     }
 }
 
-void Island::drawCaptureIndicators(D2D1_POINT_2F right, float mic, float camera) {
-    const auto draw = [&](IslandAlert::Kind kind, std::optional<unsigned> color, float amount) {
+void Island::drawCaptureIndicators(D2D1_POINT_2F right, std::array<float, 3> const& amounts) {
+    for (size_t i = 0; i < amounts.size(); ++i) {
+        const auto& item = captureIndicators_[i];
+        const auto amount = amounts[i];
         const float opacity = lin(0.60f, 1, amount);
-        if (color && opacity > 0) {
-            drawAlertIcon(kind, pt(right.x - 8 + 4 * (1 - opacity), right.y - 8), rgb(*color, opacity));
+        if (opacity > 0) {
+            drawAlertIcon(item.kind, pt(right.x - 8 + 4 * (1 - opacity), right.y - 8), rgb(item.color, opacity));
         }
         right.x -= captureSlot * amount;
-    };
-    draw(IslandAlert::Kind::camera, cameraColor_, camera);
-    draw(IslandAlert::Kind::microphone, microphoneColor_, mic);
+    }
 }
 
 void Island::drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F shape) {
-    const float mic = captureProgress(now, microphoneFrom_, microphoneColor_.has_value());
-    const float camera = captureProgress(now, cameraFrom_, cameraColor_.has_value());
-    const auto right = pt((shape.left + shape.right + captureSlot * std::min(mic, camera)) / 2,
+    const auto amounts = captureAmounts(now);
+    const auto [screen, camera, mic] = amounts;
+    const auto right = pt((shape.left + shape.right + captureSlot * (screen + camera + mic -
+                           std::max({screen, camera, mic}))) / 2,
                           (shape.top + shape.bottom) / 2);
-    drawCaptureIndicators(right, mic, camera);
+    drawCaptureIndicators(right, amounts);
 }
 
 void Island::drawMediaPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity) {
     if (opacity <= 0) return;
-    const float mic = captureProgress(now, microphoneFrom_, microphoneColor_.has_value());
-    const float camera = captureProgress(now, cameraFrom_, cameraColor_.has_value());
+    const auto [screen, camera, mic] = captureAmounts(now);
     const float radius = std::min(shape.right - shape.left, shape.bottom - shape.top) / 2;
-    pushLayer(nullptr, opacity * std::max(mic, camera));
+    pushLayer(nullptr, opacity * std::max({screen, mic, camera}));
     fillShell(rounded(shape, radius));
     target_->DrawRoundedRectangle(rounded(shape, radius), ink(white(0.13f)), 1);
     drawCenteredCaptureIndicators(now, shape);
@@ -2815,8 +2839,10 @@ void Island::drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color
 
 void Island::drawNav(D2D1_RECT_F panel, bool record) {
     const float top = panel.bottom - padBottom - navHeight;
-    drawCaptureIndicators(pt(panel.left + padX + 26, top + navHeight / 2),
-                          microphoneColor_ ? 1.0f : 0.0f, cameraColor_ ? 1.0f : 0.0f);
+    const auto amounts = captureAmounts(Clock::now());
+    const auto [sharing, camera, mic] = amounts;
+    const float captureRight = std::lerp(26.0f, 38.0f, lin(2, 3, sharing + camera + mic));
+    drawCaptureIndicators(pt(panel.left + padX + captureRight, top + navHeight / 2), amounts);
     const auto count = screens_.size();
     const float step = count > featureOrder.size() ? 36.0f : 43.0f;
     const float tabWidth = step - 8;
@@ -2949,10 +2975,27 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
 }
 
 void Island::finishAlert(Clock::time_point now) {
+    const auto handoff = captureHandoff();
+    const bool fromDot = handoff && pillMode_ == PillMode::dot;
     alert_.reset();
     alertFrom_ = alertTo_ = 0;
     alertHoldUntil_.reset();
+    updateCaptureIndicators(now);
+    if (handoff) {
+        for (auto& item : captureIndicators_) {
+            if (&item != handoff) continue;
+            item.from = 1;
+            item.start = {};
+        }
+    }
     updatePill(now);
+    if (fromDot) {
+        pillFrom_ = pillTarget_;
+        pillVelocity_ = 0;
+        pillStart_ = {};
+        pillSizeFrom_ = pillSizeTarget_ = {2 * privacyPadding + captureSlot, privacyHeight};
+        pillTransitionStart_ = {};
+    }
     if (queued_) {
         auto next = std::move(*queued_);
         queued_.reset();
@@ -2986,7 +3029,51 @@ float Island::measure(std::wstring_view value, IDWriteTextFormat* format) {
     return metrics.widthIncludingTrailingWhitespace;
 }
 
+Island::CaptureIndicator const* Island::captureHandoff() const {
+    if (!animate_ || !bubbleShowing() || alertTo_ != 0 ||
+        (pillMode_ != PillMode::dot && pillMode_ != PillMode::media) ||
+        std::ranges::any_of(captureIndicators_, &CaptureIndicator::shown)) return nullptr;
+    const auto item = std::ranges::find(captureIndicators_, alert_->kind, &CaptureIndicator::kind);
+    return item != captureIndicators_.end() && !item->app.empty() ? &*item : nullptr;
+}
+
+void Island::drawCaptureHandoff(Clock::time_point now, float amount) {
+    const float t = easeInOut(progress(alertStart_, splitTime, now));
+    const auto compact = compactShape(now, amount);
+    const float centerY = (compact.top + compact.bottom) / 2;
+    constexpr float width = 2 * privacyPadding + captureSlot;
+    const bool media = pillMode_ == PillMode::media && amount >= 1;
+    const auto destination = box(media ? compact.right + privacyGap : -width / 2,
+                                 centerY - privacyHeight / 2, width, privacyHeight);
+    auto origin = box(-alertWidth_ / 2, pillTop, alertWidth_, pillHeight);
+    if (media) {
+        const float height = compact.bottom - compact.top;
+        const float gap = releaseGap * height / pillHeight;
+        const float alertWidth = std::max(height, alertWidth_);
+        const float offset = (gap + alertWidth) / 2;
+        const auto main = mixRect(box(compact.left - offset, compact.top, compact.right - compact.left, height), compact, t);
+        const auto shell = rounded(main, height / 2);
+        fillShell(shell);
+        target_->DrawRoundedRectangle(shell, ink(white(0.13f)), 1);
+        winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
+        winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(shell, clip.put()));
+        pushLayer(clip.get(), 1);
+        drawCompactContent(now, main, false);
+        popLayer();
+        origin = box(compact.right - offset + gap, compact.top, alertWidth, height);
+    }
+    const auto area = mixRect(origin, destination, t);
+    const auto shell = rounded(area, std::min(area.right - area.left, area.bottom - area.top) / 2);
+    fillShell(shell);
+    target_->DrawRoundedRectangle(shell, ink(white(0.13f)), 1);
+    drawAlertContent(area, 1, 1 - t);
+}
+
 void Island::drawSplit(Clock::time_point now, float amount) {
+    if (captureHandoff()) {
+        drawCaptureHandoff(now, amount);
+        return;
+    }
     const float p = alertValue(now);
     const float target = alertWidth_;
     PathBuilder shape(graphics_.get());
@@ -3158,6 +3245,11 @@ void Island::drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_CO
         target_->DrawGeometry(lens.finish().get(), ink(color), 1.5f, roundStroke_.get());
         break;
     }
+    case IslandAlert::Kind::screenCapture:
+        target_->DrawRoundedRectangle(rounded(box(1, 2.5f, 14, 9), 1.5f), ink(color), 1.5f);
+        target_->DrawLine(pt(8, 11.5f), pt(8, 14), ink(color), 1.5f, roundStroke_.get());
+        target_->DrawLine(pt(5, 14), pt(11, 14), ink(color), 1.5f, roundStroke_.get());
+        break;
     case IslandAlert::Kind::bluetoothAudio: {
         PathBuilder band(graphics_.get());
         band.move(pt(3, 10), false).line(pt(3, 8)).arc(pt(13, 8), 5, false, true).line(pt(13, 10));
@@ -3262,6 +3354,8 @@ void Island::draw(HWND window) {
         const float extra = amount >= 1 ? captureWidth(now) : 0;
         privacyAnchor = box((extra - width) / 2, pillTop, width, height);
         bounds = unite(bounds, grow(privacyAnchor, 2, 2));
+        if (captureHandoff() && pillMode_ == PillMode::media)
+            bounds.right = std::max(bounds.right, compact.right + privacyGap + 2 * privacyPadding + captureSlot + 2);
     }
     const float compactOpacity = lin(0.55f, 1, amount) * (1 - lin(0, 0.38f, value));
     const auto privacy = compactOpacity > 0 ? mediaPrivacyShape(now, privacyAnchor) : std::nullopt;

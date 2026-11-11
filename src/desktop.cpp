@@ -22,6 +22,8 @@
 #include <atomic>
 #include <cmath>
 #include <cwctype>
+#include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <map>
 #include <optional>
@@ -149,6 +151,113 @@ std::wstring processPath(DWORD pid) {
     CloseHandle(process);
     return found ? std::wstring(path, length) : std::wstring{};
 }
+
+struct ScreenCaptureWindows {
+    std::wstring sharing;
+    ULONGLONG obsStarted = 0;
+};
+
+ScreenCaptureWindows screenCaptureWindows() {
+    ScreenCaptureWindows result;
+    EnumWindows([](HWND window, LPARAM context) -> BOOL {
+        auto& found = *reinterpret_cast<ScreenCaptureWindows*>(context);
+        wchar_t className[80]{};
+        if (!GetClassNameW(window, className, static_cast<int>(std::size(className)))) return TRUE;
+        const std::wstring_view type(className);
+        const bool browser = found.sharing.empty() && type.starts_with(L"Chrome_WidgetWin_") &&
+            (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+        const bool obs = !found.obsStarted && type.starts_with(L"Qt");
+        if (!browser && !obs) return TRUE;
+
+        if (browser) {
+            RECT bounds{};
+            const auto dpi = GetDpiForWindow(window);
+            if (!GetWindowRect(window, &bounds) || bounds.bottom - bounds.top > MulDiv(160, dpi ? dpi : 96, 96))
+                return TRUE;
+            wchar_t title[512]{};
+            GetWindowTextW(window, title, static_cast<int>(std::size(title)));
+            const std::wstring_view text(title);
+            if (text.find(L" is sharing your screen") == text.npos &&
+                text.find(L" is sharing a window") == text.npos) return TRUE;
+        }
+        DWORD pid = 0;
+        GetWindowThreadProcessId(window, &pid);
+        const auto app = processLabel(pid, L"");
+        if (browser) {
+            if (_wcsicmp(app.c_str(), L"chrome") == 0) found.sharing = L"Google Chrome";
+            else if (_wcsicmp(app.c_str(), L"msedge") == 0) found.sharing = L"Microsoft Edge";
+            else if (_wcsicmp(app.c_str(), L"brave") == 0) found.sharing = L"Brave";
+        } else if (_wcsicmp(app.c_str(), L"obs64") == 0 || _wcsicmp(app.c_str(), L"obs32") == 0) {
+            const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+            if (!process) return TRUE;
+            FILETIME started{}, ended{}, kernel{}, user{};
+            if (GetProcessTimes(process, &started, &ended, &kernel, &user))
+                found.obsStarted = (static_cast<ULONGLONG>(started.dwHighDateTime) << 32) | started.dwLowDateTime;
+            CloseHandle(process);
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&result));
+    return result;
+}
+
+struct ObsRecording {
+    std::wstring path;
+    std::streamoff consumed = 0;
+    ULONGLONG processStarted = 0;
+    bool recording = false;
+
+    bool read(ULONGLONG started) {
+        if (!started) {
+            *this = {};
+            return false;
+        }
+        wchar_t roaming[MAX_PATH]{};
+        const auto length = GetEnvironmentVariableW(L"APPDATA", roaming, static_cast<DWORD>(std::size(roaming)));
+        if (!length || length >= std::size(roaming)) return false;
+        const std::wstring directory = std::wstring(roaming) + L"\\obs-studio\\logs\\";
+        WIN32_FIND_DATAW data{};
+        const auto entries = FindFirstFileW((directory + L"*.txt").c_str(), &data);
+        if (entries == INVALID_HANDLE_VALUE) return false;
+        std::wstring latest;
+        ULONGLONG newest = 0;
+        do {
+            if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            const auto created = (static_cast<ULONGLONG>(data.ftCreationTime.dwHighDateTime) << 32) |
+                data.ftCreationTime.dwLowDateTime;
+            if (created < started || created <= newest) continue;
+            latest = directory + data.cFileName;
+            newest = created;
+        } while (FindNextFileW(entries, &data));
+        FindClose(entries);
+        if (latest.empty()) return false;
+        return readLog(std::move(latest), started);
+    }
+
+    bool readLog(std::wstring latest, ULONGLONG started) {
+        std::ifstream log{std::filesystem::path(latest), std::ios::binary | std::ios::ate};
+        if (!log) return false;
+        const auto size = static_cast<std::streamoff>(log.tellg());
+        if (size < 0) return false;
+        const bool continuing = latest == path && started == processStarted && size >= consumed;
+        auto offset = continuing ? consumed : 0;
+        bool active = continuing && recording;
+        log.seekg(offset);
+        std::string line;
+        while (std::getline(log, line)) {
+            if (log.eof()) break;
+            const auto message = std::string_view(line).substr(std::min<size_t>(line.size(), 14));
+            if (message.starts_with("==== Recording Start ")) active = true;
+            if (message.starts_with("==== Recording Stop ") || message.starts_with("==== Shutting down ")) active = false;
+            offset = static_cast<std::streamoff>(log.tellg());
+        }
+        if (log.bad()) return false;
+        path = std::move(latest);
+        consumed = offset;
+        processStarted = started;
+        recording = active;
+        return recording;
+    }
+};
 
 // The executable's FileDescription ("Brave Browser"), or its file name without ".exe".
 std::wstring appDescription(std::wstring const& path) {
@@ -448,6 +557,7 @@ CaptureActivity readCaptureActivity() {
 }
 
 struct DesktopMonitor::State {
+    ObsRecording obs;
     HWND window = nullptr;
     HWINEVENTHOOK foreground = nullptr;
     HANDLE stop = nullptr;
@@ -519,6 +629,9 @@ CaptureActivity DesktopMonitor::captureActivity() const {
             activity.camera = processLabel(pid, L"Camera in use");
         }
     }
+    auto screen = screenCaptureWindows();
+    activity.recording = state_->obs.read(screen.obsStarted);
+    activity.screen = activity.recording ? L"OBS Studio" : std::move(screen.sharing);
     return activity;
 }
 

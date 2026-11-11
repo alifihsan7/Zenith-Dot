@@ -33,8 +33,6 @@ constexpr UINT_PTR networkTimer = 6;
 static_assert(clipboardTimer != MediaMonitor::artworkTimer);
 constexpr UINT clipboardRetryInterval = 40;
 constexpr unsigned clipboardRetryLimit = 25;
-constexpr unsigned microphoneColor = 0xff9f0a;
-constexpr unsigned cameraColor = 0x30d158;
 
 enum Menu { previousTrack = 1, togglePlayback, nextTrack, toggleVisibility, openDropZone, openSettings, exitApp };
 constexpr MediaCommand controls[] = {MediaCommand::previous, MediaCommand::toggle, MediaCommand::next};
@@ -96,7 +94,6 @@ private:
     DesktopMonitor desktop_;
     Notifications notifications_;
     BluetoothMonitor bluetooth_;
-    CaptureActivity capture_;
     SystemMonitor system_;
     NetworkStatus network_;
     std::optional<bool> lastOnline_;
@@ -442,19 +439,9 @@ void App::applyVisibility() {
 
 void App::refreshCapture(bool announce) {
     auto activity = desktop_.captureActivity();
-    island_.setCaptureColors(settings_.showMicrophoneIndicator && !activity.microphone.empty() ? std::optional(microphoneColor) : std::nullopt,
-                             settings_.showCameraIndicator && !activity.camera.empty() ? std::optional(cameraColor) : std::nullopt);
-    if (activity == capture_) return;
-    if (announce) {
-        if (capture_.microphone != activity.microphone && !activity.microphone.empty()) {
-            island_.notify({IslandAlert::Kind::microphone, L"Microphone", activity.microphone, microphoneColor, 2});
-        }
-        if (capture_.camera != activity.camera && !activity.camera.empty()) {
-            island_.notify({IslandAlert::Kind::camera, L"Camera", activity.camera, cameraColor, 2});
-        }
-    }
-    capture_ = std::move(activity);
-    if (announce) frame();
+    if (!settings_.showMicrophoneIndicator) activity.microphone.clear();
+    if (!settings_.showCameraIndicator) activity.camera.clear();
+    if (island_.setCaptureActivity(activity, announce) && announce) frame();
 }
 
 void App::announceBluetooth() {

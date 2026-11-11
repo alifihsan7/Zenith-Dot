@@ -44,7 +44,8 @@ struct IslandCommand {
 // A short notice that splits off the pill as a liquid bubble (or shows inside the open panel).
 struct IslandAlert {
     enum class Kind { copy, charging, battery, lowBattery, focusDone, breakDone, timerDone,
-                      microphone, camera, capsLock, numLock, bluetooth, bluetoothAudio, prayer, notification, connection };
+                      microphone, camera, screenCapture, capsLock, numLock, bluetooth, bluetoothAudio, prayer,
+                      notification, connection };
     Kind kind = Kind::copy;
     std::wstring title;
     std::wstring value;
@@ -82,7 +83,7 @@ public:
     bool alertsQuiet() const;
     bool setWindowsNotificationsQuiet(std::optional<bool> quiet);
     void setSuppressed(bool suppressed);
-    void setCaptureColors(std::optional<unsigned> microphone, std::optional<unsigned> camera);
+    bool setCaptureActivity(CaptureActivity const& activity, bool announce);
     void setLyrics(LyricsView const& lyrics);
     void setScratchpad(ScratchpadView const& scratchpad);
     void setScratchEditing(bool editing);
@@ -160,7 +161,18 @@ private:
     float pillTitleOpacity(Clock::time_point now) const;
     D2D1_SIZE_F pillSize(Clock::time_point now) const;
     float captureWidth(Clock::time_point now) const;
-    float captureProgress(Clock::time_point now, float from, bool active) const;
+    struct CaptureIndicator {
+        IslandAlert::Kind kind;
+        unsigned color;
+        std::wstring app;
+        bool shown = false;
+        float from = 0;
+        Clock::time_point start{};
+    };
+    void updateCaptureIndicators(Clock::time_point now);
+    float captureProgress(Clock::time_point now, CaptureIndicator const& indicator) const;
+    std::array<float, 3> captureAmounts(Clock::time_point now) const;
+    CaptureIndicator const* captureHandoff() const;
     D2D1_RECT_F compactShape(Clock::time_point now, float amount) const;
     std::optional<D2D1_RECT_F> mediaPrivacyShape(Clock::time_point now, D2D1_RECT_F anchor) const;
     float visibility(Clock::time_point now) const;
@@ -217,7 +229,8 @@ private:
     void drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record);
     void drawScratchpad(D2D1_RECT_F panel, bool record);
     void drawDropZone(D2D1_RECT_F panel, bool record);
-    void drawCaptureIndicators(D2D1_POINT_2F right, float mic, float camera);
+    void drawCaptureIndicators(D2D1_POINT_2F right, std::array<float, 3> const& amounts);
+    void drawCaptureHandoff(Clock::time_point now, float amount);
     void drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F shape);
     void drawMediaPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity);
     void drawSystem(D2D1_RECT_F panel, bool record);
@@ -273,11 +286,11 @@ private:
     bool suppressed_ = false;
     float visibilityFrom_ = 1;
     Clock::time_point visibilityStart_{};
-    std::optional<unsigned> microphoneColor_;
-    std::optional<unsigned> cameraColor_;
-    float microphoneFrom_ = 0;
-    float cameraFrom_ = 0;
-    Clock::time_point captureStart_{};
+    std::array<CaptureIndicator, 3> captureIndicators_{{
+        {IslandAlert::Kind::screenCapture, 0xbdabff, {}},
+        {IslandAlert::Kind::camera, 0x30d158, {}},
+        {IslandAlert::Kind::microphone, 0xff9f0a, {}},
+    }};
 
     // Cover colours cross-fade from the *From_ values to theme_, starting at themeStart_.
     CoverTheme theme_;

@@ -58,14 +58,12 @@ SettingsExample::SettingsExample(SettingsTest test, Feature feature, Settings co
         break;
     case SettingsTest::camera:
         if (settings.showCameraIndicator) {
-            island_.setCaptureColors({}, 0x30d158);
-            island_.notify({IslandAlert::Kind::camera, L"Camera", L"Test", 0x30d158});
+            island_.setCaptureActivity({{}, L"Test", {}, false}, true);
         }
         break;
     case SettingsTest::microphone:
         if (settings.showMicrophoneIndicator) {
-            island_.setCaptureColors(0xff9f0a, {});
-            island_.notify({IslandAlert::Kind::microphone, L"Microphone", L"Test", 0xff9f0a});
+            island_.setCaptureActivity({L"Test", {}, {}, false}, true);
         }
         break;
     case SettingsTest::copiedText:

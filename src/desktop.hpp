@@ -12,7 +12,8 @@ namespace zenith {
 struct CaptureActivity {
     std::wstring microphone;
     std::wstring camera;
-    bool operator==(CaptureActivity const&) const = default;
+    std::wstring screen;
+    bool recording = false;
 };
 
 struct AudioOutput {
