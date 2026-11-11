@@ -14,7 +14,7 @@ Scroll over the compact pill or anywhere in the open panel to move one tab at a 
 
 Short notices split off the pill as a liquid bubble, or grow out of the dot: plugging in or unplugging the charger, low battery at 20% and 10%, the end of a Focus session, and copying something (with a short preview). While the panel is open they show as a row at its top instead. Zenith ignores clipboard content marked as private by the source app.
 
-Open **Zenith Dot Settings** from the Start menu or choose **Settings** from the tray. From a portable build, run `ZenithDot.exe --settings`. **Appearance** controls the island's scale, minimum media pill width, accent, motion, and fullscreen behavior. **Features** lets you show, hide, and reorder the five feature tabs. Now Playing controls the waveform, pill lyrics, and compact pause delay. Timers controls the default Focus and Break durations. Drop Zone controls what is captured from the clipboard.
+Open **Zenith Dot Settings** from the Start menu or choose **Settings** from the tray. From a portable build, run `ZenithDot.exe --settings`. **Appearance** controls the island's scale, minimum media pill width, accent, and fullscreen behavior. Island transitions follow Windows’ animation accessibility setting. **Features** lets you show, hide, and reorder the five feature tabs. Now Playing controls the waveform, pill lyrics, and compact pause delay. Timers controls the default Focus and Break durations. Drop Zone controls what is captured from the clipboard.
 
 Click **Test** beside an appearance or feature setting to see a sample in the island at the top of the screen. The island returns to its live state automatically. Clipboard and device indicator tests use sample data.
 
@@ -28,11 +28,27 @@ Zenith Dot hides during fullscreen on the primary display and resumes when you l
 
 When a paired Bluetooth device connects or disconnects, a notice shows its name. Headsets and speakers use a headphone icon, and other devices use the Bluetooth mark. If the device reports its battery to Windows, the notice shows the level, in orange at 20% or below and red at 10% or below. Devices already connected when Zenith Dot starts are not announced.
 
-System volume and brightness changes show a meter that updates in place as you adjust the level. Brightness requires a display that publishes Windows WMI brightness events. The Windows volume and brightness flyouts can appear alongside Zenith Dot.
+Windows shows the volume and brightness flyouts. Zenith’s System panel provides audio output and per-app volume controls.
 
 The accent colour follows the current cover. The tray menu has media controls, **Hide Zenith Dot**, and **Exit**. Hiding leaves playback running. Choose **Show Zenith Dot** from the tray to bring it back.
 
-Zenith bubbles, including the live clipboard preview, still appear when Windows Do Not Disturb is on. System shows the current Windows notification mode. Windows builds without the notification-mode API show **Notification status unavailable** in System.
+**Settings → Notifications** controls Do Not Disturb for Zenith alerts, including clipboard and timer bubbles. **Follow Windows** uses the current Windows notification mode, **On** always silences Zenith alerts, and **Off** (the default) leaves Zenith alerts enabled. The camera and microphone activity indicators remain visible when enabled.
+
+Choose Jakarta, Makassar, or Jayapura under **Prayer timetable city** to show the five daily prayer times in System. Zenith calculates estimated times offline using the selected city’s time zone. Local official timetables can differ. Turn off **Prayer reminders** to keep the timetable visible without showing reminders.
+
+### Notifications from Windows apps
+
+The MSIX build can show the app name and notification title for incoming Windows toasts. The user enables it with **Settings → Notifications → Connect Windows apps** and grants notification access in Windows. Zenith keeps the preview in memory while it is shown.
+
+To build the optional x64 MSIX using the Windows SDK:
+
+```powershell
+.\scripts\package-msix.ps1 -Executable .\out\Release\ZenithDot.exe -Output .\out\ZenithDot.msix -Publisher 'CN=Your signing publisher'
+```
+
+Sign the package with a trusted certificate whose subject matches the publisher, then install the signed MSIX with `Add-AppxPackage`. Exit the portable instance before opening the packaged app from Start. The portable executable supports Zenith reminders and Do Not Disturb.
+
+For local Windows 11 testing, pass `-UnsignedTest` or download the MSIX test artifact from GitHub Actions. Install that package from PowerShell with `Add-AppxPackage -Path .\ZenithDot-test.msix -AllowUnsigned`. Windows may require an elevated PowerShell session.
 
 The app uses C++20, Win32, Direct2D, DirectWrite, and C++/WinRT. It runs as one desktop process. The frame timer stops when the dot settles. Windows media events drive session updates, and the app reads power status every ten seconds and when Windows reports a change.
 
@@ -84,7 +100,7 @@ Temporary connection or service failures are retried automatically. If the looku
 | `src/lyrics.*` | On-demand lookup and parsing for synced lyrics |
 | `src/power.*` | Native battery and AC telemetry |
 | `src/system.*` | CPU and memory use for the System screen |
-| `src/desktop.*` | Fullscreen detection, capture indicators, and Windows volume and brightness events |
+| `src/desktop.*` | Fullscreen detection, capture indicators, and audio device monitoring |
 | `src/bluetooth.*` | Paired Bluetooth connection changes and battery levels |
 | `src/scratchpad.*` | Native text editor, focus handoff, and local note storage |
 | `src/browser_tabs.*` and `browser/` | Optional Chrome, Edge, and Brave tab detection and native messaging |
@@ -103,7 +119,7 @@ Temporary connection or service failures are retried automatically. If the looku
 - Open Timers, adjust Focus and Break, then switch to Quick Timer while Focus is running and start a second countdown. Check each timer's pill, pause/resume, and completion bubble. Close and reopen the panel and check that the last timer view returns.
 - Play audio in two apps and open System. Drag one app's slider and compare it with the Windows volume mixer, then click its icon to mute and unmute it. With more than three apps, scroll the list and check the range label.
 - Turn on **Auto** in Timers, choose Break, set it to 1 minute, and start it. When it ends, check the **Break done** notice and that Focus starts with **Focus 2/4** in the pill. Restart Zenith Dot and confirm Auto is still on.
-- Open System and switch the Windows default audio output. Check the displayed name and the Sound Settings link. Turn on Windows Do Not Disturb, check the notification row, then copy ordinary text and verify that the **Copied** bubble still appears.
+- Open System and switch the Windows default audio output. Check the displayed name and the Sound Settings link. Enable **Follow Windows**, turn on Windows Do Not Disturb, and verify the **Copied** bubble is suppressed. Switch Zenith Do Not Disturb to **Off** and copy again.
 - Open Scratchpad, click the pin icon, and type a note. Switch to another app and confirm Scratchpad stays visible. Switch to Focus and System and check that the pin stays on. Unpin, close the panel, and hover again to check that System returns. Repeat with Lyrics open and manually scrolled. Reopen the editor, press Esc, and check that focus returns to the previous app. Restart Zenith Dot and confirm the note reloads.
 - While music plays, choose **Hide Zenith Dot** from the tray. Confirm playback continues, then restore the island with **Show Zenith Dot**.
 - With the browser extension enabled, play two tabs in the same browser and select each numbered logo. Verify that play/pause and seek affect the selected tab.
@@ -119,6 +135,6 @@ Temporary connection or service failures are retried automatically. If the looku
 - Enter and leave fullscreen in a video player on the primary display. The island should fade out, close its panel, and return after you exit fullscreen. Notices raised during fullscreen should expire without appearing afterwards.
 - Start microphone and camera capture in an app. Check that both icons appear. With capture still open, mute the microphone in Windows and verify that the orange icon disappears and the green one remains. Unmute and verify that the orange icon returns. With two active microphones, muting one should leave the icon visible.
 - Connect paired Bluetooth earbuds. After about two seconds a notice should show the device name with its battery level, or **Connected** if it reports none. Disconnect them and check the grey **Disconnected** notice. Restart Zenith Dot with the earbuds connected and confirm nothing is announced.
-- Change volume repeatedly, then mute. Check that one volume notice updates in place. On a display that publishes Windows brightness events, repeat with brightness.
+- Change volume and brightness with the keyboard and check that Windows shows the flyouts.
 - Install, sign out, sign back in, and confirm there is one Zenith Dot process. Launch it again from Start and check that the process count stays at one.
 - Compare private working set after a minute at idle and during playback. For an Electron baseline, include its renderer and helper processes.

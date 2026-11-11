@@ -33,6 +33,7 @@ constexpr float mediaPanelWidth = 344;
 // System: system info on the left, sound on the right.
 constexpr float systemPanelWidth = 530;
 constexpr float systemHeight = 228;
+constexpr float prayerRowHeight = 60;
 constexpr float systemLeftWidth = 196;
 constexpr float systemRightGap = 29;      // gap, divider, gap
 constexpr float systemRightWidth = systemPanelWidth - 28 - systemLeftWidth - systemRightGap;
@@ -52,7 +53,6 @@ constexpr float padX = 14;
 constexpr float padBottom = 8;
 constexpr float innerWidth = panelWidth - 2 * padX;
 constexpr float navHeight = 31;
-constexpr float shadowReach = 30;
 constexpr float keepOpenMargin = 28;
 constexpr float pi = 3.14159265f;
 
@@ -523,6 +523,20 @@ void Island::setPower(PowerState const& power) {
     power_ = power;
 }
 
+void Island::setPrayerSchedule(std::optional<PrayerSchedule> const& schedule) {
+    if (prayerSchedule_ == schedule) return;
+    const auto now = Clock::now();
+    const float before = panelHeight(now);
+    const bool resize = prayerSchedule_.has_value() != schedule.has_value();
+    prayerSchedule_ = schedule;
+    if (open_ && screen_ == Screen::system && resize) {
+        heightFrom_ = before;
+        keepHeight_ = std::max(keepHeight_, before);
+        screenFrom_ = screen_;
+        screenStart_ = animate_ ? now : Clock::time_point{};
+    }
+}
+
 void Island::setSystem(SystemStats const& stats) {
     system_ = stats;
 }
@@ -544,6 +558,10 @@ std::optional<IslandCommand> Island::takeLiveCommand() {
 bool Island::setWindowsNotificationsQuiet(std::optional<bool> quiet) {
     if (windowsNotificationsQuiet_ == quiet) return false;
     windowsNotificationsQuiet_ = quiet;
+    if (alertsQuiet()) {
+        queued_.reset();
+        if (alert_) finishAlert(Clock::now());
+    }
     return true;
 }
 
@@ -723,7 +741,7 @@ float Island::screenHeight(Screen screen) const {
     case Screen::scratch: return 216.0f;
     case Screen::drop: return dropItems_.empty() ? dropEmptyHeight :
         dropFilledBaseHeight + dropRowHeight * static_cast<float>(std::min(dropItems_.size(), visibleDropRows));
-    case Screen::system: return systemHeight;
+    case Screen::system: return systemHeight + (prayerSchedule_ ? prayerRowHeight : 0);
     }
     return 146.0f;
 }
@@ -1952,16 +1970,6 @@ void Island::drawIsland(Clock::time_point now, float value, float amount, bool m
         target_->FillRectangle(hit, ink(D2D1::ColorF(0, 0, 0, 1.0f / 255)));
         addTarget(hit, Hit::pill);
     }
-    const float shadow = lin(0.6f, 1, value) * easeOut(value);
-    if (shadow > 0) {
-        for (int ring = 0; ring < 8; ++ring) {
-            const float spread = -2.0f + ring * 3.0f;
-            const auto rect = grow(box(clip.left, clip.top + 8, clip.right - clip.left, clip.bottom - clip.top),
-                                   spread, spread);
-            target_->FillRoundedRectangle(rounded(rect, radius + spread), ink(D2D1::ColorF(0, 0, 0, 0.045f * shadow)));
-        }
-    }
-
     fillShell(rounded(clip, radius));
     target_->DrawRoundedRectangle(rounded(grow(clip, -0.5f, -0.5f), radius - 0.5f),
                                   ink(white(std::lerp(0.13f, 0.12f, value))), 1);
@@ -2481,6 +2489,19 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
         *windowsNotificationsQuiet_ ? L"Do Not Disturb on" : L"Do Not Disturb off";
     drawButton(box(x, y + systemContentBottom - 25, left, 25), notificationLabel, Hit::notificationSettings, record);
 
+    if (prayerSchedule_) {
+        const auto& schedule = *prayerSchedule_;
+        const float prayerY = y + systemContentBottom + 5;
+        constexpr float column = (systemPanelWidth - 2 * padX) / prayerNames.size();
+        const auto heading = std::wstring(L"Prayer times · ") + schedule.city;
+        text(heading, bodyFont_.get(), box(x, prayerY, 220, 16), rgb(inkColor));
+        for (size_t i = 0; i < prayerNames.size(); ++i) {
+            const float start = x + column * static_cast<float>(i);
+            text(prayerNames[i], bodyFont_.get(), box(start, prayerY + 18, column, 15), rgb(mutedColor));
+            text(prayerTimeText(schedule.times[i]), bodyFont_.get(), box(start, prayerY + 34, column, 17), rgb(inkColor));
+        }
+    }
+
     const float divider = x + left + systemRightGap / 2;
     target_->FillRectangle(box(divider, y + 16, 1, systemContentBottom - 16), ink(white(0.08f)));
 
@@ -2637,7 +2658,13 @@ void Island::drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float captu
 
 // ---- Alerts --------------------------------------------------------------------------------------
 
+bool Island::alertsQuiet() const {
+    return preferences_.quietMode == QuietMode::on ||
+        (preferences_.quietMode == QuietMode::followWindows && windowsNotificationsQuiet_.value_or(false));
+}
+
 bool Island::alertAllowed(IslandAlert::Kind kind) const {
+    if (alertsQuiet()) return false;
     switch (kind) {
     case IslandAlert::Kind::copy: return preferences_.showClipboardBubble;
     case IslandAlert::Kind::camera: return preferences_.showCameraIndicator;
@@ -2653,7 +2680,7 @@ void Island::notify(IslandAlert alert) {
     if (suppressed_ || !alertAllowed(alert.kind)) return;
     const auto now = Clock::now();
     prepareText();
-    const bool replacesSameKind = alert.kind == IslandAlert::Kind::copy || alert.meter ||
+    const bool replacesSameKind = alert.kind == IslandAlert::Kind::copy ||
                                   alert.kind == IslandAlert::Kind::capsLock || alert.kind == IslandAlert::Kind::numLock;
     if (alert_ && alert_->kind == alert.kind && replacesSameKind) {
         if (alertInline_) {
@@ -2689,7 +2716,7 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
     if (!alert.title.empty()) width += 7 + measure(alert.title, alertTitleFont_.get());
     if (!alert.value.empty()) width += 7 + measure(alert.value, alertValueFont_.get());
     if (alert.battery) width += batteryCellWidth;
-    alertWidth_ = alert.meter ? 168.0f : std::clamp(width + 1, 52.0f, maxBubble);
+    alertWidth_ = std::clamp(width + 1, 52.0f, maxBubble);
     alert_ = std::move(alert);
     if (update) return;
     const bool closing = !open_ && panelValue(now) > 0;
@@ -2836,7 +2863,7 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity
     const float end = area.right - 12;
     // A long title (a device name) gives way so the value after it stays readable.
     float valueWidth = 0;
-    if (!alert_->meter && !alert_->value.empty()) {
+    if (!alert_->value.empty()) {
         valueWidth = 7 + measure(alert_->value, alertValueFont_.get()) + (alert_->battery ? batteryCellWidth : 0);
     }
     if (!alert_->title.empty() && end > x) {
@@ -2846,9 +2873,7 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity
              withAlpha(rgb(inkColor), copyOpacity));
         x += titleWidth + 6;
     }
-    if (alert_->meter) {
-        drawAlertMeter(x, end, middle, copyOpacity);
-    } else if (!alert_->value.empty() && end > x) {
+    if (!alert_->value.empty() && end > x) {
         auto color = withAlpha(rgb(mutedColor), copyOpacity);
         if (alert_->battery && end - x > batteryCellWidth) {
             color = withAlpha(rgb(batteryColor(*alert_->battery)), copyOpacity);
@@ -2913,19 +2938,6 @@ void Island::drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_CO
         target_->DrawGeometry(lens.finish().get(), ink(color), 1.5f, roundStroke_.get());
         break;
     }
-    case IslandAlert::Kind::volume: {
-        fillPolygon({pt(1.5f, 6), pt(4, 6), pt(7.5f, 3), pt(7.5f, 13), pt(4, 10), pt(1.5f, 10)}, color);
-        if (alert_->value == L"Muted") {
-            target_->DrawLine(pt(10.5f, 6), pt(14.5f, 10), ink(color), 1.5f, roundStroke_.get());
-            target_->DrawLine(pt(14.5f, 6), pt(10.5f, 10), ink(color), 1.5f, roundStroke_.get());
-        } else {
-            PathBuilder waves(graphics_.get());
-            waves.move(pt(10, 5.5f), false).arc(pt(10, 10.5f), 3.5f, false, true);
-            waves.move(pt(12.5f, 3.5f), false).arc(pt(12.5f, 12.5f), 6.5f, false, true);
-            target_->DrawGeometry(waves.finish().get(), ink(color), 1.5f, roundStroke_.get());
-        }
-        break;
-    }
     case IslandAlert::Kind::bluetoothAudio: {
         PathBuilder band(graphics_.get());
         band.move(pt(3, 10), false).line(pt(3, 8)).arc(pt(13, 8), 5, false, true).line(pt(13, 10));
@@ -2941,30 +2953,23 @@ void Island::drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_CO
         target_->DrawGeometry(rune.finish().get(), ink(color), 1.5f, roundStroke_.get());
         break;
     }
-    case IslandAlert::Kind::brightness:
-        target_->DrawEllipse(D2D1::Ellipse(pt(8, 8), 3, 3), ink(color), 1.4f);
-        for (int ray = 0; ray < 8; ++ray) {
-            const float angle = ray * 0.78539816f;
-            const float x = std::cos(angle), y = std::sin(angle);
-            target_->DrawLine(pt(8 + 5 * x, 8 + 5 * y), pt(8 + 6.5f * x, 8 + 6.5f * y),
-                              ink(color), 1.4f, roundStroke_.get());
-        }
+    case IslandAlert::Kind::prayer: {
+        PathBuilder crescent(graphics_.get());
+        crescent.move(pt(10.5f, 2), false).arc(pt(13.5f, 11), 6.2f, true, false)
+            .arc(pt(10.5f, 2), 5.4f, false, true);
+        target_->DrawGeometry(crescent.finish().get(), ink(color), 1.5f, roundStroke_.get());
         break;
     }
-    target_->SetTransform(base_);
-}
-
-void Island::drawAlertMeter(float left, float right, float middle, float opacity) {
-    const float labelWidth = measure(alert_->value, alertValueFont_.get()) + 1;
-    const float width = right - left - labelWidth - 8;
-    if (width <= 0) return;
-    target_->FillRoundedRectangle(rounded(box(left, middle - 2, width, 4), 2), ink(white(0.16f * opacity)));
-    const float fill = width * *alert_->meter / 100;
-    if (fill > 0) {
-        target_->FillRoundedRectangle(rounded(box(left, middle - 2, fill, 4), 2), ink(withAlpha(accent_, opacity)));
+    case IslandAlert::Kind::notification: {
+        PathBuilder bell(graphics_.get());
+        bell.move(pt(2, 11.5f), false).line(pt(4, 9)).line(pt(4, 6))
+            .arc(pt(12, 6), 4, false, true).line(pt(12, 9)).line(pt(14, 11.5f)).line(pt(2, 11.5f));
+        target_->DrawGeometry(bell.finish().get(), ink(color), 1.5f, roundStroke_.get());
+        target_->FillEllipse(D2D1::Ellipse(pt(8, 14), 1, 1), ink(color));
+        break;
     }
-    text(alert_->value, alertValueFont_.get(), box(right - labelWidth, middle - 10, labelWidth, 20),
-         withAlpha(rgb(mutedColor), opacity));
+    }
+    target_->SetTransform(base_);
 }
 
 void Island::drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color) {
@@ -2979,10 +2984,6 @@ void Island::drawBatteryCell(float left, float middle, unsigned level, D2D1_COLO
 void Island::drawInlineAlert(D2D1_RECT_F panel) {
     const float y = panel.top + padTop;
     drawAlertIcon(alert_->kind, pt(panel.left + padX, y), alert_->color ? rgb(*alert_->color) : accent_);
-    if (alert_->meter) {
-        drawAlertMeter(panel.left + padX + 21, panel.right - padX, y + 7.5f, 1);
-        return;
-    }
     auto line = alert_->title;
     if (!line.empty() && !alert_->value.empty()) line += L" ";
     line += alert_->value;
@@ -3001,7 +3002,7 @@ void Island::draw(HWND window) {
     winrt::check_bool(GetMonitorInfoW(monitor, &monitorInfo));
     const auto work = monitorInfo.rcWork;
     const float workWidth = (work.right - work.left) / scale_;
-    lyricsWidth_ = std::clamp(workWidth - mediaPanelWidth - 2 * shadowReach,
+    lyricsWidth_ = std::clamp(workWidth - mediaPanelWidth - 16.0f,
                               130.0f, maxLyricsWidth);
     const float opacity = visibility(now);
     anchor_ = {work.left + (work.right - work.left) / 2, work.top - std::lround((1 - opacity) * 14 * scale_)};
@@ -3021,7 +3022,7 @@ void Island::draw(HWND window) {
     // The surface only covers what is drawn this frame.
     const auto compact = compactShape(now, amount);
     auto bounds = unite(grow(compact, 2, 2), compactHit(compact, amount));
-    if (panelVisible) bounds = unite(bounds, grow(panelRect(now), shadowReach, shadowReach));
+    if (panelVisible) bounds = unite(bounds, grow(panelRect(now), 2, 2));
     if (bubbleShowing()) {
         const auto size = pillSize(now);
         const float height = amount >= 1 ? size.height : pillHeight;

@@ -40,8 +40,6 @@ public:
     static constexpr UINT foregroundChanged = WM_APP + 4;
     static constexpr UINT captureChanged = WM_APP + 5;
     static constexpr UINT audioDeviceChanged = WM_APP + 6;
-    static constexpr UINT volumeChanged = WM_APP + 7;
-    static constexpr UINT brightnessChanged = WM_APP + 8;
     static constexpr UINT notificationModeChanged = WM_APP + 10;
 
     DesktopMonitor();
@@ -56,7 +54,6 @@ public:
     bool setAppVolume(std::wstring const& id, std::optional<float> volume, std::optional<bool> muted);
     CaptureActivity captureActivity() const;
     std::optional<bool> notificationsQuiet() const;
-    bool isCurrentVolume(LPARAM generation) const;
 
 private:
     struct State;

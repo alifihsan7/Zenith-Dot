@@ -23,7 +23,13 @@ int runSettingsWindow(HINSTANCE instance);
 enum class Feature : unsigned { media, timers, scratch, drop, system };
 inline constexpr std::array featureOrder{Feature::media, Feature::timers, Feature::scratch, Feature::drop, Feature::system};
 
+enum class QuietMode : unsigned { off, followWindows, on };
+
 struct Settings {
+    QuietMode quietMode = QuietMode::off;
+    unsigned prayerCity = 0;
+    bool prayerReminders = true;
+    bool showAppNotifications = false;
     bool autoAddText = false;
     bool autoAddScreenshots = true;
     bool showClipboardPreviews = true;
@@ -31,7 +37,6 @@ struct Settings {
     bool showCameraIndicator = true;
     bool showMicrophoneIndicator = true;
     bool autoCycle = false;   // Focus and Break follow each other automatically
-    bool animateIsland = true;
     bool hideInFullscreen = true;
     bool fixedPillMinimum = false;
     unsigned islandSize = 1;
@@ -59,6 +64,7 @@ struct Settings {
     bool saveIsland() const;
     bool saveFeatures() const;
     bool saveAccent() const;
+    bool saveNotifications() const;
 };
 
 std::wstring startupShortcut();

@@ -10,7 +10,6 @@
 #include <oleauto.h>
 #include <shellapi.h>
 #include <shobjidl.h>
-#include <wbemidl.h>
 #include <mmreg.h>
 #include <winver.h>
 #include <initguid.h>
@@ -327,95 +326,7 @@ private:
     HWND window_;
 };
 
-struct VolumeNotifications : winrt::implements<VolumeNotifications, IAudioEndpointVolumeCallback> {
-    VolumeNotifications(HWND window, LPARAM generation) : window_(window), generation_(generation) {}
-
-    HRESULT STDMETHODCALLTYPE OnNotify(PAUDIO_VOLUME_NOTIFICATION_DATA data) noexcept override {
-        if (!data || !std::isfinite(data->fMasterVolume)) return S_OK;
-        const auto percent = static_cast<unsigned>(std::lround(std::clamp(data->fMasterVolume, 0.0f, 1.0f) * 100));
-        const auto volume = percent | (data->bMuted ? 0x100u : 0u);
-        PostMessageW(window_, DesktopMonitor::volumeChanged, volume, generation_);
-        return S_OK;
-    }
-
-private:
-    HWND window_;
-    LPARAM generation_;
-};
-
-using Bstr = std::unique_ptr<OLECHAR, decltype(&SysFreeString)>;
-
-Bstr bstr(wchar_t const* value) {
-    return {SysAllocString(value), SysFreeString};
-}
-
-winrt::com_ptr<IWbemServices> brightnessService() {
-    winrt::com_ptr<IWbemLocator> locator;
-    if (FAILED(CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(locator.put())))) return {};
-    const auto name = bstr(L"ROOT\\WMI");
-    if (!name) return {};
-
-    winrt::com_ptr<IWbemServices> service;
-    if (FAILED(locator->ConnectServer(name.get(), nullptr, nullptr, nullptr, WBEM_FLAG_CONNECT_USE_MAX_WAIT,
-                                      nullptr, nullptr, service.put()))) return {};
-    if (FAILED(CoSetProxyBlanket(service.get(), RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
-                                RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE))) return {};
-    return service;
-}
-
-winrt::com_ptr<IEnumWbemClassObject> subscribeBrightness(IWbemServices& service) {
-    const auto language = bstr(L"WQL");
-    const auto query = bstr(L"SELECT Brightness FROM WmiMonitorBrightnessEvent WHERE Active = TRUE");
-    if (!language || !query) return {};
-    winrt::com_ptr<IEnumWbemClassObject> events;
-    if (FAILED(service.ExecNotificationQuery(language.get(), query.get(),
-                 WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, nullptr, events.put()))) return {};
-    return events;
-}
-
-std::optional<unsigned> brightnessValue(IWbemClassObject& object, wchar_t const* property) {
-    std::optional<unsigned> level;
-    VARIANT value{};
-    if (SUCCEEDED(object.Get(property, 0, &value, nullptr, nullptr))) {
-        if (value.vt == VT_UI1 && value.bVal <= 100) level = value.bVal;
-        if (value.vt == VT_I4 && value.lVal >= 0 && value.lVal <= 100) level = static_cast<unsigned>(value.lVal);
-    }
-    VariantClear(&value);
-    return level;
-}
-
-std::optional<unsigned> readBrightness(IWbemServices& service) {
-    const auto language = bstr(L"WQL");
-    const auto query = bstr(L"SELECT CurrentBrightness FROM WmiMonitorBrightness WHERE Active = TRUE");
-    if (!language || !query) return std::nullopt;
-    winrt::com_ptr<IEnumWbemClassObject> rows;
-    if (FAILED(service.ExecQuery(language.get(), query.get(), WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
-                                 nullptr, rows.put()))) return std::nullopt;
-    winrt::com_ptr<IWbemClassObject> row;
-    ULONG count = 0;
-    if (FAILED(rows->Next(250, 1, row.put(), &count)) || !count) return std::nullopt;
-    return brightnessValue(*row, L"CurrentBrightness");
-}
-
-std::optional<unsigned> nextBrightness(winrt::com_ptr<IEnumWbemClassObject>& events) {
-    std::optional<unsigned> level;
-    // Drain a burst so the UI sees the current level rather than replaying old key presses.
-    for (unsigned i = 0; i < 32; ++i) {
-        winrt::com_ptr<IWbemClassObject> event;
-        ULONG returned = 0;
-        const auto result = events->Next(WBEM_NO_WAIT, 1, event.put(), &returned);
-        if (FAILED(result) || result == WBEM_S_FALSE) {
-            events = nullptr;
-            break;
-        }
-        if (returned == 0) break;
-        if (const auto value = brightnessValue(*event, L"Brightness")) level = value;
-    }
-    return level;
-}
-
-void watchRegistryAndBrightness(HWND window, HANDLE stop) {
+void watchCaptureRegistry(HWND window, HANDLE stop) {
     RegistryKey key;
     RegOpenKeyExW(HKEY_CURRENT_USER, consentStore, 0, KEY_NOTIFY, &key.value);
     const auto changed = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -426,31 +337,15 @@ void watchRegistryAndBrightness(HWND window, HANDLE stop) {
     bool watching = arm();
     if (watching) PostMessageW(window, DesktopMonitor::captureChanged, 0, 0);
 
-    const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
-    auto service = com ? brightnessService() : nullptr;
-    auto brightness = service ? subscribeBrightness(*service) : nullptr;
     const HANDLE handles[]{stop, changed};
-    auto lastLevel = service ? readBrightness(*service) : std::nullopt;
-    bool polling = lastLevel.has_value();
     for (;;) {
-        const DWORD wait = brightness ? 250 : polling ? 1000 : INFINITE;
-        const auto signaled = WaitForMultipleObjects(watching ? 2 : 1, handles, FALSE, wait);
+        const auto signaled = WaitForMultipleObjects(watching ? 2 : 1, handles, FALSE, INFINITE);
         if (signaled == WAIT_OBJECT_0 || signaled == WAIT_FAILED) break;
         if (signaled == WAIT_OBJECT_0 + 1) {
             watching = arm();
             PostMessageW(window, DesktopMonitor::captureChanged, 0, 0);
         }
-        std::optional<unsigned> level;
-        if (brightness) level = nextBrightness(brightness);
-        else if (polling && signaled == WAIT_TIMEOUT) level = readBrightness(*service);
-        if (level && level != lastLevel) {
-            lastLevel = level;
-            PostMessageW(window, DesktopMonitor::brightnessChanged, *level, 0);
-        }
     }
-    brightness = nullptr;
-    service = nullptr;
-    if (com) CoUninitialize();
     if (key.value) RegCloseKey(std::exchange(key.value, nullptr));
     if (changed) CloseHandle(changed);
 }
@@ -559,8 +454,6 @@ struct DesktopMonitor::State {
     std::thread worker;
     winrt::com_ptr<IMMDeviceEnumerator> enumerator;
     winrt::com_ptr<IMMNotificationClient> devices;
-    winrt::com_ptr<IAudioEndpointVolume> endpoint;
-    winrt::com_ptr<IAudioEndpointVolumeCallback> volume;
     bool mediaFoundation = false;
     winrt::com_ptr<CameraActivity> cameraActivity;
     winrt::com_ptr<IMFSensorActivityMonitor> cameraMonitor;
@@ -568,7 +461,6 @@ struct DesktopMonitor::State {
     mutable std::map<std::wstring, std::wstring> appNames;   // executable path -> display name
     winrt::Windows::UI::Notifications::ToastNotificationManagerForUser notifications{nullptr};
     winrt::Windows::UI::Notifications::ToastNotificationManagerForUser::NotificationModeChanged_revoker notificationMode;
-    LPARAM generation = 0;
 };
 
 DesktopMonitor::DesktopMonitor() : state_(std::make_unique<State>()) {}
@@ -605,24 +497,16 @@ void DesktopMonitor::start(HWND window) {
     }
     state_->stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (state_->stop) {
-        state_->worker = std::thread(watchRegistryAndBrightness, window, state_->stop);
+        state_->worker = std::thread(watchCaptureRegistry, window, state_->stop);
     }
 }
 
 void DesktopMonitor::refreshAudioDevice() {
-    ++state_->generation;
-    if (state_->endpoint && state_->volume) state_->endpoint->UnregisterControlChangeNotify(state_->volume.get());
-    state_->volume = nullptr;
-    state_->endpoint = nullptr;
     state_->audioOutput.clear();
     if (!state_->enumerator) return;
     winrt::com_ptr<IMMDevice> device;
     if (FAILED(state_->enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, device.put()))) return;
     state_->audioOutput = deviceName(*device);
-    if (FAILED(device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_INPROC_SERVER, nullptr,
-                                state_->endpoint.put_void()))) return;
-    state_->volume = winrt::make<VolumeNotifications>(state_->window, state_->generation);
-    if (FAILED(state_->endpoint->RegisterControlChangeNotify(state_->volume.get()))) state_->volume = nullptr;
 }
 
 std::wstring const& DesktopMonitor::audioOutput() const { return state_->audioOutput; }
@@ -736,10 +620,6 @@ std::optional<bool> DesktopMonitor::notificationsQuiet() const {
     return std::nullopt;
 }
 
-bool DesktopMonitor::isCurrentVolume(LPARAM generation) const {
-    return state_->volume && generation == state_->generation;
-}
-
 void DesktopMonitor::stop() {
     if (state_->cameraMonitor) {
         state_->cameraMonitor->Stop();
@@ -753,10 +633,7 @@ void DesktopMonitor::stop() {
     if (state_->foreground) UnhookWinEvent(state_->foreground);
     state_->foreground = nullptr;
     if (foregroundListener == state_->window) foregroundListener = nullptr;
-    if (state_->endpoint && state_->volume) state_->endpoint->UnregisterControlChangeNotify(state_->volume.get());
     if (state_->enumerator && state_->devices) state_->enumerator->UnregisterEndpointNotificationCallback(state_->devices.get());
-    state_->volume = nullptr;
-    state_->endpoint = nullptr;
     state_->devices = nullptr;
     state_->enumerator = nullptr;
     if (state_->stop) {

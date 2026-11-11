@@ -7,6 +7,7 @@
 #include "countdown.hpp"
 #include "drop_zone.hpp"
 #include "power.hpp"
+#include "prayer.hpp"
 #include "system.hpp"
 #include "settings.hpp"
 
@@ -42,14 +43,13 @@ struct IslandCommand {
 // A short notice that splits off the pill as a liquid bubble (or shows inside the open panel).
 struct IslandAlert {
     enum class Kind { copy, charging, battery, lowBattery, focusDone, breakDone, timerDone,
-                      microphone, camera, volume, brightness, capsLock, numLock, bluetooth, bluetoothAudio };
+                      microphone, camera, capsLock, numLock, bluetooth, bluetoothAudio, prayer, notification };
     Kind kind = Kind::copy;
     std::wstring title;
     std::wstring value;
     std::optional<unsigned> color;   // icon colour (0xRRGGBB); the accent when empty
     int priority = 1;                // a waiting alert is replaced only by one of equal or higher priority
     std::chrono::milliseconds hold{1800};
-    std::optional<unsigned> meter = std::nullopt;
     std::optional<unsigned> battery = std::nullopt;   // drawn as a battery cell before value
 };
 
@@ -69,11 +69,13 @@ public:
     void setMedia(MediaState const& media);
     void setPower(PowerState const& power);
     void setSystem(SystemStats const& stats);
+    void setPrayerSchedule(std::optional<PrayerSchedule> const& schedule);
     void setAudioOutput(std::wstring const& output);
     void setAppVolumes(std::vector<AppVolume> apps);
     void setAutoCycle(bool enabled);
     // A command produced while dragging (an app volume slider), to apply before the button is released.
     std::optional<IslandCommand> takeLiveCommand();
+    bool alertsQuiet() const;
     bool setWindowsNotificationsQuiet(std::optional<bool> quiet);
     void setSuppressed(bool suppressed);
     void setCaptureColors(std::optional<unsigned> microphone, std::optional<unsigned> camera);
@@ -229,7 +231,6 @@ private:
     void drawSplit(Clock::time_point now, float amount);
     void drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity);
     void drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color);
-    void drawAlertMeter(float left, float right, float middle, float opacity);
     void drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color);
     void drawInlineAlert(D2D1_RECT_F panel);
     void fillPolygon(std::initializer_list<D2D1_POINT_2F> points, D2D1_COLOR_F color);
@@ -247,6 +248,7 @@ private:
     MediaState media_;
     PowerState power_;
     SystemStats system_;
+    std::optional<PrayerSchedule> prayerSchedule_;
     std::wstring audioOutput_;
     std::vector<AppVolume> appVolumes_;
     size_t appOffset_ = 0;

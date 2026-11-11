@@ -1,6 +1,7 @@
 #include "settings.hpp"
 #include "browser_tabs.hpp"
 #include "resource.h"
+#include "notifications.hpp"
 
 #include <commctrl.h>
 #include <commdlg.h>
@@ -32,7 +33,7 @@ constexpr COLORREF border = RGB(47, 57, 72);
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
 constexpr auto pageDuration = 180ms;
-constexpr auto toggleDuration = 160ms;
+constexpr auto toggleDuration = 180ms;
 constexpr UINT_PTR motionTimer = 1;
 
 void notifyOverlay() {
@@ -53,6 +54,7 @@ constexpr Page pages[]{
     {IDC_SETTINGS_DISPLAY, L"Appearance", L"Adjust the island's size, shape, and accent.", nullptr},
     {IDC_SETTINGS_FEATURES, L"Features", L"Choose what appears in the island and arrange its feature bar.", nullptr},
     {IDC_SETTINGS_PRIVACY, L"Privacy & Clipboard", L"Choose which clipboard and device indicators appear.", nullptr},
+    {IDC_SETTINGS_NOTIFICATIONS, L"Notifications", L"Manage island alerts and prayer reminders.", nullptr},
     {IDC_SETTINGS_ABOUT, L"About", L"Zenith Dot for Windows", nullptr},
 };
 
@@ -67,8 +69,8 @@ struct Option {
 
 constexpr Option options[]{
     {IDC_START_WITH_WINDOWS, IDC_SETTINGS_GENERAL, L"Launch Zenith Dot when you sign in.", nullptr, nullptr},
-    {IDC_ANIMATE_ISLAND, IDC_SETTINGS_DISPLAY, L"Animate pill and panel transitions when Windows allows motion.",
-        &Settings::animateIsland, &Settings::saveDisplay},
+    {IDC_PRAYER_REMINDERS, IDC_SETTINGS_NOTIFICATIONS, L"Show a bubble when it’s time to pray.",
+        &Settings::prayerReminders, &Settings::saveNotifications},
     {IDC_HIDE_FULLSCREEN, IDC_SETTINGS_DISPLAY, L"Hide the island over fullscreen apps and games.",
         &Settings::hideInFullscreen, &Settings::saveDisplay},
     {IDC_ADD_COPIED_TEXT, IDC_SETTINGS_FEATURES, L"Keep copied text in Drop Zone for this session.",
@@ -111,8 +113,10 @@ constexpr wchar_t const* accentChoices[]{L"Album artwork", L"Zenith blue", L"Cus
 constexpr wchar_t const* pauseChoices[]{L"Immediately", L"3 seconds", L"5 seconds", L"Keep the title"};
 constexpr wchar_t const* focusChoices[]{L"15 minutes", L"25 minutes", L"45 minutes"};
 constexpr wchar_t const* breakChoices[]{L"5 minutes", L"10 minutes", L"15 minutes"};
+constexpr wchar_t const* quietChoices[]{L"Off", L"Follow Windows", L"On"};
+constexpr wchar_t const* prayerChoices[]{L"Off", L"Jakarta", L"Makassar", L"Jayapura"};
 constexpr int choiceControls[]{IDC_PILL_WIDTH, IDC_ISLAND_SIZE, IDC_ACCENT_MODE, IDC_CUSTOM_ACCENT,
-    IDC_PAUSE_DELAY, IDC_FOCUS_DURATION, IDC_BREAK_DURATION};
+    IDC_PAUSE_DELAY, IDC_FOCUS_DURATION, IDC_BREAK_DURATION, IDC_QUIET_MODE, IDC_PRAYER_CITY};
 
 struct TestButton {
     int control;
@@ -120,12 +124,26 @@ struct TestButton {
 };
 
 constexpr int firstTestButton = 1200;
+constexpr int firstChoiceButton = 1300;
+constexpr int choicesPerRow = 4;
+
+int choiceButtonId(size_t row, size_t option) {
+    return firstChoiceButton + static_cast<int>(row * choicesPerRow + option);
+}
+
+bool isChoiceButton(int id) {
+    return id >= firstChoiceButton && id < choiceButtonId(std::size(choiceControls), 0);
+}
+
+int choiceRowId(int id) {
+    return choiceControls[(id - firstChoiceButton) / choicesPerRow];
+}
+
+unsigned choiceIndex(int id) {
+    return static_cast<unsigned>((id - firstChoiceButton) % choicesPerRow);
+}
 constexpr TestButton testButtons[]{
     {IDC_PILL_WIDTH, SettingsTest::appearance},
-    {IDC_ISLAND_SIZE, SettingsTest::appearance},
-    {IDC_ACCENT_MODE, SettingsTest::appearance},
-    {IDC_CUSTOM_ACCENT, SettingsTest::appearance},
-    {IDC_ANIMATE_ISLAND, SettingsTest::appearance},
     {IDC_SHOW_WAVEFORM, SettingsTest::waveform},
     {IDC_PILL_LYRICS, SettingsTest::lyrics},
     {IDC_PAUSE_DELAY, SettingsTest::pause},
@@ -135,10 +153,8 @@ constexpr TestButton testButtons[]{
     {IDC_ADD_COPIED_TEXT, SettingsTest::copiedText},
     {IDC_ADD_SCREENSHOTS, SettingsTest::screenshot},
     {IDC_CLIPBOARD_BUBBLE, SettingsTest::copied},
-    {IDC_CLIPBOARD_PREVIEWS, SettingsTest::copied},
     {IDC_CAMERA_INDICATOR, SettingsTest::camera},
     {IDC_MICROPHONE_INDICATOR, SettingsTest::microphone},
-    {IDC_FEATURE_ENABLED, SettingsTest::feature},
     {IDC_FEATURE_DOWN, SettingsTest::order},
 };
 
@@ -148,6 +164,8 @@ bool isTestButton(int id) {
 
 std::span<wchar_t const* const> choices(int id) {
     switch (id) {
+    case IDC_QUIET_MODE: return quietChoices;
+    case IDC_PRAYER_CITY: return prayerChoices;
     case IDC_PILL_WIDTH: return widthChoices;
     case IDC_ISLAND_SIZE: return sizeChoices;
     case IDC_ACCENT_MODE: return accentChoices;
@@ -293,6 +311,7 @@ private:
     bool command(int id);
     bool commandChoice(int id);
     void runTest(SettingsTest test);
+    void completeNotificationAccess(NotificationAccess access);
     void showControls();
     void openDetail(int id);
     unsigned currentChoice(int id) const;
@@ -319,7 +338,10 @@ private:
     bool animate_ = true;
     Clock::time_point pageStart_{};
     std::array<ToggleMotion, std::size(options)> toggles_{};
+    std::array<ToggleMotion, std::size(choiceControls) * choicesPerRow> choiceMotion_{};
     std::wstring startup_;
+    winrt::Windows::Foundation::IAsyncAction notificationRequest_{nullptr};
+    bool packaged_ = false;
 };
 
 void SettingsWindow::setDpi(UINT dpi) {
@@ -329,6 +351,7 @@ void SettingsWindow::setDpi(UINT dpi) {
 
 void SettingsWindow::initialize(HWND window) {
     window_ = window;
+    packaged_ = hasPackageIdentity();
     setDpi(GetDpiForWindow(window));
     BOOL motion = TRUE;
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &motion, 0);
@@ -346,15 +369,35 @@ void SettingsWindow::initialize(HWND window) {
         SetWindowSubclass(GetDlgItem(window, page.id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
     for (const int id : choiceControls)
         SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
-    for (const int id : {IDC_SETTINGS_GITHUB, IDC_FEATURE_BACK, IDC_FEATURE_UP, IDC_FEATURE_DOWN,
+    for (const int id : {IDC_APP_NOTIFICATIONS, IDC_SETTINGS_GITHUB, IDC_FEATURE_BACK, IDC_FEATURE_UP, IDC_FEATURE_DOWN,
                         IDC_FEATURE_MEDIA, IDC_FEATURE_TIMERS, IDC_FEATURE_SCRATCH, IDC_FEATURE_DROP, IDC_FEATURE_SYSTEM}) {
         SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
     }
     const auto instance = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(window, GWLP_HINSTANCE));
+    for (size_t row = 0; row < std::size(choiceControls); ++row) {
+        const int id = choiceControls[row];
+        const auto values = choices(id);
+        if (values.empty()) continue;
+        const auto heading = GetDlgItem(window, id);
+        EnableWindow(heading, FALSE);
+        auto previous = heading;
+        for (size_t i = 0; i < values.size(); ++i) {
+            const auto button = CreateWindowExW(0, L"Button", values[i], WS_CHILD | WS_TABSTOP | BS_OWNERDRAW,
+                0, 0, 0, 0, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(choiceButtonId(row, i))),
+                instance, nullptr);
+            if (!button) continue;
+            SetWindowSubclass(button, optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
+            SetWindowPos(button, previous, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            previous = button;
+        }
+    }
     for (size_t i = 0; i < std::size(testButtons); ++i) {
         wchar_t label[96]{};
         GetWindowTextW(GetDlgItem(window, testButtons[i].control), label, ARRAYSIZE(label));
-        const auto name = testButtons[i].test == SettingsTest::order ? L"Test feature order" : L"Test " + std::wstring(label);
+        const auto test = testButtons[i].test;
+        const auto name = test == SettingsTest::appearance ? L"Test appearance" :
+            test == SettingsTest::order ? L"Test feature order" :
+            test == SettingsTest::copied ? L"Test clipboard" : L"Test " + std::wstring(label);
         const auto id = firstTestButton + static_cast<int>(i);
         const auto button = CreateWindowExW(0, L"Button", name.c_str(), WS_CHILD | WS_TABSTOP | BS_OWNERDRAW,
             0, 0, 0, 0, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
@@ -389,19 +432,44 @@ void SettingsWindow::showControls() {
         if (isFeatureSwitch(option.id)) visible = listing;
         show(option.id, visible);
     }
-    for (const int id : choiceControls) {
-        const bool visible = id == IDC_PAUSE_DELAY ? detail_ == IDC_FEATURE_MEDIA && enabled :
+    for (size_t row = 0; row < std::size(choiceControls); ++row) {
+        const int id = choiceControls[row];
+        const bool visible = (id == IDC_QUIET_MODE || id == IDC_PRAYER_CITY) ? page_ == IDC_SETTINGS_NOTIFICATIONS :
+            id == IDC_PAUSE_DELAY ? detail_ == IDC_FEATURE_MEDIA && enabled :
             id == IDC_FOCUS_DURATION || id == IDC_BREAK_DURATION ? detail_ == IDC_FEATURE_TIMERS && enabled :
             appearance && (id != IDC_CUSTOM_ACCENT || settings_.accentMode == 2);
         show(id, visible);
+        const auto values = choices(id);
+        if (!visible || values.empty()) {
+            for (size_t i = 0; i < values.size(); ++i) show(choiceButtonId(row, i), false);
+            continue;
+        }
+        RECT heading{};
+        GetWindowRect(GetDlgItem(window_, id), &heading);
+        MapWindowPoints(nullptr, window_, reinterpret_cast<POINT*>(&heading), 2);
+        const auto metrics = units(0, 0, 312, 39);
+        const auto inset = units(0, 0, 5, 16);
+        SetWindowPos(GetDlgItem(window_, id), nullptr, heading.left, heading.top,
+                     metrics.right, inset.bottom, SWP_NOZORDER | SWP_NOACTIVATE);
+        const auto top = heading.top + inset.bottom;
+        const auto height = metrics.bottom - inset.bottom - px(4);
+        const auto available = (id == IDC_PAUSE_DELAY ||
+            id == IDC_FOCUS_DURATION || id == IDC_BREAK_DURATION) ? units(0, 0, 258, 0).right : metrics.right;
+        const auto width = available / static_cast<int>(values.size());
+        for (size_t i = 0; i < values.size(); ++i) {
+            const auto button = GetDlgItem(window_, choiceButtonId(row, i));
+            const auto left = heading.left + static_cast<int>(i) * width;
+            const bool chosen = i == currentChoice(id);
+            const auto label = chosen ? std::wstring(values[i]) + L", selected" : std::wstring(values[i]);
+            SetWindowTextW(button, label.c_str());
+            SetWindowPos(button, nullptr, left, top, width - inset.right, height,
+                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        }
     }
-    const int motionTop = settings_.accentMode == 2 ? 178 : 151;
-    for (const auto id : {IDC_ANIMATE_ISLAND, IDC_HIDE_FULLSCREEN}) {
-        const int y = motionTop + (id == IDC_HIDE_FULLSCREEN ? 32 : 0);
-        const auto bounds = units(144, y, 456, y + 30);
-        SetWindowPos(GetDlgItem(window_, id), nullptr, bounds.left, bounds.top, bounds.right - bounds.left,
-                     bounds.bottom - bounds.top, SWP_NOZORDER | SWP_NOACTIVATE);
-    }
+    const int fullscreenTop = settings_.accentMode == 2 ? 220 : 190;
+    const auto fullscreen = units(144, fullscreenTop, 456, fullscreenTop + 30);
+    SetWindowPos(GetDlgItem(window_, IDC_HIDE_FULLSCREEN), nullptr, fullscreen.left, fullscreen.top,
+                 fullscreen.right - fullscreen.left, fullscreen.bottom - fullscreen.top, SWP_NOZORDER | SWP_NOACTIVATE);
     for (size_t index = 0; index < settings_.features.size(); ++index) {
         const auto id = IDC_FEATURE_MEDIA + static_cast<int>(settings_.features[index]);
         const int y = 69 + 41 * static_cast<int>(index);
@@ -422,21 +490,32 @@ void SettingsWindow::showControls() {
         EnableWindow(GetDlgItem(window_, IDC_FEATURE_UP), where != settings_.features.begin());
         EnableWindow(GetDlgItem(window_, IDC_FEATURE_DOWN), where + 1 != settings_.features.end());
     }
+    const auto appNotifications = GetDlgItem(window_, IDC_APP_NOTIFICATIONS);
+    SetWindowTextW(appNotifications, settings_.showAppNotifications ? L"Turn off Windows app alerts" : L"Connect Windows apps");
+    EnableWindow(appNotifications, packaged_ && !notificationRequest_);
+    show(IDC_APP_NOTIFICATIONS, page_ == IDC_SETTINGS_NOTIFICATIONS && packaged_);
     show(IDC_SETTINGS_GITHUB, page_ == IDC_SETTINGS_ABOUT);
+    EnableWindow(GetDlgItem(window_, IDC_PRAYER_REMINDERS), settings_.prayerCity != 0);
     EnableWindow(GetDlgItem(window_, IDC_CLIPBOARD_PREVIEWS), settings_.showClipboardBubble);
     const auto column = units(410, 0, 456, 0);
     for (size_t i = 0; i < std::size(testButtons); ++i) {
         const auto control = GetDlgItem(window_, testButtons[i].control);
         const auto button = GetDlgItem(window_, firstTestButton + static_cast<int>(i));
         const bool visible = (GetWindowLongPtrW(control, GWL_STYLE) & WS_VISIBLE) != 0;
-        if (visible) {
+        if (testButtons[i].test == SettingsTest::appearance) {
+            const auto test = units(374, 13, 456, 34);
+            SetWindowPos(button, nullptr, test.left, test.top, test.right - test.left, test.bottom - test.top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        } else if (visible) {
             RECT row{};
             GetWindowRect(control, &row);
             MapWindowPoints(nullptr, window_, reinterpret_cast<POINT*>(&row), 2);
             SetWindowPos(control, nullptr, row.left, row.top, column.left - px(8) - row.left, row.bottom - row.top,
                          SWP_NOZORDER | SWP_NOACTIVATE);
-            const auto height = std::min<LONG>(row.bottom - row.top, px(33));
-            SetWindowPos(button, control, column.left, (row.top + row.bottom - height) / 2,
+            const bool choice = !choices(testButtons[i].control).empty();
+            const auto height = choice ? px(30) : std::min<LONG>(row.bottom - row.top, px(33));
+            const auto top = choice ? row.bottom + px(1) : (row.top + row.bottom - height) / 2;
+            SetWindowPos(button, control, column.left, top,
                          column.right - column.left, height, SWP_NOACTIVATE);
         }
         ShowWindow(button, visible ? SW_SHOW : SW_HIDE);
@@ -466,6 +545,14 @@ void SettingsWindow::runTest(SettingsTest test) {
 
 void SettingsWindow::sync() {
     settings_ = Settings::load();
+    for (size_t row = 0; row < std::size(choiceControls); ++row) {
+        const auto id = choiceControls[row];
+        for (size_t i = 0; i < choices(id).size(); ++i) {
+            const float value = i == currentChoice(id) ? 1.0f : 0.0f;
+            auto& motion = choiceMotion_[choiceButtonId(row, i) - firstChoiceButton];
+            if (motion.to != value) motion = {value, value, {}};
+        }
+    }
     for (const auto& option : options) {
         const bool checked = isFeatureSwitch(option.id) ? settings_.enabled(featureForSwitch(option.id)) : option.field ? settings_.*option.field :
             option.id == IDC_FEATURE_ENABLED ? detail_ && settings_.enabled(feature()) : startupEnabled(startup_);
@@ -479,6 +566,8 @@ void SettingsWindow::sync() {
 
 unsigned SettingsWindow::currentChoice(int id) const {
     switch (id) {
+    case IDC_QUIET_MODE: return static_cast<unsigned>(settings_.quietMode);
+    case IDC_PRAYER_CITY: return settings_.prayerCity;
     case IDC_PILL_WIDTH: return settings_.fixedPillMinimum;
     case IDC_ISLAND_SIZE: return settings_.islandSize;
     case IDC_ACCENT_MODE: return settings_.accentMode;
@@ -506,22 +595,14 @@ bool SettingsWindow::commandChoice(int id) {
         sync();
         return true;
     }
-    const auto values = choices(id);
-    if (values.empty()) return false;
-    const auto menu = CreatePopupMenu();
-    if (!menu) return true;
-    for (unsigned i = 0; i < values.size(); ++i) {
-        AppendMenuW(menu, MF_STRING | (i == currentChoice(id) ? MF_CHECKED : 0), i + 1, values[i]);
-    }
-    RECT control{};
-    GetWindowRect(GetDlgItem(window_, id), &control);
-    const auto result = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTALIGN,
-                                      control.right, control.bottom, 0, window_, nullptr);
-    DestroyMenu(menu);
-    if (!result) return true;
-    const auto index = static_cast<unsigned>(result - 1);
+    if (!isChoiceButton(id)) return false;
+    const auto index = choiceIndex(id);
+    id = choiceRowId(id);
+    if (index >= choices(id).size() || index == currentChoice(id)) return true;
     auto updated = Settings::load();
     switch (id) {
+    case IDC_QUIET_MODE: updated.quietMode = static_cast<QuietMode>(index); break;
+    case IDC_PRAYER_CITY: updated.prayerCity = index; break;
     case IDC_PILL_WIDTH: updated.fixedPillMinimum = index != 0; break;
     case IDC_ISLAND_SIZE: updated.islandSize = index; break;
     case IDC_ACCENT_MODE: updated.accentMode = index; break;
@@ -529,12 +610,54 @@ bool SettingsWindow::commandChoice(int id) {
     case IDC_FOCUS_DURATION: updated.focusPreset = index; break;
     case IDC_BREAK_DURATION: updated.breakPreset = index; break;
     }
-    if (updated.saveIsland()) notifyOverlay();
-    else MessageBoxW(window_, L"Couldn’t save this setting.", title, MB_OK | MB_ICONWARNING);
+    const bool saved = id == IDC_QUIET_MODE || id == IDC_PRAYER_CITY
+        ? updated.saveNotifications() : updated.saveIsland();
+    if (saved) {
+        const auto before = currentChoice(id);
+        settings_ = updated;
+        const auto base = (std::ranges::find(choiceControls, id) - std::begin(choiceControls)) * choicesPerRow;
+        const auto now = Clock::now();
+        for (const auto changed : {before, index}) {
+            auto& motion = choiceMotion_[base + changed];
+            const float destination = changed == index ? 1.0f : 0.0f;
+            motion = {animate_ ? motion.value(now) : destination, destination, animate_ ? now : Clock::time_point{}};
+        }
+        if (animate_) SetTimer(window_, motionTimer, 16, nullptr);
+        showControls();
+        notifyOverlay();
+    } else MessageBoxW(window_, L"Couldn’t save this setting.", title, MB_OK | MB_ICONWARNING);
     return true;
 }
 
+void SettingsWindow::completeNotificationAccess(NotificationAccess access) {
+    notificationRequest_ = nullptr;
+    if (access != NotificationAccess::Allowed) {
+        showControls();
+        MessageBoxW(window_, L"Allow Zenith Dot in Windows Settings under Privacy & security > Notifications.",
+                    title, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    auto updated = Settings::load();
+    updated.showAppNotifications = true;
+    if (updated.saveNotifications()) notifyOverlay();
+    else MessageBoxW(window_, L"Couldn’t save this setting.", title, MB_OK | MB_ICONWARNING);
+    sync();
+}
+
 bool SettingsWindow::command(int id) {
+    if (id == IDC_APP_NOTIFICATIONS && packaged_ && !notificationRequest_) {
+        if (!settings_.showAppNotifications) {
+            notificationRequest_ = requestNotificationAccess(window_);
+            showControls();
+        } else {
+            auto updated = Settings::load();
+            updated.showAppNotifications = false;
+            if (updated.saveNotifications()) notifyOverlay();
+            else MessageBoxW(window_, L"Couldn’t save this setting.", title, MB_OK | MB_ICONWARNING);
+            sync();
+        }
+        return true;
+    }
     if (isTestButton(id)) {
         runTest(testButtons[id - firstTestButton].test);
         return true;
@@ -619,10 +742,22 @@ void SettingsWindow::redrawMotion() {
     if (pageStart_ != Clock::time_point{}) {
         auto content = units(122, 0, 478, 288);
         InvalidateRect(window_, &content, FALSE);
-        for (const int id : choiceControls) InvalidateRect(GetDlgItem(window_, id), nullptr, FALSE);
+        for (size_t row = 0; row < std::size(choiceControls); ++row) {
+            const auto id = choiceControls[row];
+            InvalidateRect(GetDlgItem(window_, id), nullptr, FALSE);
+            for (size_t i = 0; i < choices(id).size(); ++i)
+                InvalidateRect(GetDlgItem(window_, choiceButtonId(row, i)), nullptr, FALSE);
+        }
         for (int id = IDC_FEATURE_MEDIA; id <= IDC_FEATURE_SYSTEM; ++id)
             InvalidateRect(GetDlgItem(window_, id), nullptr, FALSE);
         if (page_ == IDC_SETTINGS_ABOUT) InvalidateRect(GetDlgItem(window_, IDC_SETTINGS_GITHUB), nullptr, FALSE);
+    }
+    for (size_t i = 0; i < choiceMotion_.size(); ++i) {
+        auto& motion = choiceMotion_[i];
+        if (motion.start == Clock::time_point{}) continue;
+        InvalidateRect(GetDlgItem(window_, firstChoiceButton + static_cast<int>(i)), nullptr, FALSE);
+        if (animate_ && now - motion.start < toggleDuration) moving = true;
+        else motion.start = {};
     }
     for (const auto& option : options) {
         auto& motion = toggles_[&option - options];
@@ -662,6 +797,14 @@ void SettingsWindow::paint(HDC dc) {
         label(units(144, 12, 456, 38), page.title, canvas_.heading(), foreground);
         label(units(145, 39, 456, 53), page.description, canvas_.body(), muted);
         if (page.group) label(units(145, 61, 456, 75), page.group, canvas_.strong(), foreground);
+    }
+    if (page_ == IDC_SETTINGS_NOTIFICATIONS) {
+        label(units(145, 211, 456, 226),
+              packaged_ ? L"Windows apps · Show the app name and notification title."
+                        : L"Windows app alerts require the MSIX build.",
+              canvas_.body(), muted);
+        label(units(145, 108, 456, 122), L"Silences island alerts. Camera and mic status remain visible.",
+              canvas_.body(), muted);
     }
     if (page_ == IDC_SETTINGS_ABOUT) {
         label(units(145, 70, 418, 92), L"Version " ZENITH_VERSION_TEXT, canvas_.strong(), foreground);
@@ -715,7 +858,12 @@ void SettingsWindow::drawButton(DRAWITEMSTRUCT const& item) {
     const int id = static_cast<int>(item.CtlID);
     const auto page = std::ranges::find(pages, id, &Page::id);
     const bool nav = page != std::end(pages);
+    const bool segment = isChoiceButton(id);
+    const bool choiceHeading = !choices(id).empty();
     const bool active = nav && id == page_;
+    const auto now = Clock::now();
+    const float selectedAmount = segment ? (animate_ ? choiceMotion_[id - firstChoiceButton].value(now) :
+        choiceMotion_[id - firstChoiceButton].to) : static_cast<float>(active);
     const bool featureRow = id >= IDC_FEATURE_MEDIA && id <= IDC_FEATURE_SYSTEM;
     const bool compactButton = isTestButton(id) || id == IDC_FEATURE_BACK ||
         id == IDC_FEATURE_UP || id == IDC_FEATURE_DOWN;
@@ -724,9 +872,11 @@ void SettingsWindow::drawButton(DRAWITEMSTRUCT const& item) {
     const auto base = nav ? sidebar : background;
     if (!canvas_.begin(item.hDC, item.rcItem, base)) return;
     const float phase = nav ? 1.0f : std::lerp(0.72f, 1.0f, pageOpacity());
-    if (active || !nav || hot || (item.itemState & (ODS_SELECTED | ODS_FOCUS))) {
+    if (!choiceHeading && (active || !nav || hot || (item.itemState & (ODS_SELECTED | ODS_FOCUS)))) {
         canvas_.rounded(rect(area), static_cast<float>(px(6)),
-                        blend(base, active || hot || (item.itemState & ODS_SELECTED) ? selected : surface, phase));
+                        segment && !hot && !(item.itemState & ODS_SELECTED)
+                            ? blend(surface, selected, selectedAmount)
+                            : blend(base, active || hot || (item.itemState & ODS_SELECTED) ? selected : surface, phase));
     }
     if (item.itemState & ODS_FOCUS) {
         auto focus = area;
@@ -735,34 +885,26 @@ void SettingsWindow::drawButton(DRAWITEMSTRUCT const& item) {
     }
     wchar_t text[96]{};
     GetWindowTextW(item.hwndItem, text, ARRAYSIZE(text));
-    const auto values = choices(id);
-    const auto* label = isTestButton(id) ? L"Test" : nav ? (id == IDC_SETTINGS_PRIVACY ? L"Privacy" : page->title) : text;
-    area.left += px(compactButton ? 8 : 12);
-    const auto ink = active ? accent : disabled || nav ? muted : foreground;
-    canvas_.text(area, label, compactButton ? canvas_.body() : canvas_.strong(), blend(base, ink, phase));
-    if (featureRow || id == IDC_CUSTOM_ACCENT || !values.empty()) {
+    const bool appearanceTest = isTestButton(id) && testButtons[id - firstTestButton].test == SettingsTest::appearance;
+    const auto* label = segment ? choices(choiceRowId(id))[choiceIndex(id)] :
+        appearanceTest ? L"Test appearance" : isTestButton(id) ? L"Test" : nav ? (id == IDC_SETTINGS_PRIVACY ? L"Privacy" : page->title) : text;
+    area.left += px(choiceHeading ? 1 : compactButton || segment ? 8 : 12);
+    const auto ink = active ? accent : (disabled && !choiceHeading) || nav ? muted : foreground;
+    canvas_.text(area, label, compactButton || segment ? canvas_.body() : canvas_.strong(),
+                 segment ? blend(ink, accent, selectedAmount) : blend(base, ink, phase));
+    if (featureRow) {
+        area.left = area.right - px(21);
+        canvas_.text(area, L"›", canvas_.body(), blend(base, muted, phase));
+    } else if (id == IDC_CUSTOM_ACCENT) {
         wchar_t hex[16]{};
-        const wchar_t* value = nullptr;
-        if (id == IDC_CUSTOM_ACCENT) {
-            swprintf_s(hex, L"#%06X", settings_.customAccent);
-            value = hex;
-        } else if (featureRow) {
-            value = L"›";
-        } else value = values[currentChoice(id)];
-        area.left = area.right - px(featureRow ? 21 : 126);
-        area.right -= px(8);
-        if (!featureRow) {
-            auto picker = area;
-            picker.top += px(5);
-            picker.bottom -= px(5);
-            canvas_.rounded(rect(picker), static_cast<float>(px(5)), color(hot ? border : background));
-            area.left += px(8);
-            auto arrow = area;
-            arrow.left = arrow.right - px(13);
-            canvas_.text(arrow, L"⌄", canvas_.body(), color(muted));
-            area.right -= px(14);
-        }
-        canvas_.text(area, value, canvas_.body(), blend(base, muted, phase));
+        swprintf_s(hex, L"#%06X", settings_.customAccent);
+        area.left = area.right - px(89);
+        const auto middle = (area.top + area.bottom) / 2;
+        const RECT swatch{area.left, middle - px(7), area.left + px(14), middle + px(7)};
+        const auto value = settings_.customAccent;
+        canvas_.rounded(rect(swatch), static_cast<float>(px(4)), color(RGB(value >> 16, value >> 8, value)));
+        area.left += px(21);
+        canvas_.text(area, hex, canvas_.body(), blend(base, muted, phase));
     }
     canvas_.end();
 }
@@ -805,6 +947,12 @@ INT_PTR CALLBACK SettingsWindow::dialog(HWND window, UINT message, WPARAM wparam
     auto* self = reinterpret_cast<SettingsWindow*>(GetWindowLongPtrW(window, DWLP_USER));
     if (!self) return FALSE;
     switch (message) {
+    case notificationAccessMessage:
+        self->completeNotificationAccess(static_cast<NotificationAccess>(wparam));
+        return TRUE;
+    case WM_DESTROY:
+        if (self->notificationRequest_) self->notificationRequest_.Cancel();
+        break;
     case WM_CLOSE:
         EndDialog(window, 0);
         return TRUE;

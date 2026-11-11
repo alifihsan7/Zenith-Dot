@@ -10,6 +10,8 @@ add_executable(ZenithDot WIN32
     src/island.cpp
     src/media.cpp
     src/lyrics.cpp
+    src/prayer.cpp
+    src/notifications.cpp
     src/power.cpp
     src/system.cpp
     src/desktop.cpp
@@ -31,7 +33,7 @@ target_include_directories(ZenithDot PRIVATE src)
 target_compile_options(ZenithDot PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:/W4;/permissive-;/utf-8;/EHsc>")
 target_link_options(ZenithDot PRIVATE /MANIFEST:NO)
 set_property(TARGET ZenithDot PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-target_link_libraries(ZenithDot PRIVATE d2d1 dwrite gdi32 user32 shell32 ole32 oleaut32 windowsapp advapi32 dwmapi wbemuuid comctl32 version)
+target_link_libraries(ZenithDot PRIVATE d2d1 dwrite gdi32 user32 shell32 ole32 oleaut32 windowsapp advapi32 dwmapi comctl32 version)
 target_link_libraries(ZenithDot PRIVATE mfplat mfsensorgroup windowscodecs comdlg32)
 install(TARGETS ZenithDot RUNTIME DESTINATION .)
 install(FILES scripts/install.ps1 scripts/uninstall.ps1 DESTINATION .)

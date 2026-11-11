@@ -9,6 +9,7 @@ SettingsExample::SettingsExample(SettingsTest test, Feature feature, Settings co
     : test_(test), end_(start_ + 4s) {
     island_.setAnimate(animate);
     auto exampleSettings = settings;
+    exampleSettings.quietMode = QuietMode::off;
     if (test == SettingsTest::appearance) exampleSettings.enabledFeatures |= 1u << static_cast<unsigned>(Feature::media);
     island_.setPreferences(exampleSettings);
     media_.hasSession = media_.playing = true;

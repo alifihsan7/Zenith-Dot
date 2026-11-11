@@ -21,10 +21,10 @@ constexpr DWORD hideMicrophoneBit = 2;
 constexpr wchar_t timerValue[] = L"TimerOptions";
 constexpr DWORD autoCycleBit = 1;
 constexpr wchar_t displayValue[] = L"DisplayOptions";
-constexpr DWORD animateIslandBit = 1;
 constexpr DWORD hideInFullscreenBit = 2;
 constexpr wchar_t islandValue[] = L"IslandOptions";
 constexpr wchar_t featuresValue[] = L"FeatureOrder";
+constexpr wchar_t notificationsValue[] = L"NotificationOptions";
 constexpr wchar_t accentValue[] = L"CustomAccent";
 
 std::optional<DWORD> read(wchar_t const* name) {
@@ -56,7 +56,6 @@ Settings Settings::load() {
     }
     if (const auto value = read(timerValue)) settings.autoCycle = (*value & autoCycleBit) != 0;
     if (const auto value = read(displayValue)) {
-        settings.animateIsland = (*value & animateIslandBit) != 0;
         settings.hideInFullscreen = (*value & hideInFullscreenBit) != 0;
     }
     if (const auto value = read(islandValue)) {
@@ -72,6 +71,13 @@ Settings Settings::load() {
         settings.compactPause = choice(7, 1, 4);
         settings.focusPreset = choice(9, 1);
         settings.breakPreset = choice(11, 0);
+    }
+    if (const auto value = read(notificationsValue)) {
+        const auto quiet = *value & 3u;
+        if (quiet <= static_cast<unsigned>(QuietMode::on)) settings.quietMode = static_cast<QuietMode>(quiet);
+        settings.prayerCity = (*value >> 2) & 3u;
+        settings.prayerReminders = (*value & 16u) == 0;
+        settings.showAppNotifications = (*value & 32u) != 0;
     }
     if (const auto value = read(accentValue)) settings.customAccent = *value & 0xffffff;
     if (const auto value = read(featuresValue)) {
@@ -106,8 +112,7 @@ bool Settings::saveTimer() const {
 }
 
 bool Settings::saveDisplay() const {
-    const DWORD display = (animateIsland ? animateIslandBit : 0) |
-        (hideInFullscreen ? hideInFullscreenBit : 0);
+    const DWORD display = hideInFullscreen ? hideInFullscreenBit : 0;
     return write(displayValue, display);
 }
 
@@ -127,6 +132,11 @@ bool Settings::saveFeatures() const {
 
 bool Settings::saveAccent() const {
     return write(accentValue, customAccent);
+}
+
+bool Settings::saveNotifications() const {
+    return write(notificationsValue, static_cast<DWORD>(quietMode) | (prayerCity << 2) |
+                                     (prayerReminders ? 0u : 16u) | (showAppNotifications ? 32u : 0u));
 }
 
 std::wstring startupShortcut() {

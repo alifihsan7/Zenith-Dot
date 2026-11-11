@@ -5,6 +5,7 @@
 #include "desktop.hpp"
 #include "drop_zone.hpp"
 #include "island.hpp"
+#include "notifications.hpp"
 #include "resource.h"
 #include "settings.hpp"
 #include "settings_example.hpp"
@@ -57,13 +58,13 @@ private:
     void control(MediaCommand command);
     void run(IslandCommand const& command);
     void refreshPower();
+    bool refreshPrayers();
     void refreshMotion();
     bool refreshFullscreen();
     void applyVisibility();
     bool suppressed() const { return fullscreen_ || hidden_; }
     void refreshCapture(bool announce = true);
     void announceBluetooth();
-    void showLevel(IslandAlert::Kind kind, unsigned percent, bool muted = false);
     void addTray();
     void showMenu(POINT point);
     void showAudioPicker();
@@ -85,13 +86,16 @@ private:
     BrowserTabs browserTabs_;
     PowerState power_;
     DesktopMonitor desktop_;
+    Notifications notifications_;
     BluetoothMonitor bluetooth_;
     CaptureActivity capture_;
-    std::optional<WPARAM> lastVolume_;
     SystemMonitor system_;
     Scratchpad scratchpad_;
     DropZone dropZone_;
     Settings settings_;
+    unsigned prayerCity_ = 0;
+    unsigned announcedPrayers_ = 0;
+    std::optional<PrayerSchedule> prayers_;
     std::chrono::steady_clock::time_point systemSampled_{};
     Island island_;
     std::optional<SettingsExample> example_;
@@ -151,9 +155,11 @@ int App::run(HINSTANCE instance, std::optional<SettingsTest> test, Feature featu
         frame();
     });
     desktop_.start(window_);
+    notifications_.refresh(window_, settings_.showAppNotifications);
     bluetooth_.start(window_);
     island_.setAudioOutput(desktop_.audioOutput());
     island_.setWindowsNotificationsQuiet(desktop_.notificationsQuiet());
+    refreshPrayers();
     lyrics_ = std::make_shared<Lyrics>([this] { frame(); });
     island_.setLyrics(lyrics_->view());
     scratchpad_.load();
@@ -223,7 +229,7 @@ void App::startSettingsTest(SettingsTest test, Feature feature) {
     BOOL animations = TRUE;
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0);
     if (GetCapture() == window_) ReleaseCapture();
-    example_.emplace(test, feature, settings_, settings_.animateIsland && animations != FALSE);
+    example_.emplace(test, feature, settings_, animations != FALSE);
     applyVisibility();
     frame();
 }
@@ -320,10 +326,35 @@ void App::refreshPower() {
     frame();
 }
 
+bool App::refreshPrayers() {
+    const auto now = std::chrono::system_clock::now();
+    const auto date = prayerDate(settings_.prayerCity, now);
+    const bool changed = prayerCity_ != settings_.prayerCity || (prayers_ && prayers_->date != date);
+    if (changed) {
+        prayerCity_ = settings_.prayerCity;
+        prayers_ = prayerSchedule(prayerCity_, date);
+        announcedPrayers_ = 0;
+        island_.setPrayerSchedule(prayers_);
+    }
+    if (!prayers_) return changed;
+    const auto local = now + std::chrono::hours(prayers_->utcOffset);
+    const auto minute = std::chrono::duration_cast<std::chrono::minutes>(local - date).count();
+    for (size_t i = 0; i < prayers_->times.size(); ++i) {
+        const unsigned bit = 1u << i;
+        if (minute != prayers_->times[i] || (announcedPrayers_ & bit)) continue;
+        announcedPrayers_ |= bit;
+        if (settings_.prayerReminders && !suppressed()) {
+            island_.notify({IslandAlert::Kind::prayer, prayerNames[i], prayers_->city, std::nullopt, 3});
+            return true;
+        }
+    }
+    return changed;
+}
+
 void App::refreshMotion() {
     BOOL animations = TRUE;
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0);
-    island_.setAnimate(settings_.animateIsland && animations != FALSE);
+    island_.setAnimate(animations != FALSE);
 }
 
 bool App::refreshFullscreen() {
@@ -383,13 +414,6 @@ void App::announceBluetooth() {
         }
         island_.notify(std::move(alert));
     }
-    frame();
-}
-
-void App::showLevel(IslandAlert::Kind kind, unsigned percent, bool muted) {
-    if (suppressed()) return;
-    island_.notify({kind, L"", muted ? L"Muted" : std::to_wstring(percent) + L"%", std::nullopt,
-                    1, 1800ms, muted ? 0u : percent});
     frame();
 }
 
@@ -684,8 +708,10 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         if (wparam == powerTimer) {
             if (!clipboardListening_) clipboardListening_ = AddClipboardFormatListener(window_) != FALSE;
             const bool changed = island_.setWindowsNotificationsQuiet(desktop_.notificationsQuiet());
+            notifications_.refresh(window_, settings_.showAppNotifications);
+            const bool prayerChanged = refreshPrayers();
             refreshPower();
-            if (changed) frame();
+            if (changed || prayerChanged) frame();
         }
         if (wparam == frameTimer) frame();
         if (wparam == clipboardTimer) refreshClipboard();
@@ -725,22 +751,22 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         announceBluetooth();
         return 0;
     case DesktopMonitor::audioDeviceChanged:
-        lastVolume_.reset();
+        systemSampled_ = {};
         desktop_.refreshAudioDevice();
         island_.setAudioOutput(desktop_.audioOutput());
         frame();
         return 0;
-    case DesktopMonitor::notificationModeChanged:
-        if (island_.setWindowsNotificationsQuiet(desktop_.notificationsQuiet())) frame();
-        return 0;
-    case DesktopMonitor::volumeChanged:
-        if (desktop_.isCurrentVolume(lparam) && wparam != lastVolume_) {
-            lastVolume_ = wparam;
-            showLevel(IslandAlert::Kind::volume, static_cast<unsigned>(wparam & 0xff), (wparam & 0x100) != 0);
+    case notificationArrivedMessage:
+        if (settings_.showAppNotifications && !suppressed() && !island_.alertsQuiet()) {
+            if (auto notification = notifications_.read(static_cast<unsigned>(wparam))) {
+                island_.notify({IslandAlert::Kind::notification, std::move(notification->app),
+                               std::move(notification->title), std::nullopt, 2, 2500ms});
+                frame();
+            }
         }
         return 0;
-    case DesktopMonitor::brightnessChanged:
-        showLevel(IslandAlert::Kind::brightness, static_cast<unsigned>(wparam));
+    case DesktopMonitor::notificationModeChanged:
+        if (island_.setWindowsNotificationsQuiet(desktop_.notificationsQuiet())) frame();
         return 0;
     case MediaMonitor::notification:
         if (monitor_) monitor_->refresh(wparam);
@@ -837,9 +863,11 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         return TRUE;
     case settingsChangedMessage:
         settings_ = Settings::load();
+        notifications_.refresh(window_, settings_.showAppNotifications);
         refreshMotion();
         island_.setPreferences(settings_);
         dropZone_.setEnabled(settings_.enabled(Feature::drop));
+        refreshPrayers();
         refreshCapture(false);
         refreshFullscreen();
         frame();
@@ -858,6 +886,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         KillTimer(window_, fullscreenTimer);
         KillTimer(window_, clipboardTimer);
         desktop_.stop();
+        notifications_.stop();
         bluetooth_.stop();
         if (lyrics_) lyrics_->stop();
         RemoveClipboardFormatListener(window_);
