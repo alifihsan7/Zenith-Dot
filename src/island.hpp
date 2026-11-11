@@ -37,7 +37,7 @@ struct IslandCommand {
 // A short notice that splits off the pill as a liquid bubble (or shows inside the open panel).
 struct IslandAlert {
     enum class Kind { copy, charging, battery, lowBattery, focusDone, breakDone, timerDone,
-                      microphone, camera, volume, brightness, capsLock, numLock };
+                      microphone, camera, volume, brightness, capsLock, numLock, bluetooth, bluetoothAudio };
     Kind kind = Kind::copy;
     std::wstring title;
     std::wstring value;
@@ -45,6 +45,7 @@ struct IslandAlert {
     int priority = 1;                // a waiting alert is replaced only by one of equal or higher priority
     std::chrono::milliseconds hold{1800};
     std::optional<unsigned> meter = std::nullopt;
+    std::optional<unsigned> battery = std::nullopt;   // drawn as a battery cell before value
 };
 
 // The island UI from preview V7: an idle dot, a pill while something is going on, and a panel on hover.
@@ -199,6 +200,7 @@ private:
     void drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity);
     void drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color);
     void drawAlertMeter(float left, float right, float middle, float opacity);
+    void drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color);
     void drawInlineAlert(D2D1_RECT_F panel);
     void fillPolygon(std::initializer_list<D2D1_POINT_2F> points, D2D1_COLOR_F color);
     void pushLayer(ID2D1Geometry* mask, float opacity);

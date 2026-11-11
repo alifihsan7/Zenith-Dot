@@ -13,6 +13,7 @@ add_executable(ZenithDot WIN32
     src/power.cpp
     src/system.cpp
     src/desktop.cpp
+    src/bluetooth.cpp
     src/scratchpad.cpp
     src/settings.cpp
     src/drop_zone.cpp

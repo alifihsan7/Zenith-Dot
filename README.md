@@ -20,6 +20,8 @@ When the panel closes, it shrinks to a pill. The pill stays visible while an act
 
 Zenith Dot hides during fullscreen on the primary display and resumes when you leave fullscreen. Microphone or camera activity shows a pill with a device icon and label. When music or a timer is active, device icons sit beside that activity. Orange marks the microphone, and green marks the camera. Both icons appear when both devices are in use. The panel shows the same icons beside its tabs. A microphone muted at the Windows device level is excluded. An app's own mute button can leave its Windows capture session active.
 
+When a paired Bluetooth device connects or disconnects, a notice shows its name. Headsets and speakers use a headphone icon, and other devices use the Bluetooth mark. If the device reports its battery to Windows, the notice shows the level, in orange at 20% or below and red at 10% or below. Devices already connected when Zenith Dot starts are not announced.
+
 System volume and brightness changes show a meter that updates in place as you adjust the level. Brightness requires a display that publishes Windows WMI brightness events. The Windows volume and brightness flyouts can appear alongside Zenith Dot.
 
 The accent colour follows the current cover. The tray menu has media controls, **Hide Zenith Dot**, and **Exit**. Hiding leaves playback running. Choose **Show Zenith Dot** from the tray to bring it back.
@@ -77,6 +79,7 @@ Temporary connection or service failures are retried automatically. If the looku
 | `src/power.*` | Native battery and AC telemetry |
 | `src/system.*` | CPU and memory use for the System screen |
 | `src/desktop.*` | Fullscreen detection, capture indicators, and Windows volume and brightness events |
+| `src/bluetooth.*` | Paired Bluetooth connection changes and battery levels |
 | `src/scratchpad.*` | Native text editor, focus handoff, and local note storage |
 | `src/browser_tabs.*` and `browser/` | Optional Chrome, Edge, and Brave tab detection and native messaging |
 | `scripts/` | Per-user installation and removal |
@@ -107,6 +110,7 @@ Temporary connection or service failures are retried automatically. If the looku
 - Open System and check the battery percentage and AC status. Unplug and reconnect the charger. On a desktop without a battery, confirm the panel reports that state.
 - Enter and leave fullscreen in a video player on the primary display. The island should fade out, close its panel, and return after you exit fullscreen. Notices raised during fullscreen should expire without appearing afterwards.
 - Start microphone and camera capture in an app. Check that both icons appear. With capture still open, mute the microphone in Windows and verify that the orange icon disappears and the green one remains. Unmute and verify that the orange icon returns. With two active microphones, muting one should leave the icon visible.
+- Connect paired Bluetooth earbuds. After about two seconds a notice should show the device name with its battery level, or **Connected** if it reports none. Disconnect them and check the grey **Disconnected** notice. Restart Zenith Dot with the earbuds connected and confirm nothing is announced.
 - Change volume repeatedly, then mute. Check that one volume notice updates in place. On a display that publishes Windows brightness events, repeat with brightness.
 - Install, sign out, sign back in, and confirm there is one Zenith Dot process. Launch it again from Start and check that the process count stays at one.
 - Compare private working set after a minute at idle and during playback. For an Electron baseline, include its renderer and helper processes.

@@ -80,6 +80,11 @@ constexpr float dropFilledBaseHeight = 154;
 constexpr unsigned inkColor = 0xf5f6f8;
 constexpr unsigned mutedColor = 0xa4aab4;
 constexpr unsigned readoutColor = 0xc2e0ff;
+constexpr float batteryCellWidth = 25;   // 20 DIP cell, its nub, and the gap before the percentage
+
+unsigned batteryColor(unsigned level) {
+    return level <= 10 ? 0xff453a : level <= 20 ? 0xff9f0a : 0x30d158;
+}
 
 D2D1_COLOR_F rgb(unsigned value, float alpha = 1) {
     return D2D1::ColorF(value, alpha);
@@ -2327,6 +2332,7 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
     float width = 12 + 15 + 12;
     if (!alert.title.empty()) width += 7 + measure(alert.title, alertTitleFont_.get());
     if (!alert.value.empty()) width += 7 + measure(alert.value, alertValueFont_.get());
+    if (alert.battery) width += batteryCellWidth;
     alertWidth_ = alert.meter ? 168.0f : std::clamp(width + 1, 52.0f, maxBubble);
     alert_ = std::move(alert);
     if (update) return;
@@ -2464,17 +2470,28 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity
     drawAlertIcon(alert_->kind, pt(x, middle - 7.5f), alert_->color ? rgb(*alert_->color) : accent_);
     x += 15 + 7;
     const float end = area.right - 12;
+    // A long title (a device name) gives way so the value after it stays readable.
+    float valueWidth = 0;
+    if (!alert_->meter && !alert_->value.empty()) {
+        valueWidth = 7 + measure(alert_->value, alertValueFont_.get()) + (alert_->battery ? batteryCellWidth : 0);
+    }
     if (!alert_->title.empty() && end > x) {
-        const float titleWidth = measure(alert_->title, alertTitleFont_.get());
-        text(alert_->title, alertTitleFont_.get(), box(x, middle - 10, std::min(titleWidth + 1, end - x), 20),
+        const float titleWidth = std::min(measure(alert_->title, alertTitleFont_.get()) + 1,
+                                          std::max(0.0f, end - x - valueWidth));
+        text(alert_->title, alertTitleFont_.get(), box(x, middle - 10, titleWidth, 20),
              withAlpha(rgb(inkColor), copyOpacity));
-        x += titleWidth + 7;
+        x += titleWidth + 6;
     }
     if (alert_->meter) {
         drawAlertMeter(x, end, middle, copyOpacity);
     } else if (!alert_->value.empty() && end > x) {
-        text(alert_->value, alertValueFont_.get(), box(x, middle - 10, end - x, 20),
-             withAlpha(rgb(mutedColor), copyOpacity));
+        auto color = withAlpha(rgb(mutedColor), copyOpacity);
+        if (alert_->battery && end - x > batteryCellWidth) {
+            color = withAlpha(rgb(batteryColor(*alert_->battery)), copyOpacity);
+            drawBatteryCell(x, middle, *alert_->battery, color);
+            x += batteryCellWidth;
+        }
+        text(alert_->value, alertValueFont_.get(), box(x, middle - 10, end - x, 20), color);
     }
     popLayer();
 }
@@ -2545,6 +2562,21 @@ void Island::drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_CO
         }
         break;
     }
+    case IslandAlert::Kind::bluetoothAudio: {
+        PathBuilder band(graphics_.get());
+        band.move(pt(3, 10), false).line(pt(3, 8)).arc(pt(13, 8), 5, false, true).line(pt(13, 10));
+        target_->DrawGeometry(band.finish().get(), ink(color), 1.5f, roundStroke_.get());
+        target_->FillRoundedRectangle(rounded(box(2, 9.5f, 3, 4.5f), 1.2f), ink(color));
+        target_->FillRoundedRectangle(rounded(box(11, 9.5f, 3, 4.5f), 1.2f), ink(color));
+        break;
+    }
+    case IslandAlert::Kind::bluetooth: {
+        PathBuilder rune(graphics_.get());
+        rune.move(pt(4.5f, 5), false).line(pt(11.5f, 11)).line(pt(8, 14)).line(pt(8, 2)).line(pt(11.5f, 5))
+            .line(pt(4.5f, 11));
+        target_->DrawGeometry(rune.finish().get(), ink(color), 1.5f, roundStroke_.get());
+        break;
+    }
     case IslandAlert::Kind::brightness:
         target_->DrawEllipse(D2D1::Ellipse(pt(8, 8), 3, 3), ink(color), 1.4f);
         for (int ray = 0; ray < 8; ++ray) {
@@ -2569,6 +2601,14 @@ void Island::drawAlertMeter(float left, float right, float middle, float opacity
     }
     text(alert_->value, alertValueFont_.get(), box(right - labelWidth, middle - 10, labelWidth, 20),
          withAlpha(rgb(mutedColor), opacity));
+}
+
+void Island::drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color) {
+    const auto cell = box(left + 0.5f, middle - 5, 19, 10);
+    target_->DrawRoundedRectangle(rounded(cell, 2.5f), ink(color), 1);
+    target_->FillRoundedRectangle(rounded(box(cell.right + 1, middle - 2, 1.5f, 4), 0.75f), ink(color));
+    const float fill = 15 * std::min(level, 100u) / 100.0f;
+    if (fill > 0.5f) target_->FillRoundedRectangle(rounded(box(cell.left + 2, middle - 3, fill, 6), 1), ink(color));
 }
 
 // While the panel is open an alert shows as a row at its top instead of a bubble.

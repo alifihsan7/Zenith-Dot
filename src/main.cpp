@@ -1,5 +1,6 @@
 #include <initguid.h>
 
+#include "bluetooth.hpp"
 #include "browser_tabs.hpp"
 #include "desktop.hpp"
 #include "drop_zone.hpp"
@@ -59,6 +60,7 @@ private:
     void applyVisibility();
     bool suppressed() const { return fullscreen_ || hidden_; }
     void refreshCapture(bool announce = true);
+    void announceBluetooth();
     void showLevel(IslandAlert::Kind kind, unsigned percent, bool muted = false);
     void addTray();
     void showMenu(POINT point);
@@ -81,6 +83,7 @@ private:
     BrowserTabs browserTabs_;
     PowerState power_;
     DesktopMonitor desktop_;
+    BluetoothMonitor bluetooth_;
     CaptureActivity capture_;
     std::optional<WPARAM> lastVolume_;
     SystemMonitor system_;
@@ -143,6 +146,7 @@ int App::run(HINSTANCE instance) {
         frame();
     });
     desktop_.start(window_);
+    bluetooth_.start(window_);
     island_.setAudioOutput(desktop_.audioOutput());
     island_.setWindowsNotificationsQuiet(desktop_.notificationsQuiet());
     lyrics_ = std::make_shared<Lyrics>([this] { frame(); });
@@ -311,6 +315,29 @@ void App::refreshCapture(bool announce) {
     }
     capture_ = std::move(activity);
     if (announce) frame();
+}
+
+void App::announceBluetooth() {
+    auto events = bluetooth_.take();
+    if (events.empty()) return;
+    for (auto& event : events) {
+        IslandAlert alert{event.audio ? IslandAlert::Kind::bluetoothAudio : IslandAlert::Kind::bluetooth,
+                          std::move(event.name)};
+        alert.priority = 2;
+        if (!event.connected) {
+            alert.value = L"Disconnected";
+            alert.color = 0xa4aab4u;
+        } else if (event.battery) {
+            alert.value = std::to_wstring(*event.battery) + L"%";
+            alert.battery = event.battery;
+            if (*event.battery <= 10) alert.color = 0xff453au;
+            else if (*event.battery <= 20) alert.color = 0xff9f0au;
+        } else {
+            alert.value = L"Connected";
+        }
+        island_.notify(std::move(alert));
+    }
+    frame();
 }
 
 void App::showLevel(IslandAlert::Kind kind, unsigned percent, bool muted) {
@@ -660,6 +687,9 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     case DesktopMonitor::captureChanged:
         refreshCapture();
         return 0;
+    case BluetoothMonitor::changed:
+        announceBluetooth();
+        return 0;
     case DesktopMonitor::audioDeviceChanged:
         lastVolume_.reset();
         desktop_.refreshAudioDevice();
@@ -774,6 +804,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         KillTimer(window_, fullscreenTimer);
         KillTimer(window_, clipboardTimer);
         desktop_.stop();
+        bluetooth_.stop();
         if (lyrics_) lyrics_->stop();
         RemoveClipboardFormatListener(window_);
         if (monitor_) monitor_->stop();
