@@ -38,7 +38,7 @@ Choose Jakarta, Makassar, or Jayapura under **Prayer timetable city** to show th
 
 ### Notifications from Windows apps
 
-The MSIX build can show the app name and notification title for incoming Windows toasts. The user enables it with **Settings → Notifications → Connect Windows apps** and grants notification access in Windows. Zenith keeps the preview in memory while it is shown.
+The MSIX build can show the app name and notification title for incoming Windows toasts. The user enables it with **Settings → Notifications → Connect Windows apps** and grants notification access in Windows. Zenith keeps the preview in memory while it is shown. Use **Test notification** to show a sample Clock alert on the island before connecting Windows apps.
 
 To build the optional x64 MSIX using the Windows SDK:
 

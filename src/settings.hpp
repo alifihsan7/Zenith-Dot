@@ -11,11 +11,11 @@ inline constexpr UINT settingsTestMessage = WM_APP + 14;
 
 enum class SettingsTest : unsigned {
     appearance = 1, waveform, lyrics, pause, focus, resting, cycle, copied, copiedText, screenshot,
-    camera, microphone, feature, order
+    camera, microphone, feature, order, notification
 };
 
 constexpr bool validSettingsTest(unsigned test) {
-    return test >= static_cast<unsigned>(SettingsTest::appearance) && test <= static_cast<unsigned>(SettingsTest::order);
+    return test >= static_cast<unsigned>(SettingsTest::appearance) && test <= static_cast<unsigned>(SettingsTest::notification);
 }
 
 int runSettingsWindow(HINSTANCE instance);

@@ -369,7 +369,7 @@ void SettingsWindow::initialize(HWND window) {
         SetWindowSubclass(GetDlgItem(window, page.id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
     for (const int id : choiceControls)
         SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
-    for (const int id : {IDC_APP_NOTIFICATIONS, IDC_SETTINGS_GITHUB, IDC_FEATURE_BACK, IDC_FEATURE_UP, IDC_FEATURE_DOWN,
+    for (const int id : {IDC_APP_NOTIFICATIONS, IDC_TEST_NOTIFICATION, IDC_SETTINGS_GITHUB, IDC_FEATURE_BACK, IDC_FEATURE_UP, IDC_FEATURE_DOWN,
                         IDC_FEATURE_MEDIA, IDC_FEATURE_TIMERS, IDC_FEATURE_SCRATCH, IDC_FEATURE_DROP, IDC_FEATURE_SYSTEM}) {
         SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
     }
@@ -494,6 +494,7 @@ void SettingsWindow::showControls() {
     SetWindowTextW(appNotifications, settings_.showAppNotifications ? L"Turn off Windows app alerts" : L"Connect Windows apps");
     EnableWindow(appNotifications, packaged_ && !notificationRequest_);
     show(IDC_APP_NOTIFICATIONS, page_ == IDC_SETTINGS_NOTIFICATIONS && packaged_);
+    show(IDC_TEST_NOTIFICATION, page_ == IDC_SETTINGS_NOTIFICATIONS);
     show(IDC_SETTINGS_GITHUB, page_ == IDC_SETTINGS_ABOUT);
     EnableWindow(GetDlgItem(window_, IDC_PRAYER_REMINDERS), settings_.prayerCity != 0);
     EnableWindow(GetDlgItem(window_, IDC_CLIPBOARD_PREVIEWS), settings_.showClipboardBubble);
@@ -645,6 +646,10 @@ void SettingsWindow::completeNotificationAccess(NotificationAccess access) {
 }
 
 bool SettingsWindow::command(int id) {
+    if (id == IDC_TEST_NOTIFICATION) {
+        runTest(SettingsTest::notification);
+        return true;
+    }
     if (id == IDC_APP_NOTIFICATIONS && packaged_ && !notificationRequest_) {
         if (!settings_.showAppNotifications) {
             notificationRequest_ = requestNotificationAccess(window_);

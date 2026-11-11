@@ -51,6 +51,9 @@ SettingsExample::SettingsExample(SettingsTest test, Feature feature, Settings co
     case SettingsTest::copied:
         island_.notify({IslandAlert::Kind::copy, L"Copied", settings.showClipboardPreviews ? L"Example text" : L""});
         break;
+    case SettingsTest::notification:
+        island_.notify({IslandAlert::Kind::notification, L"Windows Clock", L"Timer finished", std::nullopt, 2, 2500ms});
+        break;
     case SettingsTest::camera:
         if (settings.showCameraIndicator) {
             island_.setCaptureColors({}, 0x30d158);
@@ -120,7 +123,8 @@ void SettingsExample::draw(HWND window, Clock::time_point now) {
         playing_ = false;
     } else if (test_ == SettingsTest::cycle && island_.focus_.expire(now)) {
         island_.finishFocus(now);
-    } else if (test_ == SettingsTest::copied || test_ == SettingsTest::camera || test_ == SettingsTest::microphone) {
+    } else if (test_ == SettingsTest::copied || test_ == SettingsTest::camera ||
+               test_ == SettingsTest::microphone || test_ == SettingsTest::notification) {
         island_.tick();
     }
     island_.draw(window);

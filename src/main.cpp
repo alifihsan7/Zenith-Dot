@@ -858,7 +858,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     }
     case settingsTestMessage:
-        if (wparam > static_cast<unsigned>(SettingsTest::order) || !validSettingsTest(static_cast<unsigned>(wparam)) ||
+        if (wparam > static_cast<unsigned>(SettingsTest::notification) || !validSettingsTest(static_cast<unsigned>(wparam)) ||
             lparam < 0 || lparam >= static_cast<LPARAM>(featureOrder.size())) return FALSE;
         startSettingsTest(static_cast<SettingsTest>(wparam), static_cast<Feature>(lparam));
         return TRUE;
