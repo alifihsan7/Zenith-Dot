@@ -1721,30 +1721,6 @@ static D2D1_RECT_F compactHit(D2D1_RECT_F shape, float amount) {
     return amount >= 1 ? grow(shape, 0, 3) : box(-22, pillTop - 3, 44, 46);
 }
 
-void Island::drawCompact(Clock::time_point now, float amount, bool hideTitle) {
-    if (bubbleShowing()) {
-        drawSplit(now, amount);
-        return;
-    }
-    // A nearly transparent hit area: layered windows only receive the pointer over painted pixels.
-    const auto shape = compactShape(now, amount);
-    const auto hit = compactHit(shape, amount);
-    target_->FillRectangle(hit, ink(D2D1::ColorF(0, 0, 0, 1.0f / 255)));
-    addTarget(hit, Hit::pill);
-
-    const float radius = std::min(shape.right - shape.left, shape.bottom - shape.top) / 2;
-    fillShell(rounded(shape, radius));
-    target_->DrawRoundedRectangle(rounded(grow(shape, -0.5f, -0.5f), radius - 0.5f), ink(white(0.13f)), 1);
-
-    const float opacity = lin(0.55f, 1, amount);
-    if (opacity <= 0) return;
-    winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
-    winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(rounded(shape, radius), clip.put()));
-    pushLayer(clip.get(), opacity);
-    drawCompactContent(now, shape, hideTitle);
-    popLayer();
-}
-
 void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideTitle) {
     const auto center = pt((shape.left + shape.right) / 2, (shape.top + shape.bottom) / 2);
     const float extra = captureWidth(now);
@@ -1870,7 +1846,7 @@ void Island::drawPillContent(Clock::time_point now, bool hideTitle) {
 
 // ---- Panel ---------------------------------------------------------------------------------------
 
-void Island::drawPanel(Clock::time_point now, float value, float amount, bool morphTitle) {
+void Island::drawIsland(Clock::time_point now, float value, float amount, bool morphTitle) {
     const auto full = panelRect(now);
     const auto from = compactShape(now, amount);
     const float fromRadius = std::min(from.right - from.left, from.bottom - from.top) / 2;
@@ -1881,50 +1857,67 @@ void Island::drawPanel(Clock::time_point now, float value, float amount, bool mo
     if (open_) panelWheel_ = clip;
     else closingPanel_ = clip;
     const float radius = std::lerp(fromRadius, panelRadius, value);
-    const float opacity = easeOut(value);
 
-    // Soft drop shadow (0 8px 22px at 35%), faded in as the panel settles.
-    const float shadow = lin(0.6f, 1, value) * opacity;
-    for (int ring = 0; ring < 8; ++ring) {
-        const float spread = -2.0f + ring * 3.0f;
-        const auto rect = grow(box(clip.left, clip.top + 8, clip.right - clip.left, clip.bottom - clip.top),
-                               spread, spread);
-        target_->FillRoundedRectangle(rounded(rect, radius + spread), ink(D2D1::ColorF(0, 0, 0, 0.045f * shadow)));
+    if (!open_) {
+        // Layered windows receive pointer input only where pixels have nonzero alpha.
+        const auto hit = compactHit(from, amount);
+        target_->FillRectangle(hit, ink(D2D1::ColorF(0, 0, 0, 1.0f / 255)));
+        addTarget(hit, Hit::pill);
     }
+    const float shadow = lin(0.6f, 1, value) * easeOut(value);
+    if (shadow > 0) {
+        for (int ring = 0; ring < 8; ++ring) {
+            const float spread = -2.0f + ring * 3.0f;
+            const auto rect = grow(box(clip.left, clip.top + 8, clip.right - clip.left, clip.bottom - clip.top),
+                                   spread, spread);
+            target_->FillRoundedRectangle(rounded(rect, radius + spread), ink(D2D1::ColorF(0, 0, 0, 0.045f * shadow)));
+        }
+    }
+
+    fillShell(rounded(clip, radius));
+    target_->DrawRoundedRectangle(rounded(grow(clip, -0.5f, -0.5f), radius - 0.5f),
+                                  ink(white(std::lerp(0.13f, 0.12f, value))), 1);
+    const float compactOpacity = lin(0.55f, 1, amount) * (1 - lin(0, 0.38f, value));
+    const float panelOpacity = lin(0.16f, 0.86f, value);
+    if (compactOpacity <= 0 && panelOpacity <= 0 && !morphTitle) return;
 
     winrt::com_ptr<ID2D1RoundedRectangleGeometry> mask;
     winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(rounded(clip, radius), mask.put()));
-    pushLayer(mask.get(), opacity);
-    fillShell(rounded(clip, radius));
-    target_->DrawRoundedRectangle(rounded(grow(clip, -0.5f, -0.5f), radius - 0.5f), ink(white(0.12f)), 1);
+    pushLayer(mask.get(), 1);
+    if (compactOpacity > 0) {
+        if (compactOpacity < 1) pushLayer(nullptr, compactOpacity);
+        drawCompactContent(now, from, morphTitle);
+        if (compactOpacity < 1) popLayer();
+    }
 
     recordPanel_ = open_ && value >= 1;
-    // Fade the artwork at its panel position once the expanding shell has room for it.
-    const float artOpacity = lin(0.55f, 0.9f, value);
     auto content = full;
-    if (const float inset = inlineInset(); inset > 0) {
-        drawInlineAlert(full);
-        content.top += inset;
-    }
-    const float switching = progress(screenStart_, screenFadeTime, now);
-    if (switching < 1 && screenFrom_ != screen_) {
-        const float enter = easeInOut(switching);
-        pushLayer(nullptr, 1 - enter);
-        drawScreen(screenFrom_, content, now, artOpacity, false, false);
-        popLayer();
-        if (enter > 0) {
-            pushLayer(nullptr, enter);
-            drawScreen(screen_, content, now, artOpacity, false, recordPanel_);
+    const float inset = inlineInset();
+    content.top += inset;
+    if (panelOpacity > 0) {
+        if (panelOpacity < 1) pushLayer(nullptr, panelOpacity);
+        if (inset > 0) drawInlineAlert(full);
+        const float artOpacity = lin(0.55f, 0.9f, value);
+        const float switching = progress(screenStart_, screenFadeTime, now);
+        if (switching < 1 && screenFrom_ != screen_) {
+            const float enter = easeInOut(switching);
+            pushLayer(nullptr, 1 - enter);
+            drawScreen(screenFrom_, content, now, artOpacity, false, false);
             popLayer();
+            if (enter > 0) {
+                pushLayer(nullptr, enter);
+                drawScreen(screen_, content, now, artOpacity, false, recordPanel_);
+                popLayer();
+            }
+        } else {
+            drawScreen(screen_, content, now, artOpacity, morphTitle, recordPanel_);
         }
-    } else {
-        drawScreen(screen_, content, now, artOpacity, morphTitle, recordPanel_);
+        drawNav(full, recordPanel_);
+        if (recordPanel_ && sourcePickerOpen_) drawSourceMenu(content);
+        if (panelOpacity < 1) popLayer();
     }
-    drawNav(full, recordPanel_);
-    if (recordPanel_ && sourcePickerOpen_) drawSourceMenu(content);
+    if (morphTitle) drawSharedTitle(from, content, captureWidth(now), value);
     popLayer();
-
-    if (morphTitle) drawSharedTitle(content, value);
 }
 
 void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, float artOpacity,
@@ -2529,12 +2522,14 @@ void Island::drawNav(D2D1_RECT_F panel, bool record) {
     target_->DrawLine(pt(x, y + 2), pt(x, y + 7), ink(color), 1.4f, roundStroke_.get());
 }
 
-void Island::drawSharedTitle(D2D1_RECT_F panel, float value) {
+void Island::drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float capture, float value) {
     // The title is drawn at its panel size and scaled down to the pill's 12px at the start.
     const float scale = std::lerp(12.0f / 16.0f, 1.0f, value);
-    const float x = std::lerp(pillLeft + 28, panel.left + 68, value);
-    const float y = std::lerp(pillCenterY - 22.4f * 0.75f / 2, panel.top + 14.4f, value);
-    const float width = std::lerp(82.0f / 0.75f, mediaTitleWidth, value);
+    const float compactCenter = (compact.left + compact.right - capture) / 2;
+    const float x = std::lerp(compactCenter + pillLeft + 28, panel.left + 68, value);
+    const float y = std::lerp((compact.top + compact.bottom - 22.4f * 0.75f) / 2, panel.top + 14.4f, value);
+    const float compactWidth = pillWidth - 12 - (pillPlaying_ ? 17.5f : 10.0f) - 8 - 28;
+    const float width = std::lerp(compactWidth / 0.75f, mediaTitleWidth, value);
     target_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) * D2D1::Matrix3x2F::Translation(x, y) * base_);
     text(title(), titleFont_.get(), box(0, 0, width, 22.4f), rgb(inkColor));
     target_->SetTransform(base_);
@@ -2585,10 +2580,13 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
     alertWidth_ = alert.meter ? 168.0f : std::clamp(width + 1, 52.0f, maxBubble);
     alert_ = std::move(alert);
     if (update) return;
-    // A dot <-> pill morph in flight snaps to its end so the split starts from a settled shape.
-    pillFrom_ = pillTarget_;
-    pillVelocity_ = 0;
-    pillStart_ = {};
+    const bool closing = !open_ && panelValue(now) > 0;
+    if (!closing) {
+        // The split starts from a settled dot or pill.
+        pillFrom_ = pillTarget_;
+        pillVelocity_ = 0;
+        pillStart_ = {};
+    }
     alertHoldUntil_.reset();
     alertInline_ = open_;
     if (alertInline_) {
@@ -2602,7 +2600,7 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
     alertFrom_ = 0;
     alertVelocity_ = 0;
     alertTo_ = 1;
-    alertStart_ = now;
+    alertStart_ = closing ? std::max(now, panelStart_ + shapeTime) : now;
 }
 
 void Island::finishAlert(Clock::time_point now) {
@@ -2901,7 +2899,6 @@ void Island::draw(HWND window) {
     const float amount = pillAmount(now);
     const float value = panelValue(now);
     const bool panelVisible = open_ || value > 0;
-    const bool compactVisible = !open_;
     const bool switchingScreen = screenFrom_ != screen_ && progress(screenStart_, screenFadeTime, now) < 1;
     const bool morphTitle = shareTitle_ && screen_ == Screen::media && media_.hasSession &&
                             !switchingScreen && value > 0 && value < 1;
@@ -2941,8 +2938,8 @@ void Island::draw(HWND window) {
     target_->BeginDraw();
     target_->SetTransform(base_);
     target_->Clear(D2D1::ColorF(0, 0));
-    if (compactVisible) drawCompact(now, amount, morphTitle);
-    if (panelVisible) drawPanel(now, value, amount, morphTitle);
+    if (!panelVisible && bubbleShowing()) drawSplit(now, amount);
+    else drawIsland(now, value, amount, morphTitle);
     const HRESULT result = target_->EndDraw();
     if (result == D2DERR_RECREATE_TARGET) {
         releaseDeviceResources();

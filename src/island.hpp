@@ -188,11 +188,10 @@ private:
     void prepareSurface(int width, int height, bool animating);
     void prepareText();
     void releaseDeviceResources();
-    void drawCompact(Clock::time_point now, float amount, bool hideTitle);
     void drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideTitle);
     void drawLyricsGlyph(D2D1_POINT_2F origin, D2D1_COLOR_F color);
     void drawPillContent(Clock::time_point now, bool hideTitle);
-    void drawPanel(Clock::time_point now, float value, float amount, bool morphTitle);
+    void drawIsland(Clock::time_point now, float value, float amount, bool morphTitle);
     void drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record);
     void drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record);
     void drawSourceIcon(MediaSource const& source, D2D1_POINT_2F center);
@@ -209,7 +208,7 @@ private:
     void drawNav(D2D1_RECT_F panel, bool record);
     void drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color);
     static std::wstring_view screenLabel(Screen screen);
-    void drawSharedTitle(D2D1_RECT_F panel, float value);
+    void drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float capture, float value);
     void drawArt(D2D1_RECT_F rect, float opacity);
     void drawFocusGlyph(D2D1_POINT_2F center, float size, D2D1_COLOR_F color);
     void drawTimerGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color);
