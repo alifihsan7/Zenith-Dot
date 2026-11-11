@@ -33,7 +33,7 @@ constexpr float mediaPanelWidth = 344;
 // System: system info on the left, sound on the right.
 constexpr float systemPanelWidth = 530;
 constexpr float systemHeight = 228;
-constexpr float prayerRowHeight = 60;
+constexpr float prayerPanelHeight = 152;
 constexpr float systemLeftWidth = 196;
 constexpr float systemRightGap = 29;      // gap, divider, gap
 constexpr float systemRightWidth = systemPanelWidth - 28 - systemLeftWidth - systemRightGap;
@@ -478,6 +478,7 @@ void Island::setPreferences(Settings const& settings) {
     for (const auto feature : settings.features) {
         if (settings.enabled(feature)) screens_.push_back(feature);
     }
+    if (settings.enabled(Screen::prayer)) screens_.push_back(Screen::prayer);
     const auto now = Clock::now();
     if (!settings.enabled(screen_) && !screens_.empty()) showScreen(screens_.front(), now);
     if (!settings.enabled(Screen::drop)) dropHover_ = false;
@@ -524,17 +525,7 @@ void Island::setPower(PowerState const& power) {
 }
 
 void Island::setPrayerSchedule(std::optional<PrayerSchedule> const& schedule) {
-    if (prayerSchedule_ == schedule) return;
-    const auto now = Clock::now();
-    const float before = panelHeight(now);
-    const bool resize = prayerSchedule_.has_value() != schedule.has_value();
     prayerSchedule_ = schedule;
-    if (open_ && screen_ == Screen::system && resize) {
-        heightFrom_ = before;
-        keepHeight_ = std::max(keepHeight_, before);
-        screenFrom_ = screen_;
-        screenStart_ = animate_ ? now : Clock::time_point{};
-    }
 }
 
 void Island::setSystem(SystemStats const& stats) {
@@ -741,7 +732,8 @@ float Island::screenHeight(Screen screen) const {
     case Screen::scratch: return 216.0f;
     case Screen::drop: return dropItems_.empty() ? dropEmptyHeight :
         dropFilledBaseHeight + dropRowHeight * static_cast<float>(std::min(dropItems_.size(), visibleDropRows));
-    case Screen::system: return systemHeight + (prayerSchedule_ ? prayerRowHeight : 0);
+    case Screen::system: return systemHeight;
+    case Screen::prayer: return prayerPanelHeight;
     }
     return 146.0f;
 }
@@ -1446,6 +1438,7 @@ IslandCommand Island::pointerUp(POINT client) {
     case Hit::navScratch: showScreen(Screen::scratch, now); break;
     case Hit::navDrop: showScreen(Screen::drop, now); break;
     case Hit::navSystem: showScreen(Screen::system, now); break;
+    case Hit::navPrayer: showScreen(Screen::prayer, now); break;
     case Hit::lyrics: {
         const bool lyricsVisible = wantsLyrics();
         widthFrom_ = panelWidthAt(now);
@@ -2036,6 +2029,7 @@ void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now,
     case Screen::scratch: drawScratchpad(panel, record); break;
     case Screen::drop: drawDropZone(panel, record); break;
     case Screen::system: drawSystem(panel, record); break;
+    case Screen::prayer: drawPrayerSchedule(panel); break;
     }
 }
 
@@ -2489,19 +2483,6 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
         *windowsNotificationsQuiet_ ? L"Do Not Disturb on" : L"Do Not Disturb off";
     drawButton(box(x, y + systemContentBottom - 25, left, 25), notificationLabel, Hit::notificationSettings, record);
 
-    if (prayerSchedule_) {
-        const auto& schedule = *prayerSchedule_;
-        const float prayerY = y + systemContentBottom + 5;
-        constexpr float column = (systemPanelWidth - 2 * padX) / prayerNames.size();
-        const auto heading = std::wstring(L"Prayer times · ") + schedule.city;
-        text(heading, bodyFont_.get(), box(x, prayerY, 220, 16), rgb(inkColor));
-        for (size_t i = 0; i < prayerNames.size(); ++i) {
-            const float start = x + column * static_cast<float>(i);
-            text(prayerNames[i], bodyFont_.get(), box(start, prayerY + 18, column, 15), rgb(mutedColor));
-            text(prayerTimeText(schedule.times[i]), bodyFont_.get(), box(start, prayerY + 34, column, 17), rgb(inkColor));
-        }
-    }
-
     const float divider = x + left + systemRightGap / 2;
     target_->FillRectangle(box(divider, y + 16, 1, systemContentBottom - 16), ink(white(0.08f)));
 
@@ -2526,6 +2507,53 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
     for (size_t index = appOffset_; index < end; ++index) {
         drawAppVolume(index, box(right, rows.top + appRowHeight * static_cast<float>(index - appOffset_),
                                  width, appRowHeight), record);
+    }
+}
+
+void Island::drawPrayerSchedule(D2D1_RECT_F panel) {
+    const float leftEdge = (panel.left + panel.right - panelWidth) / 2 + padX;
+    const auto area = box(leftEdge, panel.top + padTop, panelWidth - 2 * padX, 91);
+    if (!prayerSchedule_) {
+        text(L"Prayer times unavailable", bodyFont_.get(), area, rgb(mutedColor));
+        return;
+    }
+    const auto& schedule = *prayerSchedule_;
+    const auto heading = std::wstring(L"Prayer times · ") + schedule.city;
+    text(heading, bodyFont_.get(), box(area.left, area.top, area.right - area.left, 17), rgb(inkColor));
+
+    constexpr float labelWidth = 58;
+    constexpr float labelGap = 4;
+    constexpr float labelStep = labelWidth + labelGap;
+    constexpr float rise = 24;
+    const float left = area.left + labelWidth / 2;
+    const float right = area.right - labelWidth / 2;
+    const float baseline = area.top + 48;
+    PathBuilder arc(graphics_.get());
+    arc.move(pt(left, baseline), false)
+        .curve(pt(std::lerp(left, right, 1.0f / 3), baseline - 4 * rise / 3),
+               pt(std::lerp(left, right, 2.0f / 3), baseline - 4 * rise / 3),
+               pt(right, baseline));
+    target_->DrawGeometry(arc.finish().get(), ink(white(0.36f)), 1.5f, roundStroke_.get());
+
+    const int first = schedule.times.front();
+    const int duration = std::max(1, schedule.times.back() - first);
+    float nextLabel = left;
+    for (size_t i = 0; i < schedule.times.size(); ++i) {
+        const float t = static_cast<float>(schedule.times[i] - first) / duration;
+        const float x = std::lerp(left, right, t);
+        const float y = baseline - 4 * rise * t * (1 - t);
+        const auto remaining = static_cast<float>(schedule.times.size() - 1 - i);
+        const float label = std::clamp(x, nextLabel, right - remaining * labelStep);
+        nextLabel = label + labelStep;
+        target_->DrawLine(pt(x, y), pt(label, y + 9), ink(white(0.36f)), 1);
+        target_->FillEllipse(D2D1::Ellipse(pt(x, y), 3, 3), ink(rgb(inkColor)));
+
+        const auto centered = [&](std::wstring_view value, float top, unsigned color) {
+            const float width = std::ceil(measure(value, bodyFont_.get())) + 2;
+            text(value, bodyFont_.get(), box(label - width / 2, top, width, 16), rgb(color));
+        };
+        centered(prayerNames[i], y + 10, mutedColor);
+        centered(prayerTimeText(schedule.times[i]), y + 26, inkColor);
     }
 }
 
@@ -2591,6 +2619,7 @@ std::wstring_view Island::screenLabel(Screen screen) {
     case Screen::scratch: return L"Scratchpad";
     case Screen::drop: return L"Drop Zone";
     case Screen::system: return L"System";
+    case Screen::prayer: return L"Prayer";
     }
     return {};
 }
@@ -2608,6 +2637,7 @@ void Island::drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color
         target_->DrawRoundedRectangle(rounded(box(center.x - 7, center.y + 3, 14, 4), 1), ink(color), 1.5f);
         break;
     case Screen::system: drawChipGlyph(center, color); break;
+    case Screen::prayer: text(L"☾", glyphFont_.get(), rect, color); break;
     }
 }
 
@@ -2616,10 +2646,12 @@ void Island::drawNav(D2D1_RECT_F panel, bool record) {
     drawCaptureIndicators(pt(panel.left + padX + 26, top + navHeight / 2),
                           microphoneColor_ ? 1.0f : 0.0f, cameraColor_ ? 1.0f : 0.0f);
     const auto count = screens_.size();
-    const float start = (panel.left + panel.right - (static_cast<float>(count) * 43 - 8)) / 2.0f;
-    const Hit hits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem};
+    const float step = count > featureOrder.size() ? 36.0f : 43.0f;
+    const float tabWidth = step - 8;
+    const float start = (panel.left + panel.right - (static_cast<float>(count) * step - 8)) / 2;
+    const Hit hits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem, Hit::navPrayer};
     for (size_t i = 0; i < count; ++i) {
-        const auto rect = box(start + static_cast<float>(i) * 43, top, 35, navHeight);
+        const auto rect = box(start + static_cast<float>(i) * step, top, tabWidth, navHeight);
         const auto screen = screens_[i];
         const auto hit = hits[static_cast<unsigned>(screen)];
         const bool selected = screen_ == screen;

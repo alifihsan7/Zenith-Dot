@@ -7,7 +7,7 @@
 
 namespace zenith {
 
-inline constexpr std::array prayerNames{L"Subuh", L"Zuhur", L"Asar", L"Maghrib", L"Isya"};
+inline constexpr std::array prayerNames{L"Subuh", L"Dzuhur", L"Ashar", L"Magrib", L"Isya"};
 
 struct PrayerSchedule {
     wchar_t const* city;

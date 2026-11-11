@@ -114,7 +114,7 @@ public:
 private:
     friend class SettingsExample;
     enum class Hit { none, pill, previous, toggle, next, timeline, cover, sourcePicker, sourceMenu, source, navMedia, navTimers,
-                     navScratch, navSystem, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
+                     navScratch, navSystem, navPrayer, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
                      timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
                      appVolume, appMute, autoCycle };
@@ -213,6 +213,7 @@ private:
     void drawDropZone(D2D1_RECT_F panel, bool record);
     void drawCaptureIndicators(D2D1_POINT_2F right, float mic, float camera);
     void drawSystem(D2D1_RECT_F panel, bool record);
+    void drawPrayerSchedule(D2D1_RECT_F panel);
     void drawAppVolume(size_t index, D2D1_RECT_F row, bool record);
     float volumeFraction(D2D1_POINT_2F point) const;
     void drawNav(D2D1_RECT_F panel, bool record);

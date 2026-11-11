@@ -20,7 +20,7 @@ constexpr bool validSettingsTest(unsigned test) {
 
 int runSettingsWindow(HINSTANCE instance);
 
-enum class Feature : unsigned { media, timers, scratch, drop, system };
+enum class Feature : unsigned { media, timers, scratch, drop, system, prayer };
 inline constexpr std::array featureOrder{Feature::media, Feature::timers, Feature::scratch, Feature::drop, Feature::system};
 
 enum class QuietMode : unsigned { off, followWindows, on };
@@ -50,7 +50,10 @@ struct Settings {
     std::array<Feature, featureOrder.size()> features = featureOrder;
     unsigned enabledFeatures = 0x1f;
 
-    bool enabled(Feature feature) const { return (enabledFeatures & (1u << static_cast<unsigned>(feature))) != 0; }
+    bool enabled(Feature feature) const {
+        if (feature == Feature::prayer) return prayerCity != 0;
+        return (enabledFeatures & (1u << static_cast<unsigned>(feature))) != 0;
+    }
     unsigned pauseSeconds() const { return std::array{0u, 3u, 5u, 0u}[compactPause]; }
     int focusMinutes() const { return std::array{15, 25, 45}[focusPreset]; }
     int breakMinutes() const { return std::array{5, 10, 15}[breakPreset]; }
