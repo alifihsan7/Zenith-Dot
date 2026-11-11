@@ -19,7 +19,7 @@ constexpr float pillWidth = 147;
 constexpr float pillHeight = 40;
 constexpr float pausedPillWidth = 46;
 constexpr float pausedPillHeight = 32;
-constexpr float pillTrackLeft = 28;
+constexpr float pillTrackLeft = 32;
 constexpr float pillTrackRight = 38;
 constexpr float maxPillLyricWidth = 720;
 constexpr float maxPillLyricHeight = 160;
@@ -1732,11 +1732,21 @@ void Island::drawButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool
     if (record) addTarget(rect, hit, index);
 }
 
-// The cover, or the app's logo on a dark tile when the player gives no cover.
+D2D1_RECT_F Island::pillArtRect(D2D1_RECT_F pill, float capture) const {
+    const float available = pill.right - pill.left - capture;
+    const float width = std::min(available, std::max(pillWidth, pillTrackSize_.width));
+    const float reveal = lin(dotSize, pausedPillWidth, width);
+    const float full = lin(pausedPillWidth, pillWidth, width);
+    const float size = std::lerp(8.0f, std::lerp(16.0f, 20.0f, full), reveal);
+    const float center = (pill.left + pill.right - capture) / 2;
+    const float left = center - width / 2 + std::lerp(7.0f, 8.0f, full);
+    return box(std::lerp(center - size / 2, left, reveal), (pill.top + pill.bottom - size) / 2, size, size);
+}
+
 void Island::drawArt(D2D1_RECT_F rect, float opacity) {
     if (opacity <= 0) return;
-    constexpr float radius = 8;
     const float size = rect.right - rect.left;
+    const float radius = std::lerp(size / 2, std::min(8.0f, size * 0.24f), lin(8, 16, size));
     if (auto* image = bitmap(cover_)) {
         winrt::com_ptr<ID2D1BitmapBrush> fill;
         winrt::check_hresult(target_->CreateBitmapBrush(image, fill.put()));
@@ -1748,14 +1758,14 @@ void Island::drawArt(D2D1_RECT_F rect, float opacity) {
         return;
     }
     target_->FillRoundedRectangle(rounded(rect, radius), ink(white(0.08f * opacity)));
-    const D2D1_POINT_2F center{(rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2};
-    if (auto* logo = icon(media_.appId); logo && bitmap(*logo)) {
-        const float side = size * 0.55f;
-        target_->DrawBitmap(logo->bitmap.get(), box(center.x - side / 2, center.y - side / 2, side, side), opacity,
-                            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-    } else if (size >= 24) {
-        text(L"♫", glyphFont_.get(), rect, rgb(mutedColor, opacity));
-    }
+    const auto center = pt((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+    const float unit = std::min(1.25f, size / 16);
+    const auto color = ink(rgb(mutedColor, opacity));
+    target_->FillEllipse(D2D1::Ellipse(pt(center.x - 2 * unit, center.y + 3 * unit), 2.2f * unit, 1.6f * unit), color);
+    target_->DrawLine(pt(center.x, center.y + 3 * unit), pt(center.x, center.y - 4 * unit), color, 1.25f * unit,
+                      roundStroke_.get());
+    target_->DrawLine(pt(center.x, center.y - 4 * unit), pt(center.x + 3 * unit, center.y - 2 * unit), color,
+                      1.25f * unit, roundStroke_.get());
 }
 
 // ---- Compact: dot and pill -----------------------------------------------------------------------
@@ -1764,7 +1774,7 @@ static D2D1_RECT_F compactHit(D2D1_RECT_F shape, float amount) {
     return amount >= 1 ? grow(shape, 0, 3) : box(-22, pillTop - 3, 44, 46);
 }
 
-void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideTitle) {
+void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideTitle, bool hideArt) {
     const auto center = pt((shape.left + shape.right) / 2, (shape.top + shape.bottom) / 2);
     const float extra = captureWidth(now);
     const float t = pillTransitionProgress(now);
@@ -1789,6 +1799,7 @@ void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool h
         mediaOpacity = (previousPillLyric_.layout ? 0 : oldOpacity) + (pillLyric_.layout ? 0 : newOpacity);
     }
     if (mediaOpacity > 0) {
+        if (pillContent_ == PillMode::media && !hideArt) drawArt(pillArtRect(shape, extra), mediaOpacity);
         target_->SetTransform(D2D1::Matrix3x2F::Translation(center.x - extra / 2, center.y - pillCenterY) * base_);
         if (mediaOpacity < 1) pushLayer(nullptr, mediaOpacity);
         drawPillContent(now, shape.right - shape.left - extra, hideTitle);
@@ -1855,9 +1866,6 @@ void Island::drawPillContent(Clock::time_point now, float width, bool hideTitle)
     const float trackLeft = -trackWidth / 2;
     const float trackRight = trackWidth / 2;
     const float full = lin(pausedPillWidth, pillWidth, trackWidth);
-    const float dotRadius = std::lerp(3.0f, 4.0f, full);
-    target_->FillEllipse(D2D1::Ellipse({trackLeft + std::lerp(14.0f, 16.0f, full), pillCenterY},
-                                      dotRadius, dotRadius), ink(accent_));
     if (pillPlaying_) {
         // Four bars, each scaling between 40% and 100% (V7's 0.75s alternate ease-in-out loop).
         constexpr float heights[]{8, 14, 10, 6};
@@ -1927,14 +1935,18 @@ void Island::drawIsland(Clock::time_point now, float value, float amount, bool m
                                   ink(white(std::lerp(0.13f, 0.12f, value))), 1);
     const float compactOpacity = lin(0.55f, 1, amount) * (1 - lin(0, 0.38f, value));
     const float panelOpacity = lin(0.16f, 0.86f, value);
-    if (compactOpacity <= 0 && panelOpacity <= 0 && !morphTitle) return;
+    const float switching = progress(screenStart_, screenFadeTime, now);
+    const bool sharedArt = screen_ == Screen::media && media_.hasSession && pillMode_ == PillMode::media &&
+                           !pillLyric_.layout && !previousPillLyric_.layout &&
+                           (switching >= 1 || screenFrom_ == screen_) && amount >= 1 && value > 0 && value < 1;
+    if (compactOpacity <= 0 && panelOpacity <= 0 && !morphTitle && !sharedArt) return;
 
     winrt::com_ptr<ID2D1RoundedRectangleGeometry> mask;
     winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(rounded(clip, radius), mask.put()));
     pushLayer(mask.get(), 1);
     if (compactOpacity > 0) {
         if (compactOpacity < 1) pushLayer(nullptr, compactOpacity);
-        drawCompactContent(now, from, morphTitle);
+        drawCompactContent(now, from, morphTitle, sharedArt);
         if (compactOpacity < 1) popLayer();
     }
 
@@ -1945,8 +1957,7 @@ void Island::drawIsland(Clock::time_point now, float value, float amount, bool m
     if (panelOpacity > 0) {
         if (panelOpacity < 1) pushLayer(nullptr, panelOpacity);
         if (inset > 0) drawInlineAlert(full);
-        const float artOpacity = lin(0.55f, 0.9f, value);
-        const float switching = progress(screenStart_, screenFadeTime, now);
+        const float artOpacity = sharedArt ? 0 : lin(0.55f, 0.9f, value);
         if (switching < 1 && screenFrom_ != screen_) {
             const float enter = easeInOut(switching);
             pushLayer(nullptr, 1 - enter);
@@ -1963,6 +1974,10 @@ void Island::drawIsland(Clock::time_point now, float value, float amount, bool m
         drawNav(full, recordPanel_);
         if (recordPanel_ && sourcePickerOpen_) drawSourceMenu(content);
         if (panelOpacity < 1) popLayer();
+    }
+    if (sharedArt) {
+        const auto panelArt = box(content.left + 14, content.top + 12, 44, 44);
+        drawArt(mixRect(pillArtRect(from, captureWidth(now)), panelArt, value), 1);
     }
     if (morphTitle) drawSharedTitle(from, content, captureWidth(now), value);
     popLayer();
