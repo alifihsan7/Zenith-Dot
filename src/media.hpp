@@ -3,7 +3,6 @@
 #include <windows.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Media.Control.h>
-#include <winrt/Windows.Storage.Streams.h>
 
 #include <chrono>
 #include <cstdint>
@@ -30,16 +29,19 @@ struct Cover {
     std::vector<uint8_t> pixels;
 };
 
-// A Windows media app.
+// A Windows media app or a tab exposed by the browser extension.
 struct MediaSource {
     std::wstring appId;
     bool playing = false;
+    std::wstring id;
+    unsigned tabNumber = 0;
 };
 
 struct MediaState {
     bool hasSession = false;
     bool playing = false;
     std::wstring appId;
+    std::wstring sourceId;
     std::wstring title;
     std::wstring artist;
     std::wstring album;
@@ -47,8 +49,7 @@ struct MediaState {
     std::shared_ptr<const Cover> cover;
     std::vector<MediaSource> sources;
     bool canSeek = false;
-    bool canPrevious = false;
-    bool canNext = false;
+    bool canSkip = true;
     double duration = 0;
     double position = 0;
     double rate = 1;
@@ -61,14 +62,12 @@ class MediaMonitor : public std::enable_shared_from_this<MediaMonitor> {
 public:
     static constexpr UINT notification = WM_APP + 1;
     static constexpr UINT_PTR artworkTimer = 4;
-    static constexpr UINT_PTR trackTimer = 6;
 
     MediaMonitor(HWND window, std::function<void(MediaState const&)> changed);
     winrt::Windows::Foundation::IAsyncAction start();
     void stop();
     void refresh(WPARAM reason);
     void retryArtwork();
-    void retryTrack();
     winrt::Windows::Foundation::IAsyncAction control(MediaCommand command);
     winrt::Windows::Foundation::IAsyncAction seek(double seconds);
     // Shows and controls this app's session until the user switches or the session closes.
@@ -93,12 +92,7 @@ private:
     bool selectSession();
     void updateState();
     void requestMetadata();
-    void refreshTrack();
-    void stopTrackRefresh();
-    winrt::Windows::Foundation::IAsyncAction readMetadata(bool trackProbe = false);
-    winrt::Windows::Foundation::IAsyncAction readArtwork(
-        winrt::Windows::Storage::Streams::IRandomAccessStreamReference thumbnail, unsigned revision);
-    void scheduleArtworkRetry(unsigned revision);
+    winrt::Windows::Foundation::IAsyncAction readMetadata();
     void restoreArtwork();
     void rememberArtwork();
 
@@ -116,10 +110,7 @@ private:
     winrt::Windows::Foundation::TimeSpan timelineStart_{};
     winrt::Windows::Foundation::DateTime timelineUpdated_{};
     unsigned metadataRevision_ = 0;
-    unsigned trackVersion_ = 0;
     unsigned artworkRetries_ = 0;
-    unsigned trackProbesLeft_ = 0;
-    winrt::Windows::Foundation::IAsyncAction artworkRead_{nullptr};
     std::vector<Artwork> artwork_;
     bool readingMetadata_ = false;
     bool stopped_ = false;

@@ -132,9 +132,6 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::start() {
 void MediaMonitor::stop() {
     stopped_ = true;
     KillTimer(window_, artworkTimer);
-    stopTrackRefresh();
-    if (artworkRead_) artworkRead_.Cancel();
-    artworkRead_ = nullptr;
     sessionsChanged_.revoke();
     currentChanged_.revoke();
     metadataChanged_.revoke();
@@ -181,7 +178,6 @@ bool MediaMonitor::selectSession() {
     }
     if (selected_ == next) return false;
 
-    stopTrackRefresh();
     metadataChanged_.revoke();
     timelineChanged_.revoke();
     selected_ = next;
@@ -201,21 +197,19 @@ bool MediaMonitor::selectSession() {
 void MediaMonitor::updateState() {
     const auto now = std::chrono::steady_clock::now();
     const auto previousPosition = state_.positionAt(now);
-    bool restarted = false;
     state_.hasSession = static_cast<bool>(selected_);
     state_.appId = selected_ ? appIdOf(selected_) : std::wstring{};
     state_.playing = false;
     state_.canSeek = false;
-    state_.canPrevious = false;
-    state_.canNext = false;
     state_.sampledAt = now;
+    // The browser bridge supplies per-tab sources separately from Windows app sessions.
     state_.sources.clear();
     for (const auto& entry : sessions_) {
         const auto id = appIdOf(entry.session);
         if (id.empty()) continue;
         const auto known = std::ranges::find(state_.sources, id, &MediaSource::appId);
         if (known == state_.sources.end()) {
-            state_.sources.push_back({id, isPlaying(entry.session)});
+            state_.sources.push_back({id, isPlaying(entry.session), {}, 0});
         } else {
             known->playing = known->playing || isPlaying(entry.session);
         }
@@ -223,13 +217,9 @@ void MediaMonitor::updateState() {
     if (selected_) {
         try {
             const auto info = selected_.GetPlaybackInfo();
-            state_.playing = info && info.PlaybackStatus() == Status::Playing;
-            if (const auto controls = info ? info.Controls() : nullptr) {
-                state_.canSeek = controls.IsPlaybackPositionEnabled();
-                state_.canPrevious = controls.IsPreviousEnabled();
-                state_.canNext = controls.IsNextEnabled();
-            }
             const auto properties = selected_.GetTimelineProperties();
+            state_.playing = info && info.PlaybackStatus() == Status::Playing;
+            state_.canSeek = info && info.Controls().IsPlaybackPositionEnabled();
             const auto rate = info ? info.PlaybackRate() : nullptr;
             state_.rate = rate ? rate.Value() : 1.0;
             if (!std::isfinite(state_.rate)) state_.rate = 1.0;
@@ -245,8 +235,6 @@ void MediaMonitor::updateState() {
                     const auto age = winrt::clock::now() - updated;
                     state_.position += std::max(0.0, std::chrono::duration<double>(age).count()) * state_.rate;
                 }
-                restarted = updated != timelineUpdated_ && state_.playing &&
-                    previousPosition >= 4 && state_.position >= 0 && state_.position < 2;
                 timelineUpdated_ = updated;
                 state_.position = std::clamp(state_.position, 0.0, state_.duration);
             } else {
@@ -258,7 +246,6 @@ void MediaMonitor::updateState() {
         }
     }
     changed_(state_);
-    if (restarted && !trackProbesLeft_) refreshTrack();
 }
 
 void MediaMonitor::refresh(WPARAM reason) {
@@ -277,32 +264,12 @@ void MediaMonitor::requestMetadata() {
     KillTimer(window_, artworkTimer);
     artworkRetries_ = 0;
     ++metadataRevision_;
-    if (artworkRead_) artworkRead_.Cancel();
-    artworkRead_ = nullptr;
     if (selected_ && !readingMetadata_) readMetadata();
 }
 
 void MediaMonitor::retryArtwork() {
     KillTimer(window_, artworkTimer);
-    if (artworkRead_ && artworkRead_.Status() == winrt::Windows::Foundation::AsyncStatus::Started) return;
     if (!stopped_ && selected_ && !readingMetadata_ && !state_.cover) readMetadata();
-}
-
-void MediaMonitor::refreshTrack() {
-    trackProbesLeft_ = 12;
-    if (!SetTimer(window_, trackTimer, 150, nullptr)) stopTrackRefresh();
-    if (!readingMetadata_) readMetadata(true);
-}
-
-void MediaMonitor::retryTrack() {
-    if (!trackProbesLeft_) return;
-    if (--trackProbesLeft_ == 0) stopTrackRefresh();
-    if (!stopped_ && selected_ && !readingMetadata_) readMetadata(true);
-}
-
-void MediaMonitor::stopTrackRefresh() {
-    KillTimer(window_, trackTimer);
-    trackProbesLeft_ = 0;
 }
 
 bool MediaMonitor::Artwork::matches(MediaState const& state) const {
@@ -322,107 +289,78 @@ void MediaMonitor::rememberArtwork() {
     artwork_.push_back({state_.appId, state_.title, state_.artist, state_.album, state_.theme, state_.cover});
 }
 
-winrt::Windows::Foundation::IAsyncAction MediaMonitor::readMetadata(bool trackProbe) {
+winrt::Windows::Foundation::IAsyncAction MediaMonitor::readMetadata() {
     const auto lifetime = shared_from_this();
     readingMetadata_ = true;
     while (!stopped_ && selected_) {
         const auto session = selected_;
-        auto revision = metadataRevision_;
+        const auto revision = metadataRevision_;
         try {
             const auto properties = co_await session.TryGetMediaPropertiesAsync();
-            if (properties && !stopped_ && session == selected_ && revision == metadataRevision_) {
+            const auto current = [&] { return !stopped_ && session == selected_ && revision == metadataRevision_; };
+            if (properties && current()) {
                 const auto title = properties.Title();
                 const auto artist = properties.Artist();
                 const auto album = properties.AlbumTitle();
-                const bool newTrack =
-                    state_.title != title.c_str() || state_.artist != artist.c_str() || state_.album != album.c_str();
-                if (trackProbe && !newTrack) break;
-                if (newTrack) {
-                    ++trackVersion_;
-                    stopTrackRefresh();
-                    if (trackProbe) {
-                        KillTimer(window_, artworkTimer);
-                        artworkRetries_ = 0;
-                        revision = ++metadataRevision_;
-                        if (artworkRead_) artworkRead_.Cancel();
-                        artworkRead_ = nullptr;
-                    }
+                if (state_.title != title.c_str() || state_.artist != artist.c_str() || state_.album != album.c_str()) {
                     state_.title = title.c_str();
                     state_.artist = artist.c_str();
                     state_.album = album.c_str();
                     restoreArtwork();
                 }
                 changed_(state_);
-                if (const auto thumbnail = properties.Thumbnail()) {
-                    artworkRead_ = readArtwork(thumbnail, revision);
-                    break;
+
+                // The text shows right away; the cover and its colours follow once decoded.
+                CoverTheme theme;
+                std::shared_ptr<Cover> cover;
+                try {
+                    if (const auto thumbnail = properties.Thumbnail()) {
+                        using namespace winrt::Windows::Graphics::Imaging;
+                        constexpr unsigned side = 96;
+                        const auto stream = co_await thumbnail.OpenReadAsync();
+                        const auto decoder = co_await BitmapDecoder::CreateAsync(stream);
+                        // Scale the short side to `side`, then crop the middle square (video thumbnails are wide).
+                        const auto width = std::max(1u, decoder.PixelWidth());
+                        const auto height = std::max(1u, decoder.PixelHeight());
+                        const double scale = static_cast<double>(side) / std::min(width, height);
+                        const auto scaledWidth = std::max(side, static_cast<unsigned>(std::lround(width * scale)));
+                        const auto scaledHeight = std::max(side, static_cast<unsigned>(std::lround(height * scale)));
+                        const BitmapTransform transform;
+                        transform.ScaledWidth(scaledWidth);
+                        transform.ScaledHeight(scaledHeight);
+                        transform.Bounds({(scaledWidth - side) / 2, (scaledHeight - side) / 2, side, side});
+                        transform.InterpolationMode(BitmapInterpolationMode::Fant);
+                        const auto pixels = co_await decoder.GetPixelDataAsync(BitmapPixelFormat::Bgra8,
+                            BitmapAlphaMode::Premultiplied, transform, ExifOrientationMode::IgnoreExifOrientation,
+                            ColorManagementMode::DoNotColorManage);
+                        const auto bytes = pixels.DetachPixelData();
+                        if (bytes.size() == side * side * 4) {
+                            cover = std::make_shared<Cover>(Cover{side, {bytes.begin(), bytes.end()}});
+                            theme = coverTheme({bytes.data(), bytes.size()});
+                        }
+                    }
+                } catch (winrt::hresult_error const&) {
+                    // Keep the current track's cover if a refresh returns an unreadable thumbnail.
+                }
+                if (cover && current()) {
+                    state_.theme = theme;
+                    state_.cover = std::move(cover);
+                    rememberArtwork();
+                    changed_(state_);
                 }
             }
         } catch (winrt::hresult_error const&) {
             // Some players stop exposing metadata as their session closes.
         }
         if (revision == metadataRevision_) {
-            if (!trackProbe) scheduleArtworkRetry(revision);
+            constexpr UINT retryDelays[]{250, 750, 2000, 5000};
+            if (!stopped_ && selected_ == session && !state_.cover && artworkRetries_ < std::size(retryDelays)) {
+                SetTimer(window_, artworkTimer, retryDelays[artworkRetries_++], nullptr);
+            }
             break;
         }
-        trackProbe = false;
     }
     readingMetadata_ = false;
-}
-
-winrt::Windows::Foundation::IAsyncAction MediaMonitor::readArtwork(
-    winrt::Windows::Storage::Streams::IRandomAccessStreamReference thumbnail, unsigned revision) {
-    const auto lifetime = shared_from_this();
-    auto cancellation = co_await winrt::get_cancellation_token();
-    cancellation.enable_propagation();
-    CoverTheme theme;
-    std::shared_ptr<Cover> cover;
-    try {
-        using namespace winrt::Windows::Graphics::Imaging;
-        constexpr unsigned side = 96;
-        const auto stream = co_await thumbnail.OpenReadAsync();
-        const auto decoder = co_await BitmapDecoder::CreateAsync(stream);
-        // Scale the short side to `side`, then crop the middle square (video thumbnails are wide).
-        const auto width = std::max(1u, decoder.PixelWidth());
-        const auto height = std::max(1u, decoder.PixelHeight());
-        const double scale = static_cast<double>(side) / std::min(width, height);
-        const auto scaledWidth = std::max(side, static_cast<unsigned>(std::lround(width * scale)));
-        const auto scaledHeight = std::max(side, static_cast<unsigned>(std::lround(height * scale)));
-        const BitmapTransform transform;
-        transform.ScaledWidth(scaledWidth);
-        transform.ScaledHeight(scaledHeight);
-        transform.Bounds({(scaledWidth - side) / 2, (scaledHeight - side) / 2, side, side});
-        transform.InterpolationMode(BitmapInterpolationMode::Fant);
-        const auto pixels = co_await decoder.GetPixelDataAsync(BitmapPixelFormat::Bgra8,
-            BitmapAlphaMode::Premultiplied, transform, ExifOrientationMode::IgnoreExifOrientation,
-            ColorManagementMode::DoNotColorManage);
-        const auto bytes = pixels.DetachPixelData();
-        if (bytes.size() == side * side * 4) {
-            cover = std::make_shared<Cover>(Cover{side, {bytes.begin(), bytes.end()}});
-            theme = coverTheme({bytes.data(), bytes.size()});
-        }
-    } catch (winrt::hresult_canceled const&) {
-        co_return;
-    } catch (winrt::hresult_error const&) {
-        // Keep the current cover if the thumbnail cannot be read.
-    }
-    if (stopped_ || revision != metadataRevision_) co_return;
-    if (cover) {
-        state_.theme = theme;
-        state_.cover = std::move(cover);
-        rememberArtwork();
-        changed_(state_);
-    } else {
-        scheduleArtworkRetry(revision);
-    }
-}
-
-void MediaMonitor::scheduleArtworkRetry(unsigned revision) {
-    constexpr UINT retryDelays[]{250, 750, 2000, 5000};
-    if (!stopped_ && selected_ && revision == metadataRevision_ && !state_.cover &&
-        artworkRetries_ < std::size(retryDelays)) {
-        SetTimer(window_, artworkTimer, retryDelays[artworkRetries_++], nullptr);
-    }
 }
 
 void MediaMonitor::select(std::wstring const& appId) {
@@ -446,7 +384,6 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::seek(double seconds) {
 winrt::Windows::Foundation::IAsyncAction MediaMonitor::control(MediaCommand command) {
     const auto lifetime = shared_from_this();
     const auto session = selected_;
-    const auto trackVersion = trackVersion_;
     try {
         if (session) {
             bool handled = false;
@@ -455,15 +392,10 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::control(MediaCommand comm
             case MediaCommand::toggle: handled = co_await session.TryTogglePlayPauseAsync(); break;
             case MediaCommand::next: handled = co_await session.TrySkipNextAsync(); break;
             }
-            if (handled) {
-                if (!stopped_ && session == selected_ && command != MediaCommand::toggle &&
-                    trackVersion == trackVersion_) refreshTrack();
-                co_return;
-            }
+            if (handled) co_return;
         }
         if (!stopped_ && session == selected_ && (!session || manager_.GetCurrentSession() == session)) {
             sendMediaKey(command);
-            if (session && command != MediaCommand::toggle && trackVersion == trackVersion_) refreshTrack();
         }
     } catch (winrt::hresult_error const&) {
         // A closed session can no longer be safely targeted.

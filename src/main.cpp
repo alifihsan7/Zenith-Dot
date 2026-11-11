@@ -1,5 +1,6 @@
 #include <initguid.h>
 
+#include "browser_tabs.hpp"
 #include "desktop.hpp"
 #include "drop_zone.hpp"
 #include "island.hpp"
@@ -17,7 +18,6 @@ namespace {
 using namespace std::chrono_literals;
 
 constexpr wchar_t appName[] = L"Zenith Dot";
-constexpr wchar_t overlayWindowClass[] = L"ZenithDot.Overlay";
 constexpr UINT trayMessage = WM_APP + 2;
 constexpr UINT redrawMessage = WM_APP + 3;
 constexpr UINT_PTR powerTimer = 1;
@@ -25,7 +25,6 @@ constexpr UINT_PTR frameTimer = 2;
 constexpr UINT_PTR fullscreenTimer = 3;
 constexpr UINT_PTR clipboardTimer = 5;
 static_assert(clipboardTimer != MediaMonitor::artworkTimer);
-static_assert(clipboardTimer != MediaMonitor::trackTimer);
 constexpr UINT clipboardRetryInterval = 40;
 constexpr unsigned clipboardRetryLimit = 25;
 constexpr unsigned microphoneColor = 0xff9f0a;
@@ -51,6 +50,7 @@ private:
     static LRESULT CALLBACK dispatch(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
     LRESULT handle(UINT message, WPARAM wparam, LPARAM lparam);
     void frame();
+    void updateMedia();
     void control(MediaCommand command);
     void run(IslandCommand const& command);
     void refreshPower();
@@ -77,6 +77,8 @@ private:
     std::shared_ptr<MediaMonitor> monitor_;
     std::shared_ptr<Lyrics> lyrics_;
     MediaState media_;
+    MediaState nativeMedia_;
+    BrowserTabs browserTabs_;
     PowerState power_;
     DesktopMonitor desktop_;
     CaptureActivity capture_;
@@ -115,6 +117,7 @@ int App::run(HINSTANCE instance) {
     window_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
         overlayWindowClass, appName, WS_POPUP, 0, 0, 16, 16, nullptr, nullptr, instance, this);
     winrt::check_bool(window_ != nullptr);
+    browserTabs_.setWindow(window_);
 
     taskbarCreated_ = RegisterWindowMessageW(L"TaskbarCreated");
     refreshMotion();
@@ -151,9 +154,8 @@ int App::run(HINSTANCE instance) {
     addTray();
     frame();
     monitor_ = std::make_shared<MediaMonitor>(window_, [this](MediaState const& state) {
-        media_ = state;
-        island_.setMedia(media_);
-        frame();
+        nativeMedia_ = state;
+        updateMedia();
     });
     monitor_->start();
 
@@ -193,10 +195,15 @@ void App::frame() {
     if (frameInterval_ != 0) SetTimer(window_, frameTimer, frameInterval_, nullptr);
 }
 
+void App::updateMedia() {
+    media_ = browserTabs_.combine(nativeMedia_);
+    island_.setMedia(media_);
+    frame();
+}
+
 void App::control(MediaCommand command) {
-    if ((command == MediaCommand::previous && !media_.canPrevious) ||
-        (command == MediaCommand::next && !media_.canNext)) return;
-    if (monitor_) monitor_->control(command);
+    if (!media_.sourceId.empty()) browserTabs_.control(media_.sourceId, command);
+    else if (monitor_) monitor_->control(command);
 }
 
 void App::run(IslandCommand const& command) {
@@ -205,13 +212,18 @@ void App::run(IslandCommand const& command) {
     case IslandCommand::Kind::toggle: control(MediaCommand::toggle); break;
     case IslandCommand::Kind::next: control(MediaCommand::next); break;
     case IslandCommand::Kind::seek:
-        if (monitor_) monitor_->seek(command.seconds);
+        if (media_.sourceId.empty()) {
+            if (monitor_) monitor_->seek(command.seconds);
+        }
+        else browserTabs_.seek(media_.sourceId, command.seconds);
         break;
     case IslandCommand::Kind::selectSource:
-        if (monitor_) monitor_->select(command.appId);
+        if (browserTabs_.select(command.appId)) updateMedia();
+        else if (monitor_) monitor_->select(command.appId);
         break;
     case IslandCommand::Kind::openSource:
-        activateMediaWindow(window_, media_.appId);
+        if (!media_.sourceId.empty()) browserTabs_.activate(media_.sourceId);
+        else activateMediaWindow(window_, media_.appId);
         break;
     case IslandCommand::Kind::retryLyrics: if (lyrics_) lyrics_->retry(); break;
     case IslandCommand::Kind::editScratchpad:
@@ -330,11 +342,10 @@ void App::addTray() {
 void App::showMenu(POINT point) {
     const auto menu = CreatePopupMenu();
     if (!menu) return;
-    const auto previousFlags = media_.hasSession && media_.canPrevious ? MF_ENABLED : MF_GRAYED;
-    const auto nextFlags = media_.hasSession && media_.canNext ? MF_ENABLED : MF_GRAYED;
-    AppendMenuW(menu, MF_STRING | previousFlags, previousTrack, L"&Previous track");
+    const auto skip = media_.hasSession && media_.canSkip ? MF_ENABLED : MF_GRAYED;
+    AppendMenuW(menu, MF_STRING | skip, previousTrack, L"&Previous track");
     AppendMenuW(menu, MF_STRING, togglePlayback, media_.playing ? L"P&ause" : L"&Play");
-    AppendMenuW(menu, MF_STRING | nextFlags, nextTrack, L"&Next track");
+    AppendMenuW(menu, MF_STRING | skip, nextTrack, L"&Next track");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, toggleVisibility, hidden_ ? L"&Show Zenith Dot" : L"&Hide Zenith Dot");
     AppendMenuW(menu, MF_STRING | (suppressed() ? MF_GRAYED : MF_ENABLED), openDropZone, L"&Drop Zone");
@@ -609,7 +620,6 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         return TRUE;
     case WM_TIMER:
         if (wparam == MediaMonitor::artworkTimer && monitor_) monitor_->retryArtwork();
-        if (wparam == MediaMonitor::trackTimer && monitor_) monitor_->retryTrack();
         if (wparam == powerTimer) {
             if (!clipboardListening_) clipboardListening_ = AddClipboardFormatListener(window_) != FALSE;
             const bool changed = island_.setWindowsNotificationsQuiet(desktop_.notificationsQuiet());
@@ -625,9 +635,17 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
                 captureTick_ = 0;
                 refreshCapture();
             }
-            if (changed) frame();
+            if (browserTabs_.prune()) updateMedia();
+            else if (changed) frame();
         }
         return 0;
+    case WM_COPYDATA:
+        if (const auto packet = reinterpret_cast<COPYDATASTRUCT const*>(lparam);
+            packet && browserTabs_.receive(reinterpret_cast<HWND>(wparam), *packet)) {
+            updateMedia();
+            return TRUE;
+        }
+        return FALSE;
     case DesktopMonitor::foregroundChanged:
         if (refreshFullscreen()) frame();
         return 0;
@@ -772,6 +790,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
 }
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+    if (zenith::browserHostRequested()) return zenith::runBrowserHost(instance);
     const auto singleInstance = CreateMutexW(nullptr, FALSE, L"Local\\ZenithDot.Overlay.0A54ED53");
     const auto error = GetLastError();
     if (!singleInstance) return 1;

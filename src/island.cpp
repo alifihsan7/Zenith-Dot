@@ -453,8 +453,9 @@ void Island::setAnimate(bool animate) {
 void Island::setMedia(MediaState const& media) {
     const auto now = Clock::now();
     if (pressed_ == Hit::source && (pressedIndex_ >= media.sources.size() || pressedIndex_ >= media_.sources.size() ||
-        media.sources[pressedIndex_].appId != media_.sources[pressedIndex_].appId)) pressed_ = Hit::none;
-    if (pressed_ == Hit::cover && media_.appId != media.appId) pressed_ = Hit::none;
+        media.sources[pressedIndex_].appId != media_.sources[pressedIndex_].appId ||
+        media.sources[pressedIndex_].id != media_.sources[pressedIndex_].id)) pressed_ = Hit::none;
+    if (pressed_ == Hit::cover && (media_.appId != media.appId || media_.sourceId != media.sourceId)) pressed_ = Hit::none;
     if (!media.hasSession || media.sources.size() < 2) sourcePickerOpen_ = false;
     // The media screen changes height when a session comes or goes; animate that like a screen change.
     if (open_ && screen_ == Screen::media && media.hasSession != media_.hasSession) {
@@ -1213,7 +1214,7 @@ IslandCommand Island::pointerUp(POINT client) {
         if (index < media_.sources.size()) {
             command.kind = IslandCommand::Kind::selectSource;
             const auto& source = media_.sources[index];
-            command.appId = source.appId;
+            command.appId = source.id.empty() ? source.appId : source.id;
         }
         break;
     case Hit::navMedia: showScreen(Screen::media, now); break;
@@ -1801,7 +1802,9 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
     text(detail, bodyFont_.get(), box(x + 68, y + 36.8f, mediaTitleWidth, 16.8f), rgb(mutedColor));
 
     if (!media_.sources.empty()) {
-        const auto selected = std::ranges::find(media_.sources, media_.appId, &MediaSource::appId);
+        const auto selected = std::ranges::find_if(media_.sources, [this](MediaSource const& source) {
+            return source.id == media_.sourceId && source.appId == media_.appId;
+        });
         const auto& source = selected != media_.sources.end() ? *selected : media_.sources.front();
         const auto picker = box(x + 258, y + 17, 38, 34);
         const bool multiple = media_.sources.size() > 1;
@@ -1852,8 +1855,7 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
     const Hit buttons[]{Hit::previous, Hit::toggle, Hit::next};
     const auto onAccent = mixColor(accent_, D2D1::ColorF(0, 0, 0), 0.86f);
     for (int i = 0; i < 3; ++i) {
-        const bool enabled = buttons[i] == Hit::toggle ||
-            (buttons[i] == Hit::previous ? media_.canPrevious : media_.canNext);
+        const bool enabled = buttons[i] == Hit::toggle || media_.canSkip;
         const D2D1_POINT_2F c{centerX + (i - 1) * 45.0f, middleY};
         const auto disc = D2D1::Ellipse(c, 18, 18);
         if (buttons[i] == Hit::toggle) {
@@ -1892,6 +1894,11 @@ void Island::drawSourceIcon(MediaSource const& source, D2D1_POINT_2F c) {
         const auto name = appName(source.appId);
         text(name.substr(0, 1), letterFont_.get(), box(c.x - 9, c.y - 9, 18, 18), rgb(inkColor));
     }
+    if (source.tabNumber > 0) {
+        const auto badge = pt(c.x + 8, c.y + 8);
+        target_->FillEllipse(D2D1::Ellipse(badge, 6, 6), ink(rgb(0x253347)));
+        text(std::to_wstring(source.tabNumber), letterFont_.get(), box(badge.x - 6, badge.y - 6, 12, 12), rgb(inkColor));
+    }
 }
 
 void Island::drawSourceMenu(D2D1_RECT_F panel) {
@@ -1913,7 +1920,9 @@ void Island::drawSourceMenu(D2D1_RECT_F panel) {
         const D2D1_POINT_2F c{rect.left + 15, rect.top + 15};
         if (pressed(Hit::source, i)) target_->FillEllipse(D2D1::Ellipse(c, 15, 15), ink(white(0.14f)));
         else if (hovered(Hit::source, i)) target_->FillEllipse(D2D1::Ellipse(c, 15, 15), ink(white(0.08f)));
-        if (source.appId == media_.appId) target_->DrawEllipse(D2D1::Ellipse(c, 14.5f, 14.5f), ink(accent_), 1);
+        const bool selected = source.id.empty() ? media_.sourceId.empty() && source.appId == media_.appId :
+                                                 source.id == media_.sourceId;
+        if (selected) target_->DrawEllipse(D2D1::Ellipse(c, 14.5f, 14.5f), ink(accent_), 1);
         drawSourceIcon(source, c);
         addTarget(rect, Hit::source, i);
     }
