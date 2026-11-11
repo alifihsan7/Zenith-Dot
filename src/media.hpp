@@ -29,19 +29,16 @@ struct Cover {
     std::vector<uint8_t> pixels;
 };
 
-// A Windows media app or a tab exposed by the browser extension.
+// A Windows media app.
 struct MediaSource {
     std::wstring appId;
     bool playing = false;
-    std::wstring id;
-    unsigned tabNumber = 0;
 };
 
 struct MediaState {
     bool hasSession = false;
     bool playing = false;
     std::wstring appId;
-    std::wstring sourceId;
     std::wstring title;
     std::wstring artist;
     std::wstring album;
@@ -49,8 +46,8 @@ struct MediaState {
     std::shared_ptr<const Cover> cover;
     std::vector<MediaSource> sources;
     bool canSeek = false;
-    bool canPrevious = true;
-    bool canNext = true;
+    bool canPrevious = false;
+    bool canNext = false;
     double duration = 0;
     double position = 0;
     double rate = 1;

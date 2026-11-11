@@ -16,7 +16,6 @@ add_executable(ZenithDot WIN32
     src/scratchpad.cpp
     src/settings.cpp
     src/drop_zone.cpp
-    src/browser_tabs.cpp
     src/zenith.rc
 )
 target_compile_features(ZenithDot PRIVATE cxx_std_20)
@@ -32,5 +31,3 @@ target_link_libraries(ZenithDot PRIVATE d2d1 dwrite gdi32 user32 shell32 ole32 o
 target_link_libraries(ZenithDot PRIVATE mfplat mfsensorgroup windowscodecs)
 install(TARGETS ZenithDot RUNTIME DESTINATION .)
 install(FILES scripts/install.ps1 scripts/uninstall.ps1 DESTINATION .)
-install(FILES scripts/enable-browser-tabs.ps1 DESTINATION .)
-install(DIRECTORY browser DESTINATION .)

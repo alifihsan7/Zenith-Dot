@@ -201,15 +201,16 @@ void MediaMonitor::updateState() {
     state_.appId = selected_ ? appIdOf(selected_) : std::wstring{};
     state_.playing = false;
     state_.canSeek = false;
+    state_.canPrevious = false;
+    state_.canNext = false;
     state_.sampledAt = now;
-    // The browser bridge supplies per-tab sources separately from Windows app sessions.
     state_.sources.clear();
     for (const auto& entry : sessions_) {
         const auto id = appIdOf(entry.session);
         if (id.empty()) continue;
         const auto known = std::ranges::find(state_.sources, id, &MediaSource::appId);
         if (known == state_.sources.end()) {
-            state_.sources.push_back({id, isPlaying(entry.session), {}, 0});
+            state_.sources.push_back({id, isPlaying(entry.session)});
         } else {
             known->playing = known->playing || isPlaying(entry.session);
         }
@@ -217,9 +218,13 @@ void MediaMonitor::updateState() {
     if (selected_) {
         try {
             const auto info = selected_.GetPlaybackInfo();
-            const auto properties = selected_.GetTimelineProperties();
             state_.playing = info && info.PlaybackStatus() == Status::Playing;
-            state_.canSeek = info && info.Controls().IsPlaybackPositionEnabled();
+            if (const auto controls = info ? info.Controls() : nullptr) {
+                state_.canSeek = controls.IsPlaybackPositionEnabled();
+                state_.canPrevious = controls.IsPreviousEnabled();
+                state_.canNext = controls.IsNextEnabled();
+            }
+            const auto properties = selected_.GetTimelineProperties();
             const auto rate = info ? info.PlaybackRate() : nullptr;
             state_.rate = rate ? rate.Value() : 1.0;
             if (!std::isfinite(state_.rate)) state_.rate = 1.0;

@@ -32,4 +32,12 @@ foreach ($folder in $shortcutFolders) {
     $shortcut.Save()
 }
 
+# Clear registrations from versions that shipped the browser companion.
+foreach ($vendor in @('Google\Chrome', 'Microsoft\Edge', 'BraveSoftware\Brave-Browser')) {
+    $location = "HKCU:\Software\$vendor\NativeMessagingHosts\com.zenith_dot.browser"
+    if (Test-Path -LiteralPath $location) {
+        Remove-Item -LiteralPath $location -ErrorAction Continue
+    }
+}
+
 Write-Output 'Zenith Dot is installed in your Start menu. Use Settings in the tray to manage startup.'
