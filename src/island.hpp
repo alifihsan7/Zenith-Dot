@@ -8,6 +8,7 @@
 #include "drop_zone.hpp"
 #include "power.hpp"
 #include "system.hpp"
+#include "visual_effects.hpp"
 
 #include <d2d1.h>
 #include <dwrite.h>
@@ -141,7 +142,13 @@ private:
     float captureProgress(Clock::time_point now, float from, bool active) const;
     D2D1_RECT_F compactShape(Clock::time_point now, float amount) const;
     float visibility(Clock::time_point now) const;
+    struct PanelMotion {
+        float value;
+        float velocity;
+    };
+    PanelMotion panelMotion(Clock::time_point now) const;
     float panelValue(Clock::time_point now) const;
+    D2D1_ROUNDED_RECT panelShape(Clock::time_point now, float value, float amount) const;
     float panelHeight(Clock::time_point now) const;
     float panelWidthAt(Clock::time_point now) const;
     float lyricScroll(Clock::time_point now) const;
@@ -206,7 +213,7 @@ private:
     void drawChipGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color);
     void drawButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record,
                     size_t index = 0, bool selected = false);
-    void fillShell(D2D1_ROUNDED_RECT shape);
+    void fillShell(D2D1_ROUNDED_RECT shape, float alpha = 0.94f);
     void fillShell(ID2D1Geometry* shape);
     void drawSplit(Clock::time_point now, float amount);
     void drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity);
@@ -282,6 +289,7 @@ private:
     // Panel. panelFrom_ animates toward 1 (open) or 0 (closed) from panelStart_.
     bool open_ = false;
     float panelFrom_ = 0;
+    float panelVelocity_ = 0;
     Clock::time_point panelStart_{};
     D2D1_RECT_F closingPanel_{};
     bool shareTitle_ = false;
@@ -406,6 +414,10 @@ private:
     HBITMAP bitmap_ = nullptr;
     HGDIOBJ originalBitmap_ = nullptr;
     SIZE surfaceSize_{};
+    std::uint32_t* surfacePixels_ = nullptr;
+    VisualEffects effects_;
+    D2D1_RECT_F blurBounds_{};
+    float blurRadius_ = 0;
 
     std::shared_ptr<const Cover> coverSource_;
     Image cover_;

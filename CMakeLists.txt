@@ -8,6 +8,7 @@ endif()
 add_executable(ZenithDot WIN32
     src/main.cpp
     src/island.cpp
+    src/visual_effects.cpp
     src/media.cpp
     src/lyrics.cpp
     src/power.cpp

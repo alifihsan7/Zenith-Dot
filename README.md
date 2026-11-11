@@ -18,6 +18,8 @@ Right-click the tray icon and open **Settings**. **Add copied text to Drop Zone*
 
 When the panel closes, it shrinks to a pill. The pill stays visible while an activity is running and shrinks to the black dot when idle.
 
+Hover back while the panel is closing to reverse the motion. Content softens briefly while the panel opens, closes, or changes tabs. The open panel uses Windows Desktop Acrylic where supported. Turning off animation effects in Windows removes the motion and transition blur.
+
 Zenith Dot hides during fullscreen on the primary display and resumes when you leave fullscreen. Microphone or camera activity shows a pill with a device icon and label. When music or a timer is active, device icons sit beside that activity. Orange marks the microphone, and green marks the camera. Both icons appear when both devices are in use. The panel shows the same icons beside its tabs. A microphone muted at the Windows device level is excluded. An app's own mute button can leave its Windows capture session active.
 
 When a paired Bluetooth device connects or disconnects, a notice shows its name. Headsets and speakers use a headphone icon, and other devices use the Bluetooth mark. If the device reports its battery to Windows, the notice shows the level, in orange at 20% or below and red at 10% or below. Devices already connected when Zenith Dot starts are not announced.

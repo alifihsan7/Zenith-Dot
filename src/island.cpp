@@ -67,7 +67,7 @@ constexpr auto parkDelay = 5s;
 constexpr auto featurePreviewTime = 850ms;
 constexpr auto pillGrowTime = 280ms;
 constexpr auto pillShrinkTime = 400ms;
-constexpr auto panelTime = 220ms;
+constexpr auto panelTime = 320ms;
 constexpr auto panelCloseTime = 360ms;
 constexpr auto idlePillHold = 240ms;
 constexpr auto captureTime = 230ms;
@@ -646,11 +646,34 @@ D2D1_RECT_F Island::compactShape(Clock::time_point now, float amount) const {
                std::lerp(pillCenterY - dotSize / 2, pillTop, t), width, height);
 }
 
-float Island::panelValue(Clock::time_point now) const {
+Island::PanelMotion Island::panelMotion(Clock::time_point now) const {
     const float target = open_ ? 1.0f : 0.0f;
-    if (!animate_) return target;
-    const float phase = progress(panelStart_, open_ ? panelTime : panelCloseTime, now);
-    return std::lerp(panelFrom_, target, open_ ? panelEase(phase) : easeInOut(phase));
+    const auto duration = open_ ? panelTime : panelCloseTime;
+    if (!animate_ || now - panelStart_ >= duration) return {target, 0};
+    const float seconds = std::max(0.0f, std::chrono::duration<float>(now - panelStart_).count());
+    const float omega = 8.5f / std::chrono::duration<float>(duration).count();
+    const float displacement = panelFrom_ - target;
+    const float coefficient = panelVelocity_ + omega * displacement;
+    const float decay = std::exp(-omega * seconds);
+    const float value = target + (displacement + coefficient * seconds) * decay;
+    const float velocity = (coefficient - omega * (displacement + coefficient * seconds)) * decay;
+    if (value < 0 || value > 1) return {clamp01(value), 0};
+    return {value, velocity};
+}
+
+float Island::panelValue(Clock::time_point now) const {
+    return panelMotion(now).value;
+}
+
+D2D1_ROUNDED_RECT Island::panelShape(Clock::time_point now, float value, float amount) const {
+    const auto full = panelRect(now);
+    const auto from = compactShape(now, amount);
+    const float fromRadius = std::min(from.right - from.left, from.bottom - from.top) / 2;
+    auto clip = mixRect(from, full, value);
+    const float breadth = value + 0.18f * value * (1 - value);
+    clip.left = std::lerp(from.left, full.left, breadth);
+    clip.right = std::lerp(from.right, full.right, breadth);
+    return rounded(clip, std::lerp(fromRadius, panelRadius, value));
 }
 
 float Island::screenHeight(Screen screen) const {
@@ -842,6 +865,7 @@ void Island::setSuppressed(bool suppressed) {
     visibilityStart_ = now;
     suppressed_ = suppressed;
     if (!suppressed_) return;
+    effects_.hideBackdrop();
     previewUntil_ = {};
     idlePillUntil_ = {};
     clearAlerts();
@@ -866,7 +890,8 @@ void Island::setOpen(bool open, Clock::time_point now) {
     closeAt_.reset();
     if (open_ == open || (open && (suppressed_ || bubbleShowing()))) return;
     const bool lyricsVisible = wantsLyrics();
-    const float shown = panelValue(now);
+    const auto motion = panelMotion(now);
+    const float shown = motion.value;
     if (open) {
         previewUntil_ = {};
         idlePillUntil_ = {};
@@ -887,6 +912,7 @@ void Island::setOpen(bool open, Clock::time_point now) {
     if (!open) panelPinned_ = false;
     keepHeight_ = 0;
     panelFrom_ = shown;
+    panelVelocity_ = motion.velocity;
     panelStart_ = now;
     hovered_ = pressed_ = Hit::none;
     dragging_ = false;
@@ -1446,6 +1472,7 @@ void Island::prepareSurface(int width, int height) {
         if (!originalBitmap_) originalBitmap_ = previous;
         if (bitmap_) DeleteObject(bitmap_);
         bitmap_ = next;
+        surfacePixels_ = static_cast<std::uint32_t*>(pixels);
         surfaceSize_ = {width, height};
     }
     if (!graphics_) {
@@ -1584,8 +1611,8 @@ void Island::text(std::wstring_view value, IDWriteTextFormat* format, D2D1_RECT_
 }
 
 // Black-dominant glass; the cover only tints the far corner of the gradient.
-void Island::fillShell(D2D1_ROUNDED_RECT shape) {
-    const D2D1_GRADIENT_STOP stops[]{{0, D2D1::ColorF(0, 0, 0, 0.94f)}, {1, withAlpha(tint_, 0.9f)}};
+void Island::fillShell(D2D1_ROUNDED_RECT shape, float alpha) {
+    const D2D1_GRADIENT_STOP stops[]{{0, D2D1::ColorF(0, 0, 0, alpha)}, {1, withAlpha(tint_, alpha - 0.04f)}};
     winrt::com_ptr<ID2D1GradientStopCollection> collection;
     winrt::check_hresult(target_->CreateGradientStopCollection(stops, 2, collection.put()));
     winrt::com_ptr<ID2D1LinearGradientBrush> gradient;
@@ -1841,15 +1868,11 @@ void Island::drawPillContent(Clock::time_point now, bool hideTitle) {
 
 void Island::drawPanel(Clock::time_point now, float value, float amount, bool morphTitle) {
     const auto full = panelRect(now);
-    const auto from = compactShape(now, amount);
-    const float fromRadius = std::min(from.right - from.left, from.bottom - from.top) / 2;
-    auto clip = mixRect(from, full, value);
-    const float breadth = value + 0.18f * value * (1 - value);
-    clip.left = std::lerp(from.left, full.left, breadth);
-    clip.right = std::lerp(from.right, full.right, breadth);
+    const auto shape = panelShape(now, value, amount);
+    const auto clip = shape.rect;
     if (open_) panelWheel_ = clip;
     else closingPanel_ = clip;
-    const float radius = std::lerp(fromRadius, panelRadius, value);
+    const float radius = shape.radiusX;
     const float opacity = easeOut(value);
 
     // Soft drop shadow (0 8px 22px at 35%), faded in as the panel settles.
@@ -1864,7 +1887,7 @@ void Island::drawPanel(Clock::time_point now, float value, float amount, bool mo
     winrt::com_ptr<ID2D1RoundedRectangleGeometry> mask;
     winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(rounded(clip, radius), mask.put()));
     pushLayer(mask.get(), opacity);
-    fillShell(rounded(clip, radius));
+    fillShell(rounded(clip, radius), 0.9f);
     target_->DrawRoundedRectangle(rounded(grow(clip, -0.5f, -0.5f), radius - 0.5f), ink(white(0.12f)), 1);
 
     recordPanel_ = open_ && value >= 1;
@@ -1876,6 +1899,16 @@ void Island::drawPanel(Clock::time_point now, float value, float amount, bool mo
         content.top += inset;
     }
     const float switching = progress(screenStart_, panelTime, now);
+    if (animate_) {
+        const float switchingBlur = screenFrom_ != screen_ && switching < 1 ? 4 * std::sin(pi * switching) : 0;
+        blurRadius_ = std::max(4 * (1 - value), switchingBlur);
+        blurBounds_ = {
+            std::max(content.left + padX, clip.left + 8),
+            std::max(content.top + padTop, clip.top + 8),
+            std::min(content.right - padX, clip.right - 8),
+            std::min(full.bottom - padBottom - navHeight - 4, clip.bottom - 8)
+        };
+    }
     if (switching < 1 && screenFrom_ != screen_) {
         const float enter = easeInOut(switching);
         pushLayer(nullptr, 1 - enter);
@@ -2864,6 +2897,18 @@ void Island::draw(HWND window) {
     const float amount = pillAmount(now);
     const float value = panelValue(now);
     const bool panelVisible = open_ || value > 0;
+    if (panelVisible && value > .8f && opacity >= 1 && !suppressed_ && IsWindowVisible(window)) {
+        const auto glass = panelShape(now, value, amount);
+        const RECT glassBounds{
+            anchor_.x + static_cast<LONG>(std::ceil(glass.rect.left * scale_)) + 1,
+            anchor_.y + static_cast<LONG>(std::ceil(glass.rect.top * scale_)) + 1,
+            anchor_.x + static_cast<LONG>(std::floor(glass.rect.right * scale_)) - 1,
+            anchor_.y + static_cast<LONG>(std::floor(glass.rect.bottom * scale_)) - 1
+        };
+        effects_.showBackdrop(window, glassBounds, std::max(1, static_cast<int>(glass.radiusX * scale_) - 1));
+    } else {
+        effects_.hideBackdrop();
+    }
     const bool compactVisible = !open_;
     const bool switchingScreen = screenFrom_ != screen_ && progress(screenStart_, panelTime, now) < 1;
     const bool morphTitle = shareTitle_ && screen_ == Screen::media && media_.hasSession &&
@@ -2900,6 +2945,8 @@ void Island::draw(HWND window) {
     sourceMenuRect_ = {};
     panelWheel_ = {};
     closingPanel_ = {};
+    blurBounds_ = {};
+    blurRadius_ = 0;
     layerDepth_ = 0;
     target_->BeginDraw();
     target_->SetTransform(base_);
@@ -2913,6 +2960,13 @@ void Island::draw(HWND window) {
         return;
     }
     winrt::check_hresult(result);
+    const RECT blurPixels{
+        static_cast<LONG>(std::ceil(blurBounds_.left * scale_)) - origin_.x,
+        static_cast<LONG>(std::ceil(blurBounds_.top * scale_)) - origin_.y,
+        static_cast<LONG>(std::floor(blurBounds_.right * scale_)) - origin_.x,
+        static_cast<LONG>(std::floor(blurBounds_.bottom * scale_)) - origin_.y
+    };
+    effects_.blur(surfacePixels_, surfaceSize_, blurPixels, blurRadius_ * scale_);
 
     POINT position{anchor_.x + origin_.x, anchor_.y + origin_.y};
     POINT source{};
