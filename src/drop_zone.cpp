@@ -225,7 +225,7 @@ struct DropZone::Target : winrt::implements<Target, IDropTarget> {
         const auto type = std::exchange(type_, CLIPFORMAT{});
         try {
             if (const auto hr = highlight(false); FAILED(hr)) return hr;
-            if (type == 0 || !(allowed & DROPEFFECT_COPY) || owner_.dragging_) return S_OK;
+            if (type == 0 || !(allowed & DROPEFFECT_COPY) || owner_.dragging_ || !owner_.enabled_) return S_OK;
             auto offered = format(type);
             Medium medium;
             if (FAILED(data->GetData(&offered, &medium.value)) || medium.value.tymed != TYMED_HGLOBAL) return S_OK;
@@ -238,7 +238,7 @@ struct DropZone::Target : winrt::implements<Target, IDropTarget> {
 
 private:
     HRESULT update(DWORD* effect) noexcept {
-        const bool offered = type_ != 0 && (*effect & DROPEFFECT_COPY) != 0;
+        const bool offered = owner_.enabled_ && type_ != 0 && (*effect & DROPEFFECT_COPY) != 0;
         *effect = offered && owner_.items_.size() < maxItems ? DROPEFFECT_COPY : DROPEFFECT_NONE;
         return highlight(offered);
     }

@@ -126,7 +126,8 @@ int App::run(HINSTANCE instance) {
     power_ = readPower();
     island_.setPower(power_);
     island_.setSystem(system_.sample());
-    island_.setAutoCycle(settings_.autoCycle);
+    island_.setPreferences(settings_);
+    dropZone_.setEnabled(settings_.enabled(Feature::drop));
     powerNotification_ = RegisterPowerSettingNotification(window_, &GUID_ACDC_POWER_SOURCE,
                                                            DEVICE_NOTIFY_WINDOW_HANDLE);
     SetTimer(window_, powerTimer, 10'000, nullptr);
@@ -393,7 +394,8 @@ void App::showMenu(POINT point) {
     AppendMenuW(menu, MF_STRING | skip, nextTrack, L"&Next track");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, toggleVisibility, hidden_ ? L"&Show Zenith Dot" : L"&Hide Zenith Dot");
-    AppendMenuW(menu, MF_STRING | (suppressed() ? MF_GRAYED : MF_ENABLED), openDropZone, L"&Drop Zone");
+    AppendMenuW(menu, MF_STRING | (suppressed() || !settings_.enabled(Feature::drop) ? MF_GRAYED : MF_ENABLED),
+                openDropZone, L"&Drop Zone");
     AppendMenuW(menu, MF_STRING, openSettings, L"&Settings…");
     AppendMenuW(menu, MF_STRING, exitApp, L"E&xit Zenith Dot");
     // TrackPopupMenu needs the owner in the foreground to dismiss correctly. Hand focus back afterwards.
@@ -492,7 +494,7 @@ std::optional<IslandAlert> App::clipboardAlert(bool& busy, HBITMAP& image, std::
         (IsClipboardFormatAvailable(CF_BITMAP) || IsClipboardFormatAvailable(CF_DIB) ||
          IsClipboardFormatAvailable(CF_DIBV5))) {
         alert.value = L"Image";
-        if (!settings_.autoAddScreenshots) return alert;
+        if (!settings_.autoAddScreenshots || !settings_.enabled(Feature::drop)) return alert;
         const auto bitmap = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP));
         const DWORD sequence = GetClipboardSequenceNumber();
         if (sequence && sequence == stagedImageSequence_) return std::nullopt;
@@ -513,7 +515,8 @@ std::optional<IslandAlert> App::clipboardAlert(bool& busy, HBITMAP& image, std::
             } unlock{data};
             std::wstring_view all(text, wcsnlen(text, GlobalSize(data) / sizeof(wchar_t)));
             const DWORD sequence = GetClipboardSequenceNumber();
-            if (settings_.autoAddText && (!sequence || sequence != stagedTextSequence_) && dropZone_.canAddText(all.size())) {
+            if (settings_.autoAddText && settings_.enabled(Feature::drop) &&
+                (!sequence || sequence != stagedTextSequence_) && dropZone_.canAddText(all.size())) {
                 stagedText.assign(all);
             }
             if (suppressed() || !settings_.showClipboardPreviews) return alert;
@@ -797,8 +800,9 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     }
     case settingsChangedMessage:
         settings_ = Settings::load();
-        island_.setAutoCycle(settings_.autoCycle);
         refreshMotion();
+        island_.setPreferences(settings_);
+        dropZone_.setEnabled(settings_.enabled(Feature::drop));
         refreshFullscreen();
         frame();
         return 0;

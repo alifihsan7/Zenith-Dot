@@ -37,6 +37,7 @@ public:
     ~DropZone();
     bool attach(HWND window, Hover hover, Changed changed);
     void detach();
+    void setEnabled(bool enabled) { enabled_ = enabled; }
     ImageResult addImage(HBITMAP bitmap);
     bool canAddText(size_t length) const;
     bool addText(std::wstring_view text);
@@ -75,6 +76,7 @@ private:
     HWND previewWindow_ = nullptr;
     std::shared_ptr<const DropThumbnail> previewImage_;
     bool dragging_ = false;
+    bool enabled_ = true;
 };
 
 }

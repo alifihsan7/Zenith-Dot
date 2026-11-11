@@ -8,6 +8,7 @@
 #include "drop_zone.hpp"
 #include "power.hpp"
 #include "system.hpp"
+#include "settings.hpp"
 
 #include <d2d1.h>
 #include <dwrite.h>
@@ -62,6 +63,7 @@ public:
     Island& operator=(Island const&) = delete;
 
     void setAnimate(bool animate);
+    void setPreferences(Settings const& settings);
     void setMedia(MediaState const& media);
     void setPower(PowerState const& power);
     void setSystem(SystemStats const& stats);
@@ -111,8 +113,9 @@ private:
                      timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
                      appVolume, appMute, autoCycle };
-    enum class Screen { media, timers, scratch, drop, system };
-    static constexpr Screen screens[]{Screen::media, Screen::timers, Screen::scratch, Screen::drop, Screen::system};
+    using Screen = Feature;
+    Settings preferences_;
+    std::vector<Screen> screens_{featureOrder.begin(), featureOrder.end()};
     enum class PillMode { dot, media, focus, timer, preview, privacy };
     struct Target {
         D2D1_RECT_F rect;
@@ -274,7 +277,7 @@ private:
     PillMode preferredPill_ = PillMode::media;
     std::wstring pillTitle_;
     bool pillPlaying_ = false;
-    Clock::time_point pauseCompactAt_{};
+    Clock::time_point pausedAt_{};
     float pillFrom_ = 0;
     float pillVelocity_ = 0;
     float pillTarget_ = 0;
@@ -291,6 +294,7 @@ private:
     float pillLyricMaxWidth_ = 0;
     PillText pillTrackTitle_;
     float pillTrackMaxWidth_ = 0;
+    float pillTrackMinimum_ = 0;
     D2D1_SIZE_F pillTrackSize_{};
     float pillTitleFrom_ = 1;
     bool pillTitleVisible_ = true;

@@ -19,6 +19,9 @@ constexpr DWORD autoCycleBit = 1;
 constexpr wchar_t displayValue[] = L"DisplayOptions";
 constexpr DWORD animateIslandBit = 1;
 constexpr DWORD hideInFullscreenBit = 2;
+constexpr wchar_t islandValue[] = L"IslandOptions";
+constexpr wchar_t featuresValue[] = L"FeatureOrder";
+constexpr wchar_t accentValue[] = L"CustomAccent";
 
 std::optional<DWORD> read(wchar_t const* name) {
     DWORD value = 0;
@@ -47,6 +50,33 @@ Settings Settings::load() {
         settings.animateIsland = (*value & animateIslandBit) != 0;
         settings.hideInFullscreen = (*value & hideInFullscreenBit) != 0;
     }
+    if (const auto value = read(islandValue)) {
+        const auto choice = [bits = *value](unsigned shift, unsigned fallback, unsigned count = 3) {
+            const auto index = (bits >> shift) & 3u;
+            return index < count ? index : fallback;
+        };
+        settings.fixedPillMinimum = (*value & 1u) != 0;
+        settings.showWaveform = (*value & 2u) != 0;
+        settings.showPillLyrics = (*value & 4u) != 0;
+        settings.islandSize = choice(3, 1);
+        settings.accentMode = choice(5, 0);
+        settings.compactPause = choice(7, 1, 4);
+        settings.focusPreset = choice(9, 1);
+        settings.breakPreset = choice(11, 0);
+    }
+    if (const auto value = read(accentValue)) settings.customAccent = *value & 0xffffff;
+    if (const auto value = read(featuresValue)) {
+        settings.enabledFeatures = *value & 0x1f;
+        auto order = featureOrder;
+        unsigned seen = 0;
+        for (unsigned index = 0; index < order.size(); ++index) {
+            const auto feature = (*value >> (5 + 3 * index)) & 7;
+            if (feature >= order.size() || (seen & (1u << feature))) break;
+            order[index] = static_cast<Feature>(feature);
+            seen |= 1u << feature;
+        }
+        if (seen == 0x1f) settings.features = order;
+    }
     return settings;
 }
 
@@ -64,6 +94,24 @@ bool Settings::saveDisplay() const {
     const DWORD display = (animateIsland ? animateIslandBit : 0) |
         (hideInFullscreen ? hideInFullscreenBit : 0);
     return write(displayValue, display);
+}
+
+bool Settings::saveIsland() const {
+    const DWORD value = (fixedPillMinimum ? 1u : 0u) | (showWaveform ? 2u : 0u) | (showPillLyrics ? 4u : 0u) |
+        (islandSize << 3) | (accentMode << 5) | (compactPause << 7) | (focusPreset << 9) | (breakPreset << 11);
+    return write(islandValue, value);
+}
+
+bool Settings::saveFeatures() const {
+    DWORD value = enabledFeatures;
+    for (unsigned index = 0; index < features.size(); ++index) {
+        value |= static_cast<DWORD>(features[index]) << (5 + 3 * index);
+    }
+    return write(featuresValue, value);
+}
+
+bool Settings::saveAccent() const {
+    return write(accentValue, customAccent);
 }
 
 std::wstring startupShortcut() {

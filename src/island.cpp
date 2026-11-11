@@ -79,7 +79,6 @@ constexpr auto visibilityTime = 200ms;
 constexpr auto lyricScrollTime = 190ms;
 constexpr auto pillLyricTime = 250ms;
 constexpr auto pillLyricSwitchTime = 750ms;
-constexpr auto compactPauseDelay = 3s;
 constexpr int timerPresets[]{1, 5, 10};
 constexpr int quickMinMinutes = 1;
 constexpr int quickMaxMinutes = 120;
@@ -466,13 +465,31 @@ void Island::setAnimate(bool animate) {
     animate_ = animate;
 }
 
+void Island::setPreferences(Settings const& settings) {
+    const bool newFocus = settings.focusPreset != preferences_.focusPreset;
+    const bool newBreak = settings.breakPreset != preferences_.breakPreset;
+    preferences_ = settings;
+    if (newFocus) focusMinutes_ = settings.focusMinutes();
+    if (newBreak) breakMinutes_ = settings.breakMinutes();
+    setAutoCycle(settings.autoCycle);
+    if (newFocus || newBreak) selectFocusPhase(breakPhase_);
+    screens_.clear();
+    for (const auto feature : settings.features) {
+        if (settings.enabled(feature)) screens_.push_back(feature);
+    }
+    const auto now = Clock::now();
+    if (!settings.enabled(screen_) && !screens_.empty()) showScreen(screens_.front(), now);
+    if (!settings.enabled(Screen::drop)) dropHover_ = false;
+    updatePill(now);
+}
+
 void Island::setMedia(MediaState const& media) {
     const auto now = Clock::now();
     if (!media.hasSession || media.playing) {
-        pauseCompactAt_ = {};
+        pausedAt_ = {};
     } else if (!media_.hasSession || media_.playing || media_.appId != media.appId ||
                media_.sourceId != media.sourceId || media_.title != media.title) {
-        pauseCompactAt_ = now + compactPauseDelay;
+        pausedAt_ = now;
     }
     if (pressed_ == Hit::source && (pressedIndex_ >= media.sources.size() || pressedIndex_ >= media_.sources.size() ||
         media.sources[pressedIndex_].appId != media_.sources[pressedIndex_].appId ||
@@ -561,7 +578,7 @@ void Island::setDropHover(bool hovering) {
 }
 
 void Island::showDropZone(bool hold) {
-    if (suppressed_) return;
+    if (suppressed_ || !preferences_.enabled(Screen::drop)) return;
     const auto now = Clock::now();
     if (bubbleShowing()) clearAlerts();
     setOpen(true, now);
@@ -589,11 +606,11 @@ std::optional<RECT> Island::scratchEditorRect() const {
 }
 
 bool Island::wantsLyrics() const {
-    return open_ && screen_ == Screen::media && media_.hasSession && lyricsOpen_;
+    return preferences_.enabled(Screen::media) && open_ && screen_ == Screen::media && media_.hasSession && lyricsOpen_;
 }
 
 bool Island::wantsLyricPill() const {
-    return !suppressed_ && lyricsOpen_ && pillMode_ == PillMode::media && media_.playing;
+    return preferences_.showPillLyrics && !suppressed_ && lyricsOpen_ && pillMode_ == PillMode::media && media_.playing;
 }
 
 Island::MotionSample Island::sampleSpring(Clock::time_point start, Clock::duration duration, Clock::time_point now,
@@ -693,6 +710,7 @@ float Island::panelValue(Clock::time_point now) const {
 }
 
 float Island::screenHeight(Screen screen) const {
+    if (screens_.empty()) return mediaIdleHeight;
     switch (screen) {
     case Screen::media: return media_.hasSession ? mediaPanelHeight : mediaIdleHeight;
     case Screen::timers: return 238;
@@ -711,7 +729,7 @@ float Island::panelHeight(Clock::time_point now) const {
 
 float Island::panelWidthAt(Clock::time_point now) const {
     const float width = screen_ == Screen::media
-        ? mediaPanelWidth + (media_.hasSession && lyricsOpen_ ? lyricsWidth_ : 0)
+        ? mediaPanelWidth + (preferences_.enabled(Screen::media) && media_.hasSession && lyricsOpen_ ? lyricsWidth_ : 0)
         : screen_ == Screen::system ? systemPanelWidth : panelWidth;
     return animate_ ? std::lerp(widthFrom_, width, sampleSpring(widthStart_, shapeTime, now, 0, 1).value) : width;
 }
@@ -738,16 +756,18 @@ std::wstring Island::title() const {
 
 void Island::updatePill(Clock::time_point now) {
     auto mode = PillMode::dot;
-    const bool focusActive = focus_.running() || focus_.paused() ||
-        (alert_ && (alert_->kind == IslandAlert::Kind::focusDone || alert_->kind == IslandAlert::Kind::breakDone));
-    const bool timerActive = quick_.running() || quick_.paused() || (alert_ && alert_->kind == IslandAlert::Kind::timerDone);
+    const bool timersEnabled = preferences_.enabled(Screen::timers);
+    const bool focusActive = timersEnabled && (focus_.running() || focus_.paused() ||
+        (alert_ && (alert_->kind == IslandAlert::Kind::focusDone || alert_->kind == IslandAlert::Kind::breakDone)));
+    const bool timerActive = timersEnabled && (quick_.running() || quick_.paused() ||
+        (alert_ && alert_->kind == IslandAlert::Kind::timerDone));
     if (!open_ && now < previewUntil_) {
         mode = PillMode::preview;
     } else if (focusActive && preferredPill_ == PillMode::focus) {
         mode = PillMode::focus;
     } else if (timerActive && preferredPill_ == PillMode::timer) {
         mode = PillMode::timer;
-    } else if (media_.hasSession) {
+    } else if (media_.hasSession && preferences_.enabled(Screen::media)) {
         mode = PillMode::media;
     } else if (focusActive) {
         mode = PillMode::focus;
@@ -796,14 +816,16 @@ void Island::updatePillLayout(Clock::time_point now, float workWidth) {
     }
     const float reserved = captureSlot * (static_cast<int>(microphoneColor_.has_value()) +
                                           static_cast<int>(cameraColor_.has_value()));
-    const bool showTitle = pillMode_ != PillMode::media || media_.playing ||
-                           (pauseCompactAt_ != Clock::time_point{} && now < pauseCompactAt_);
+    const auto compactAt = pausedAt_ + std::chrono::seconds(preferences_.pauseSeconds());
+    const bool showTitle = pillMode_ != PillMode::media || media_.playing || preferences_.compactPause == 3 || now < compactAt;
     D2D1_SIZE_F target{pillWidth, pillHeight};
     if (pillMode_ == PillMode::media) {
         const float trackWidth = std::max(pillWidth, workWidth - maxBubble - 60 - reserved);
-        if (pillTrackTitle_.text != pillTitle_ || pillTrackMaxWidth_ != trackWidth) {
+        const float minimum = preferences_.fixedPillMinimum ? pillWidth : 114;
+        if (pillTrackTitle_.text != pillTitle_ || pillTrackMaxWidth_ != trackWidth || pillTrackMinimum_ != minimum) {
             pillTrackTitle_.text = pillTitle_;
             pillTrackMaxWidth_ = trackWidth;
+            pillTrackMinimum_ = minimum;
             auto& layout = pillTrackTitle_.layout;
             layout = nullptr;
             winrt::check_hresult(fonts_->CreateTextLayout(pillTitle_.data(), static_cast<UINT32>(pillTitle_.size()),
@@ -815,7 +837,7 @@ void Island::updatePillLayout(Clock::time_point now, float workWidth) {
             DWRITE_TEXT_METRICS metrics{};
             winrt::check_hresult(layout->GetMetrics(&metrics));
             pillTrackTitle_.textSize = {metrics.width, metrics.height};
-            pillTrackSize_ = {std::max(pillWidth, std::ceil(metrics.width) + pillTrackLeft + pillTrackRight),
+            pillTrackSize_ = {std::max(minimum, std::ceil(metrics.width) + pillTrackLeft + pillTrackRight),
                               std::max(pillHeight, std::ceil(metrics.height) + 16)};
         }
         target = showTitle ? pillTrackSize_ : D2D1::SizeF(pausedPillWidth, pausedPillHeight);
@@ -873,7 +895,9 @@ void Island::updatePillLayout(Clock::time_point now, float workWidth) {
 }
 
 void Island::updateTheme(Clock::time_point now) {
-    const auto target = media_.hasSession ? media_.theme : CoverTheme{};
+    auto target = media_.hasSession && preferences_.enabled(Screen::media) && preferences_.accentMode == 0
+        ? media_.theme : CoverTheme{};
+    if (preferences_.accentMode == 2) target.accent = preferences_.customAccent;
     const auto fade = [&] {
         const float t = progress(themeStart_, themeTime, now);
         return t * t * (3 - 2 * t);
@@ -962,7 +986,7 @@ void Island::setOpen(bool open, Clock::time_point now) {
 }
 
 void Island::showScreen(Screen screen, Clock::time_point now) {
-    if (screen == screen_) return;
+    if (screen == screen_ || !preferences_.enabled(screen)) return;
     const bool lyricsVisible = wantsLyrics();
     heightFrom_ = panelHeight(now);
     widthFrom_ = panelWidthAt(now);
@@ -1121,9 +1145,10 @@ unsigned Island::frameInterval() const {
     if (pillMode_ == PillMode::preview) return 50;
     if (wantsLyricPill()) return 50;
     if (pillMode_ == PillMode::media) {
-        if (media_.playing) return animate_ ? 33 : 0;
-        if (pillTitleVisible_ && pauseCompactAt_ != Clock::time_point{}) {
-            return static_cast<unsigned>(std::max(1ms, std::chrono::ceil<std::chrono::milliseconds>(pauseCompactAt_ - now)).count());
+        if (media_.playing) return animate_ && preferences_.showWaveform ? 33 : 0;
+        if (pillTitleVisible_ && pausedAt_ != Clock::time_point{} && preferences_.compactPause != 3) {
+            const auto compactAt = pausedAt_ + std::chrono::seconds(preferences_.pauseSeconds());
+            return static_cast<unsigned>(std::max(1ms, std::chrono::ceil<std::chrono::milliseconds>(compactAt - now)).count());
         }
     }
     if (pillMode_ == PillMode::focus || pillMode_ == PillMode::timer) return timerRunning ? 1000 : 0;
@@ -1132,7 +1157,7 @@ unsigned Island::frameInterval() const {
 }
 
 bool Island::wantsSystemStats() const {
-    return open_ && screen_ == Screen::system;
+    return open_ && screen_ == Screen::system && preferences_.enabled(Screen::system);
 }
 
 // ---- Input ---------------------------------------------------------------------------------------
@@ -1297,11 +1322,12 @@ bool Island::scroll(POINT client, int delta) {
         return compact;
     }
 
-    constexpr int count = static_cast<int>(std::size(screens));
-    const auto current = std::ranges::find(screens, screen_) - std::begin(screens);
+    const int count = static_cast<int>(screens_.size());
+    if (count < 2) return false;
+    const auto current = std::ranges::find(screens_, screen_) - screens_.begin();
     const int step = wheelRemainder_ < 0 ? 1 : -1;
     wheelRemainder_ %= WHEEL_DELTA;
-    showScreen(screens[(current + step + count) % count], now);
+    showScreen(screens_[(current + step + count) % count], now);
     if (compact) {
         previewUntil_ = now + featurePreviewTime;
         openAt_ = previewUntil_;
@@ -1866,7 +1892,7 @@ void Island::drawPillContent(Clock::time_point now, float width, bool hideTitle)
     const float trackLeft = -trackWidth / 2;
     const float trackRight = trackWidth / 2;
     const float full = lin(pausedPillWidth, pillWidth, trackWidth);
-    if (pillPlaying_) {
+    if (pillPlaying_ && preferences_.showWaveform) {
         // Four bars, each scaling between 40% and 100% (V7's 0.75s alternate ease-in-out loop).
         constexpr float heights[]{8, 14, 10, 6};
         constexpr float delays[]{0, -0.39f, -0.24f, -0.55f};
@@ -1884,7 +1910,7 @@ void Island::drawPillContent(Clock::time_point now, float width, bool hideTitle)
             target_->FillRoundedRectangle(
                 rounded(box(left + bar * 5, pillCenterY - height / 2, 2.5f, height), 1.25f), ink(accent_));
         }
-    } else {
+    } else if (!pillPlaying_) {
         // Paused: the panel's pause glyph (two bars), scaled for the pill.
         const float left = trackRight - std::lerp(19.0f, 22.0f, full);
         for (const float x : {left, left + 5.5f}) {
@@ -1985,6 +2011,11 @@ void Island::drawIsland(Clock::time_point now, float value, float amount, bool m
 
 void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, float artOpacity,
                         bool hideTitle, bool record) {
+    if (!preferences_.enabled(screen)) {
+        if (screens_.empty()) text(L"No features enabled", bodyFont_.get(),
+            box(panel.left + padX, panel.top + padTop, panel.right - panel.left - 2 * padX, 24), rgb(mutedColor));
+        return;
+    }
     switch (screen) {
     case Screen::media: drawMedia(panel, now, artOpacity, hideTitle, record); break;
     case Screen::timers: drawTimers(panel, now, record); break;
@@ -2557,17 +2588,19 @@ void Island::drawNav(D2D1_RECT_F panel, bool record) {
     const float top = panel.bottom - padBottom - navHeight;
     drawCaptureIndicators(pt(panel.left + padX + 26, top + navHeight / 2),
                           microphoneColor_ ? 1.0f : 0.0f, cameraColor_ ? 1.0f : 0.0f);
-    constexpr auto count = std::size(screens);
-    const float start = (panel.left + panel.right - (count * 35 + (count - 1) * 8)) / 2.0f;
+    const auto count = screens_.size();
+    const float start = (panel.left + panel.right - (static_cast<float>(count) * 43 - 8)) / 2.0f;
     const Hit hits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem};
     for (size_t i = 0; i < count; ++i) {
         const auto rect = box(start + static_cast<float>(i) * 43, top, 35, navHeight);
-        const bool selected = screen_ == screens[i];
+        const auto screen = screens_[i];
+        const auto hit = hits[static_cast<unsigned>(screen)];
+        const bool selected = screen_ == screen;
         if (selected) target_->FillRoundedRectangle(rounded(rect, 7), ink(withAlpha(accent_, 0.14f)));
-        else if (hovered(hits[i])) target_->FillRoundedRectangle(rounded(rect, 7), ink(white(0.08f)));
+        else if (hovered(hit)) target_->FillRoundedRectangle(rounded(rect, 7), ink(white(0.08f)));
         const auto color = selected ? accent_ : rgb(mutedColor);
-        drawScreenGlyph(screens[i], rect, color);
-        if (record) addTarget(rect, hits[i]);
+        drawScreenGlyph(screen, rect, color);
+        if (record) addTarget(rect, hit);
     }
     const auto pin = box(panel.right - padX - 34, top + 1, 34, 29);
     drawButton(pin, L"", Hit::panelPin, record);
@@ -2600,6 +2633,8 @@ void Island::drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float captu
 
 void Island::notify(IslandAlert alert) {
     if (suppressed_) return;
+    if (!preferences_.enabled(Screen::timers) && (alert.kind == IslandAlert::Kind::focusDone ||
+        alert.kind == IslandAlert::Kind::breakDone || alert.kind == IslandAlert::Kind::timerDone)) return;
     const auto now = Clock::now();
     prepareText();
     const bool replacesSameKind = alert.kind == IslandAlert::Kind::copy || alert.meter ||
@@ -2943,7 +2978,7 @@ void Island::drawInlineAlert(D2D1_RECT_F panel) {
 void Island::draw(HWND window) {
     const auto now = Clock::now();
     updateTheme(now);
-    scale_ = GetDpiForWindow(window) / 96.0f;
+    scale_ = GetDpiForWindow(window) / 96.0f * preferences_.islandScale();
     const auto monitor = MonitorFromPoint(POINT{}, MONITOR_DEFAULTTOPRIMARY);
     MONITORINFO monitorInfo{};
     monitorInfo.cbSize = sizeof(MONITORINFO);
@@ -2961,7 +2996,7 @@ void Island::draw(HWND window) {
     const float value = panelValue(now);
     const bool panelVisible = open_ || value > 0;
     const bool switchingScreen = screenFrom_ != screen_ && progress(screenStart_, screenFadeTime, now) < 1;
-    const bool morphTitle = shareTitle_ && screen_ == Screen::media && media_.hasSession &&
+    const bool morphTitle = shareTitle_ && screen_ == Screen::media && preferences_.enabled(Screen::media) && media_.hasSession &&
                             pillTitleVisible_ && pillTrackSize_.height <= pillHeight &&
                             !pillLyric_.layout && !previousPillLyric_.layout &&
                             !switchingScreen && value > 0 && value < 1;
