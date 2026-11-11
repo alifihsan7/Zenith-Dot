@@ -34,6 +34,8 @@ constexpr float mediaPanelWidth = 344;
 constexpr float systemPanelWidth = 530;
 constexpr float systemHeight = 228;
 constexpr float prayerPanelHeight = 176;
+constexpr float prayerPanelWidth = 570;
+constexpr float prayerInfoWidth = 176;
 constexpr float systemLeftWidth = 196;
 constexpr float systemRightGap = 29;      // gap, divider, gap
 constexpr float systemRightWidth = systemPanelWidth - 28 - systemLeftWidth - systemRightGap;
@@ -780,7 +782,8 @@ float Island::panelHeight(Clock::time_point now) const {
 float Island::panelWidthAt(Clock::time_point now) const {
     const float width = screen_ == Screen::media
         ? mediaPanelWidth + (preferences_.enabled(Screen::media) && media_.hasSession && lyricsOpen_ ? lyricsWidth_ : 0)
-        : screen_ == Screen::system ? systemPanelWidth : panelWidth;
+        : screen_ == Screen::system ? systemPanelWidth
+        : screen_ == Screen::prayer ? prayerPanelWidth : panelWidth;
     return animate_ ? std::lerp(widthFrom_, width, sampleSpring(widthStart_, shapeTime, now, 0, 1).value) : width;
 }
 
@@ -1050,6 +1053,7 @@ void Island::setOpen(bool open, Clock::time_point now) {
                   !pillLyric_.layout && !previousPillLyric_.layout;
     open_ = open;
     sourcePickerOpen_ = false;
+    prayerPickerOpen_ = false;
     updateLyricVisibility(lyricsVisible, now);
     if (!open) panelPinned_ = false;
     keepHeight_ = 0;
@@ -1072,6 +1076,7 @@ void Island::showScreen(Screen screen, Clock::time_point now) {
     screenFrom_ = screen_;
     screen_ = screen;
     sourcePickerOpen_ = false;
+    prayerPickerOpen_ = false;
     if (screen == Screen::media) preferredPill_ = PillMode::media;
     if (screen == Screen::timers) preferredPill_ = quickView_ ? PillMode::timer : PillMode::focus;
     updateLyricVisibility(lyricsVisible, now);
@@ -1444,6 +1449,8 @@ bool Island::pointerDown(POINT client) {
     const auto target = targetAt(point);
     if (sourcePickerOpen_ && (!target || (target->hit != Hit::sourcePicker &&
         target->hit != Hit::source && target->hit != Hit::sourceMenu))) sourcePickerOpen_ = false;
+    if (prayerPickerOpen_ && (!target || (target->hit != Hit::prayerLocationPicker &&
+        target->hit != Hit::prayerLocation && target->hit != Hit::prayerLocationMenu))) prayerPickerOpen_ = false;
     if (!target) return false;
     if (target->hit == Hit::pill) {
         setOpen(true, Clock::now());
@@ -1509,6 +1516,16 @@ IslandCommand Island::pointerUp(POINT client) {
             command.kind = IslandCommand::Kind::selectSource;
             const auto& source = media_.sources[index];
             command.appId = source.id.empty() ? source.appId : source.id;
+        }
+        break;
+    case Hit::prayerLocationPicker:
+        prayerPickerOpen_ = !prayerPickerOpen_;
+        break;
+    case Hit::prayerLocation:
+        prayerPickerOpen_ = false;
+        if (index != preferences_.prayerCity) {
+            command.kind = IslandCommand::Kind::prayerLocation;
+            command.index = index;
         }
         break;
     case Hit::navMedia: showScreen(Screen::media, now); break;
@@ -1706,6 +1723,8 @@ void Island::prepareText() {
     create(timerFont_, L"Segoe UI", 12, strong, end);
     create(titleFont_, L"Segoe UI", 16, strong, start);
     create(mediaTitleFont_, L"Segoe UI", mediaTitleSize, strong, start);
+    create(prayerTitleFont_, L"Segoe UI", 24, strong, start);
+    create(prayerTimeFont_, L"Segoe UI", 13, strong, center);
     create(headingCenterFont_, L"Segoe UI", 16, strong, center);
     create(bodyFont_, L"Segoe UI", 12, normal, start);
     winrt::com_ptr<IDWriteFontCollection> systemFonts;
@@ -2100,6 +2119,7 @@ void Island::drawIsland(Clock::time_point now, float value, float amount, bool m
         }
         drawNav(full, recordPanel_);
         if (recordPanel_ && sourcePickerOpen_) drawSourceMenu(content);
+        if (recordPanel_ && prayerPickerOpen_ && screen_ == Screen::prayer) drawPrayerLocationMenu(content);
         if (panelOpacity < 1) popLayer();
     }
     if (sharedArt) {
@@ -2123,7 +2143,7 @@ void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now,
     case Screen::scratch: drawScratchpad(panel, record); break;
     case Screen::drop: drawDropZone(panel, record); break;
     case Screen::system: drawSystem(panel, record); break;
-    case Screen::prayer: drawPrayerSchedule(panel); break;
+    case Screen::prayer: drawPrayerSchedule(panel, record); break;
     }
 }
 
@@ -2685,72 +2705,111 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
     }
 }
 
-void Island::drawPrayerSchedule(D2D1_RECT_F panel) {
-    const float leftEdge = (panel.left + panel.right - panelWidth) / 2 + padX;
-    const auto area = box(leftEdge, panel.top + padTop, panelWidth - 2 * padX, 91);
+void Island::drawPrayerSchedule(D2D1_RECT_F panel, bool record) {
+    const float x = (panel.left + panel.right - prayerPanelWidth) / 2 + padX;
+    const float y = panel.top + 12;
+    const auto info = box(x, y, prayerInfoWidth, 115);
+    const auto picker = box(x + 12, y + 83, 137, 24);
+    target_->FillRoundedRectangle(rounded(info, 12), ink(rgb(0x192737)));
+    drawButton(picker, L"Change location", Hit::prayerLocationPicker, record, 0, prayerPickerOpen_);
+    const float arrow = picker.right - 12;
+    const float arrowY = picker.top + 11;
+    target_->DrawLine(pt(arrow - 3, arrowY - 1), pt(arrow, arrowY + 2), ink(rgb(mutedColor)), 1.2f);
+    target_->DrawLine(pt(arrow, arrowY + 2), pt(arrow + 3, arrowY - 1), ink(rgb(mutedColor)), 1.2f);
+
     if (!prayerSchedule_) {
-        text(L"Prayer times unavailable", bodyFont_.get(), area, rgb(mutedColor));
+        text(L"Prayer times unavailable", bodyFont_.get(), box(x + 12, y + 12, prayerInfoWidth - 24, 25), rgb(mutedColor));
         return;
     }
     const auto& schedule = *prayerSchedule_;
-    const auto progress = prayerProgress(schedule, std::chrono::system_clock::now());
-    const auto heading = std::wstring(L"Prayer times · ") + schedule.city;
-    const auto nowText = std::wstring(L"Now ") + prayerTimeText(static_cast<int>(progress.localMinute));
-    text(heading, bodyFont_.get(), box(area.left, area.top, area.right - area.left, 17), rgb(inkColor));
+    const auto timing = prayerProgress(schedule, std::chrono::system_clock::now());
+    const auto name = std::wstring_view(prayerNames[timing.nextIndex]);
+    constexpr auto clockColor = 0x9bd2ffu;
+    constexpr float infoInnerWidth = prayerInfoWidth - 24;
+    const float nameWidth = std::ceil(measure(name, prayerTitleFont_.get())) + 2;
+    text(name, prayerTitleFont_.get(), box(x + 12, y + 8, nameWidth, 34), rgb(inkColor));
 
-    constexpr auto clockColor = 0x91caffu;
-    text(nowText, bodyEndFont_.get(), box(area.left, area.top, area.right - area.left, 17), rgb(clockColor));
+    const auto hours = std::chrono::duration_cast<std::chrono::hours>(timing.remaining);
+    const auto minutes = timing.remaining - hours;
+    std::wstring countdown = L"in ";
+    if (hours.count()) countdown += std::to_wstring(hours.count()) + L"h ";
+    countdown += std::to_wstring(minutes.count()) + L"m";
+    text(countdown, bodyFont_.get(), box(x + 19 + nameWidth, y + 15, infoInnerWidth - nameWidth - 7, 26), rgb(clockColor));
 
-    constexpr float labelWidth = 58;
-    constexpr float labelGap = 4;
-    constexpr float labelStep = labelWidth + labelGap;
-    constexpr float rise = 24;
-    const float left = area.left + labelWidth / 2;
-    const float right = area.right - labelWidth / 2;
-    const float baseline = area.top + 56;
-    PathBuilder arc(graphics_.get());
-    arc.move(pt(left, baseline), false)
-        .curve(pt(std::lerp(left, right, 1.0f / 3), baseline - 4 * rise / 3),
-               pt(std::lerp(left, right, 2.0f / 3), baseline - 4 * rise / 3),
-               pt(right, baseline));
-    target_->DrawGeometry(arc.finish().get(), ink(white(0.36f)), 1.5f, roundStroke_.get());
+    text(std::wstring(L"Prayer times · ") + schedule.city, bodyFont_.get(),
+         box(x + 12, y + 42, infoInnerWidth, 17), rgb(mutedColor));
+    auto clock = std::wstring(L"Now ") + prayerTimeText(static_cast<int>(timing.localMinute)) + L" " + schedule.zone;
+    text(clock, bodyFont_.get(), box(x + 12, y + 62, infoInnerWidth, 17), rgb(inkColor));
+    if (timing.tomorrow)
+        text(L"Tomorrow", bodyEndFont_.get(), box(x + 12, y + 62, infoInnerWidth, 17), rgb(clockColor));
 
-    const auto pointAt = [&](float minute) {
-        constexpr auto dayMinutes = std::chrono::duration_cast<std::chrono::minutes>(std::chrono::days(1)).count();
-        const float t = minute / static_cast<float>(dayMinutes);
+    const float scheduleLeft = info.right + 15;
+    const float scheduleRight = x + prayerPanelWidth - 2 * padX;
+    const float left = scheduleLeft + 10;
+    const float right = scheduleRight - 10;
+    const float baseline = y + 55;
+    constexpr float rise = 23;
+    constexpr float dayMinutes = 24 * 60;
+    const auto pointAt = [&](float t) {
         return pt(std::lerp(left, right, t), baseline - 4 * rise * t * (1 - t));
     };
+    const auto drawArc = [&](float t, D2D1_COLOR_F color) {
+        if (t <= 0) return;
+        const auto end = pointAt(t);
+        const float width = end.x - left;
+        PathBuilder arc(graphics_.get());
+        arc.move(pt(left, baseline), false)
+            .curve(pt(left + width / 3, baseline - 4 * rise * t / 3),
+                   pt(end.x - width / 3, end.y - 4 * rise * (2 * t - 1) * t / 3), end);
+        target_->DrawGeometry(arc.finish().get(), ink(color), 1.4f, roundStroke_.get());
+    };
+    drawArc(1, rgb(0x586776));
+    const float nowFraction = static_cast<float>(timing.localMinute) / dayMinutes;
+    drawArc(nowFraction, rgb(0x88a8c2));
 
-    float nextLabel = left;
+    const float labelStep = (scheduleRight - scheduleLeft) / static_cast<float>(prayerNames.size());
     for (size_t i = 0; i < schedule.times.size(); ++i) {
-        const auto point = pointAt(static_cast<float>(schedule.times[i]));
-        const auto remaining = static_cast<float>(schedule.times.size() - 1 - i);
-        const float label = std::clamp(point.x, nextLabel, right - remaining * labelStep);
-        nextLabel = label + labelStep;
-        const bool upcoming = !progress.tomorrow && i == progress.nextIndex;
-        target_->DrawLine(point, pt(label, point.y + 9), ink(white(0.36f)), 1);
-        target_->FillEllipse(D2D1::Ellipse(point, 3, 3), ink(rgb(upcoming ? clockColor : inkColor)));
-        if (upcoming) target_->DrawEllipse(D2D1::Ellipse(point, 5.5f, 5.5f), ink(rgb(clockColor)), 1);
-
-        const auto centered = [&](std::wstring_view value, float top, unsigned color) {
-            const float width = std::ceil(measure(value, bodyFont_.get())) + 2;
-            text(value, bodyFont_.get(), box(label - width / 2, top, width, 16), rgb(color));
-        };
-        centered(prayerNames[i], point.y + 10, upcoming ? clockColor : mutedColor);
-        centered(prayerTimeText(schedule.times[i]), point.y + 26, upcoming ? clockColor : inkColor);
+        const auto point = pointAt(static_cast<float>(schedule.times[i]) / dayMinutes);
+        const bool upcoming = !timing.tomorrow && i == timing.nextIndex;
+        if (upcoming) {
+            const auto ring = D2D1::Ellipse(point, 5.5f, 5.5f);
+            target_->FillEllipse(ring, ink(rgb(0x10161e)));
+            target_->DrawEllipse(ring, ink(rgb(clockColor)), 1.4f);
+        }
+        target_->FillEllipse(D2D1::Ellipse(point, 2.6f, 2.6f), ink(rgb(upcoming ? clockColor : inkColor)));
+        const auto row = box(scheduleLeft + static_cast<float>(i) * labelStep + 2, y + 77, labelStep - 4, 38);
+        if (upcoming) {
+            target_->FillRoundedRectangle(rounded(row, 7), ink(rgb(0x1d3449)));
+            target_->DrawRoundedRectangle(rounded(row, 7), ink(rgb(0x35516a)), 1);
+        }
+        text(prayerNames[i], buttonFont_.get(), box(row.left, row.top + 3, row.right - row.left, 14),
+             rgb(upcoming ? clockColor : mutedColor));
+        text(prayerTimeText(schedule.times[i]), prayerTimeFont_.get(), box(row.left, row.top + 17, row.right - row.left, 18),
+             rgb(upcoming ? clockColor : inkColor));
     }
-    const auto current = pointAt(static_cast<float>(progress.localMinute));
-    const auto pointer = pt(current.x, current.y - 8);
-    fillPolygon({pt(pointer.x - 3, pointer.y - 6), pt(pointer.x + 3, pointer.y - 6), pointer}, rgb(clockColor));
+    const auto current = pointAt(nowFraction);
+    fillPolygon({pt(current.x - 4, current.y - 14), pt(current.x + 4, current.y - 14),
+                 pt(current.x, current.y - 7)}, rgb(clockColor));
 
-    const auto hours = std::chrono::duration_cast<std::chrono::hours>(progress.remaining);
-    const auto minutes = progress.remaining - hours;
-    auto footer = std::wstring(prayerNames[progress.nextIndex]);
-    if (progress.tomorrow) footer += L" tomorrow at " + prayerTimeText(progress.nextMinute) + L" ·";
-    footer += L" in ";
-    if (hours.count()) footer += std::to_wstring(hours.count()) + L"h ";
-    footer += std::to_wstring(minutes.count()) + L"m";
-    text(footer, bodyFont_.get(), box(area.left, area.top + 100, area.right - area.left, 18), rgb(clockColor));
+    const float axisY = y + 58;
+    text(L"00:00", monoFont_.get(), box(scheduleLeft + 4, axisY, 40, 15), rgb(mutedColor));
+    text(L"12:00", buttonFont_.get(), box((scheduleLeft + scheduleRight) / 2 - 20, axisY, 40, 15), rgb(mutedColor));
+    text(L"24:00", monoEndFont_.get(), box(scheduleRight - 44, axisY, 40, 15), rgb(mutedColor));
+}
+
+void Island::drawPrayerLocationMenu(D2D1_RECT_F panel) {
+    const float x = (panel.left + panel.right - prayerPanelWidth) / 2 + padX + 12;
+    const float y = panel.top + 12;
+    constexpr float rowHeight = 24;
+    constexpr float menuWidth = 137;
+    const auto menu = box(x, y, menuWidth, 8 + rowHeight * static_cast<float>(prayerLocations.size()));
+    target_->FillRoundedRectangle(rounded(menu, 8), ink(rgb(0x18232f)));
+    target_->DrawRoundedRectangle(rounded(menu, 8), ink(rgb(0x3b5062)), 1);
+    addTarget(menu, Hit::prayerLocationMenu);
+    for (size_t i = 0; i < prayerLocations.size(); ++i) {
+        const auto row = box(x + 4, y + 4 + rowHeight * static_cast<float>(i), menuWidth - 8, rowHeight - 1);
+        drawButton(row, prayerLocations[i].name, Hit::prayerLocation, true, i + 1, preferences_.prayerCity == i + 1);
+    }
 }
 
 void Island::drawAppVolume(size_t index, D2D1_RECT_F row, bool record) {

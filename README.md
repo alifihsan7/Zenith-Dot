@@ -34,7 +34,7 @@ The accent colour follows the current cover. The tray menu has media controls, *
 
 **Settings → Notifications** controls Do Not Disturb for Zenith alerts, including clipboard and timer bubbles. **Follow Windows** uses the current Windows notification mode, **On** always silences Zenith alerts, and **Off** (the default) leaves Zenith alerts enabled. The camera and microphone activity indicators remain visible when enabled.
 
-Choose Jakarta, Makassar, or Jayapura under **Prayer timetable city** to show the five daily prayer times on an arc in the island’s Prayer tab. The arc shows the selected city’s local time, highlights the next prayer, and counts down to it, including tomorrow’s Subuh. Zenith calculates estimated times offline using the selected city’s time zone. Local official timetables can differ. Turn off **Prayer reminders** to keep the timetable visible without showing reminders.
+Choose Jakarta, Makassar, or Jayapura under **Prayer timetable city** to enable the Prayer tab. The left column shows the next prayer, countdown, local clock, and zone (WIB, WITA, or WIT). Use **Change location** there to switch cities. The right column shows the day arc and five prayer times, with a triangle for the current time and a ring for the next prayer today. Zenith calculates estimated times offline. Local official timetables can differ. Turn off **Prayer reminders** to keep the timetable visible without showing reminders.
 
 ### Connection status
 

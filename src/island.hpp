@@ -34,7 +34,7 @@ class SettingsExample;
 struct IslandCommand {
     enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, adjustLyricsDelay, editScratchpad,
                       audioPicker, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute,
-                      autoCycle };
+                      autoCycle, prayerLocation };
     Kind kind = Kind::none;
     double seconds = 0;              // seek position; appVolume: level 0..1; appMute, autoCycle: 1 = on
     std::wstring appId;
@@ -123,7 +123,7 @@ private:
                      navScratch, navSystem, navPrayer, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
                      timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, lyricsDelay, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
-                     appVolume, appMute, autoCycle };
+                     appVolume, appMute, autoCycle, prayerLocationPicker, prayerLocationMenu, prayerLocation };
     using Screen = Feature;
     Settings preferences_;
     std::vector<Screen> screens_{featureOrder.begin(), featureOrder.end()};
@@ -233,7 +233,8 @@ private:
     void drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F shape);
     void drawCompanionPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity);
     void drawSystem(D2D1_RECT_F panel, bool record);
-    void drawPrayerSchedule(D2D1_RECT_F panel);
+    void drawPrayerSchedule(D2D1_RECT_F panel, bool record);
+    void drawPrayerLocationMenu(D2D1_RECT_F panel);
     void drawAppVolume(size_t index, D2D1_RECT_F row, bool record);
     float volumeFraction(D2D1_POINT_2F point) const;
     void drawNav(D2D1_RECT_F panel, bool record);
@@ -343,6 +344,7 @@ private:
     Clock::time_point widthStart_{};
     bool lyricsOpen_ = false;
     bool sourcePickerOpen_ = false;
+    bool prayerPickerOpen_ = false;
     size_t sourceOffset_ = 0;
     int sourceWheelRemainder_ = 0;
     D2D1_RECT_F sourceMenuRect_{};
@@ -441,6 +443,8 @@ private:
     winrt::com_ptr<IDWriteTextFormat> timerFont_;
     winrt::com_ptr<IDWriteTextFormat> titleFont_;
     winrt::com_ptr<IDWriteTextFormat> mediaTitleFont_;
+    winrt::com_ptr<IDWriteTextFormat> prayerTitleFont_;
+    winrt::com_ptr<IDWriteTextFormat> prayerTimeFont_;
     winrt::com_ptr<IDWriteTextFormat> headingCenterFont_;
     winrt::com_ptr<IDWriteTextFormat> bodyFont_;
     winrt::com_ptr<IDWriteTextFormat> lyricFont_;

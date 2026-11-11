@@ -316,6 +316,17 @@ void App::run(IslandCommand const& command) {
         if (updated.saveTimer()) settings_ = updated;
         break;
     }
+    case IslandCommand::Kind::prayerLocation: {
+        if (command.index == 0 || command.index > prayerLocations.size()) break;
+        auto updated = Settings::load();
+        updated.prayerCity = static_cast<unsigned>(command.index);
+        if (updated.saveNotifications()) {
+            settings_.prayerCity = updated.prayerCity;
+            island_.setPreferences(settings_);
+            refreshPrayers();
+        }
+        break;
+    }
     case IslandCommand::Kind::appMute:
         desktop_.setAppVolume(command.appId, std::nullopt, command.seconds != 0);
         island_.setAppVolumes(desktop_.appVolumes());

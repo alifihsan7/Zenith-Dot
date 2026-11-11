@@ -8,19 +8,6 @@
 namespace zenith {
 namespace {
 
-struct City {
-    wchar_t const* name;
-    double latitude;
-    double longitude;
-    int utcOffset;
-};
-
-constexpr City cities[]{
-    {L"Jakarta", -6.1754, 106.8272, 7},
-    {L"Makassar", -5.1477, 119.4327, 8},
-    {L"Jayapura", -2.5916, 140.6690, 9},
-};
-
 constexpr double radians = std::numbers::pi / 180;
 
 double wrap(double value, double period) {
@@ -39,7 +26,7 @@ struct Sun {
 };
 
 // Solar position and hour-angle equations from https://praytimes.org/docs/calculation.
-Sun solarPosition(double days, City const& city) {
+Sun solarPosition(double days, PrayerLocation const& city) {
     const double anomaly = (357.529 + 0.98560028 * days) * radians;
     const double meanLongitude = wrap(280.459 + 0.98564736 * days, 360);
     const double longitude = (meanLongitude + 1.915 * std::sin(anomaly) + 0.020 * std::sin(2 * anomaly)) * radians;
@@ -52,13 +39,13 @@ Sun solarPosition(double days, City const& city) {
 }
 
 std::chrono::sys_days prayerDate(unsigned city, std::chrono::system_clock::time_point now) {
-    if (!city || city > std::size(cities)) return {};
-    return std::chrono::floor<std::chrono::days>(now + std::chrono::hours(cities[city - 1].utcOffset));
+    if (!city || city > prayerLocations.size()) return {};
+    return std::chrono::floor<std::chrono::days>(now + std::chrono::hours(prayerLocations[city - 1].utcOffset));
 }
 
 namespace {
 
-int calculatePrayer(City const& city, std::chrono::sys_days date, std::size_t index) {
+int calculatePrayer(PrayerLocation const& city, std::chrono::sys_days date, std::size_t index) {
     using namespace std::chrono;
     const double latitude = city.latitude * radians;
     const double days = (date - sys_days{year{2000}/January/1}).count() - city.utcOffset / 24.0;
@@ -84,9 +71,9 @@ int calculatePrayer(City const& city, std::chrono::sys_days date, std::size_t in
 
 std::optional<PrayerSchedule> prayerSchedule(unsigned index, std::chrono::sys_days date) {
     using namespace std::chrono;
-    if (!index || index > std::size(cities)) return std::nullopt;
-    const auto& city = cities[index - 1];
-    PrayerSchedule schedule{city.name, date, {}, city.utcOffset, calculatePrayer(city, date + days(1), 0)};
+    if (!index || index > prayerLocations.size()) return std::nullopt;
+    const auto& city = prayerLocations[index - 1];
+    PrayerSchedule schedule{city.name, date, {}, city.utcOffset, calculatePrayer(city, date + days(1), 0), city.zone};
     for (std::size_t i = 0; i < schedule.times.size(); ++i) {
         schedule.times[i] = calculatePrayer(city, date, i);
     }

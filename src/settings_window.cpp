@@ -2,6 +2,7 @@
 #include "browser_tabs.hpp"
 #include "resource.h"
 #include "notifications.hpp"
+#include "prayer.hpp"
 
 #include <commctrl.h>
 #include <commdlg.h>
@@ -114,7 +115,9 @@ constexpr wchar_t const* pauseChoices[]{L"Immediately", L"3 seconds", L"5 second
 constexpr wchar_t const* focusChoices[]{L"15 minutes", L"25 minutes", L"45 minutes"};
 constexpr wchar_t const* breakChoices[]{L"5 minutes", L"10 minutes", L"15 minutes"};
 constexpr wchar_t const* quietChoices[]{L"Off", L"Follow Windows", L"On"};
-constexpr wchar_t const* prayerChoices[]{L"Off", L"Jakarta", L"Makassar", L"Jayapura"};
+constexpr wchar_t const* prayerChoices[]{
+    L"Off", prayerLocations[0].name, prayerLocations[1].name, prayerLocations[2].name
+};
 constexpr int choiceControls[]{IDC_PILL_WIDTH, IDC_ISLAND_SIZE, IDC_ACCENT_MODE, IDC_CUSTOM_ACCENT,
     IDC_PAUSE_DELAY, IDC_FOCUS_DURATION, IDC_BREAK_DURATION, IDC_QUIET_MODE, IDC_PRAYER_CITY};
 
