@@ -54,13 +54,9 @@ Chrome, Edge, and Brave publish a shared Windows media session for ordinary tabs
 2. Open `chrome://extensions`, `edge://extensions`, or `brave://extensions`. Turn on Developer mode, choose **Load unpacked**, and select the package's `browser` folder. If the extension is already installed from another folder, replace it with the copy from this package.
 3. Reload existing media tabs. Play two HTML media streams and hover Zenith Dot. Click a numbered browser logo to select that tab, then use play/pause or the seek bar where the media supports it.
 
-The extension sends playback metadata and timing to the local native messaging host. It starts the companion when it has media to report. Clicking the cover activates the selected browser tab and its window. Without the extension, the cover can return to the browser window Windows reports as the media source. Previous and Next are available through Windows media sessions. Browser tab controls use the page's HTML audio or video element. If Windows reports different artwork metadata for a browser tab, Zenith Dot shows the browser icon until the track details match.
+The extension sends playback metadata and timing to the local native messaging host. It starts the companion when it has media to report. Clicking the cover activates the selected browser tab and its window. Without the extension, the cover can return to the browser window Windows reports as the media source. Play/pause and seek in a browser tab use the page's audio or video element. On YouTube watch pages, Previous and Next use the selected tab's player buttons. Each Zenith control is enabled only when its corresponding YouTube button is available. Windows media sessions continue to provide their own playback controls. If Windows reports different artwork metadata for a browser tab, Zenith Dot shows the browser icon until the track details match.
 
-## Download Bubble
-
-Start a download in Brave, Chrome, or Edge while Zenith Dot is running. Zenith watches for new temporary download files in the Windows Downloads folder. The bubble shows a filename or a count with an activity indicator. When the browser renames a temporary file to its final name, Zenith can show **Download complete**. Click the bubble to select the most recently completed file in Explorer.
-
-Download Bubble works without an extension. It uses folder changes, so it has no exact percentage or pause status. It covers downloads saved directly to the Windows Downloads folder, including private-window downloads saved there.
+To check tab-specific skip controls, open a YouTube playlist and a second media tab in the same browser. Select the playlist tab in Zenith and check that Next changes only that tab. Once YouTube offers Previous, use it to return to the prior video.
 
 ## Lyrics
 

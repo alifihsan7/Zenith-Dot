@@ -27,7 +27,7 @@ namespace zenith {
 // Something a click on the island asks the app to do.
 struct IslandCommand {
     enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, editScratchpad,
-                      audioPicker, notificationSettings, removeDrop, clearDrop, openDropImage, showDownload };
+                      audioPicker, notificationSettings, removeDrop, clearDrop, openDropImage };
     Kind kind = Kind::none;
     double seconds = 0;
     std::wstring appId;
@@ -37,7 +37,7 @@ struct IslandCommand {
 // A short notice that splits off the pill as a liquid bubble (or shows inside the open panel).
 struct IslandAlert {
     enum class Kind { copy, charging, battery, lowBattery, focusDone, breakDone, timerDone,
-                      microphone, camera, volume, brightness, capsLock, numLock, download, downloadDone };
+                      microphone, camera, volume, brightness, capsLock, numLock };
     Kind kind = Kind::copy;
     std::wstring title;
     std::wstring value;
@@ -45,7 +45,6 @@ struct IslandAlert {
     int priority = 1;                // a waiting alert is replaced only by one of equal or higher priority
     std::chrono::milliseconds hold{1800};
     std::optional<unsigned> meter = std::nullopt;
-    bool operator==(IslandAlert const&) const = default;
 };
 
 // The island UI from preview V7: an idle dot, a pill while something is going on, and a panel on hover.
@@ -81,7 +80,6 @@ public:
     bool wantsLyrics() const;
     bool wantsLyricPill() const;
     void notify(IslandAlert alert);
-    void setDownload(std::optional<IslandAlert> download);
 
     // Runs time-based behavior: hover delays, closing, the focus timer, and parking the pill. Call before draw.
     void tick();
@@ -104,8 +102,7 @@ private:
     enum class Hit { none, pill, previous, toggle, next, timeline, cover, sourcePicker, sourceMenu, source, navMedia, navTimers,
                      navScratch, navSystem, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
                      timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, scratchEdit,
-                     navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
-                     showDownload };
+                     navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings };
     enum class Screen { media, timers, scratch, drop, system };
     static constexpr Screen screens[]{Screen::media, Screen::timers, Screen::scratch, Screen::drop, Screen::system};
     enum class PillMode { dot, media, focus, timer, preview, privacy, idle };
@@ -162,7 +159,6 @@ private:
     void startAlert(IslandAlert alert, Clock::time_point now, bool update);
     void finishAlert(Clock::time_point now);
     void clearAlerts();
-    bool downloadAlert() const;
     float alertValue(Clock::time_point now) const;
     bool bubbleShowing() const;
     float inlineInset() const;
@@ -201,7 +197,6 @@ private:
     void fillShell(ID2D1Geometry* shape);
     void drawSplit(Clock::time_point now, float amount);
     void drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity);
-    void drawDownloadContent(float left, float right, float middle, float opacity);
     void drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color);
     void drawAlertMeter(float left, float right, float middle, float opacity);
     void drawInlineAlert(D2D1_RECT_F panel);
@@ -338,7 +333,6 @@ private:
     // open the alert shows inline instead until alertUntil_.
     std::optional<IslandAlert> alert_;
     std::optional<IslandAlert> queued_;
-    std::optional<IslandAlert> download_;
     bool alertInline_ = false;
     float alertFrom_ = 0;
     float alertTo_ = 0;

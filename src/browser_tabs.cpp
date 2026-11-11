@@ -178,7 +178,8 @@ bool BrowserTabs::receive(HWND sender, COPYDATASTRUCT const& message) {
             const auto rate = number(value, L"rate");
             media.rate = rate > 0 ? std::clamp(rate, 0.1, 16.0) : 1;
             media.canSeek = media.duration > 0 && value.GetNamedBoolean(L"canSeek", false);
-            media.canSkip = false;
+            media.canPrevious = value.GetNamedBoolean(L"canPrevious", false);
+            media.canNext = value.GetNamedBoolean(L"canNext", false);
             media.sampledAt = now;
             incoming.push_back({sender, tab, std::move(media)});
         }
@@ -255,7 +256,11 @@ void BrowserTabs::send(std::wstring const& source, std::wstring_view action, dou
 }
 
 void BrowserTabs::control(std::wstring const& source, MediaCommand command) const {
-    if (command == MediaCommand::toggle) send(source, L"toggle", 0);
+    switch (command) {
+    case MediaCommand::previous: send(source, L"previous", 0); break;
+    case MediaCommand::toggle: send(source, L"toggle", 0); break;
+    case MediaCommand::next: send(source, L"next", 0); break;
+    }
 }
 
 void BrowserTabs::seek(std::wstring const& source, double seconds) const {

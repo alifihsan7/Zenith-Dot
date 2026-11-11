@@ -2,7 +2,6 @@
 
 #include "browser_tabs.hpp"
 #include "desktop.hpp"
-#include "downloads.hpp"
 #include "drop_zone.hpp"
 #include "island.hpp"
 #include "resource.h"
@@ -25,9 +24,7 @@ constexpr UINT_PTR powerTimer = 1;
 constexpr UINT_PTR frameTimer = 2;
 constexpr UINT_PTR fullscreenTimer = 3;
 constexpr UINT_PTR clipboardTimer = 5;
-constexpr UINT_PTR downloadTimer = 6;
 static_assert(clipboardTimer != MediaMonitor::artworkTimer);
-static_assert(downloadTimer != MediaMonitor::artworkTimer);
 constexpr UINT clipboardRetryInterval = 40;
 constexpr unsigned clipboardRetryLimit = 25;
 constexpr unsigned microphoneColor = 0xff9f0a;
@@ -54,7 +51,6 @@ private:
     LRESULT handle(UINT message, WPARAM wparam, LPARAM lparam);
     void frame();
     void updateMedia();
-    void updateDownload();
     void control(MediaCommand command);
     void run(IslandCommand const& command);
     void refreshPower();
@@ -83,7 +79,6 @@ private:
     MediaState media_;
     MediaState nativeMedia_;
     BrowserTabs browserTabs_;
-    DownloadMonitor downloads_;
     PowerState power_;
     DesktopMonitor desktop_;
     CaptureActivity capture_;
@@ -148,7 +143,6 @@ int App::run(HINSTANCE instance) {
         frame();
     });
     desktop_.start(window_);
-    downloads_.start(window_);
     island_.setAudioOutput(desktop_.audioOutput());
     island_.setWindowsNotificationsQuiet(desktop_.notificationsQuiet());
     lyrics_ = std::make_shared<Lyrics>([this] { frame(); });
@@ -207,22 +201,9 @@ void App::updateMedia() {
     frame();
 }
 
-void App::updateDownload() {
-    std::optional<IslandAlert> download;
-    KillTimer(window_, downloadTimer);
-    if (const auto completed = downloads_.completedCount()) {
-        auto title = completed == 1 ? L"Download complete" : std::to_wstring(completed) + L" downloads complete";
-        download = IslandAlert{IslandAlert::Kind::downloadDone, std::move(title), L"", 0x8ac7ffu};
-        SetTimer(window_, downloadTimer, 9000, nullptr);
-    } else if (const auto pending = downloads_.pendingCount()) {
-        auto title = pending == 1 ? std::wstring(downloads_.pendingName()) : std::to_wstring(pending) + L" downloads";
-        download = IslandAlert{IslandAlert::Kind::download, std::move(title), L"", 0x8ac7ffu};
-    }
-    island_.setDownload(std::move(download));
-    frame();
-}
-
 void App::control(MediaCommand command) {
+    if ((command == MediaCommand::previous && !media_.canPrevious) ||
+        (command == MediaCommand::next && !media_.canNext)) return;
     if (!media_.sourceId.empty()) browserTabs_.control(media_.sourceId, command);
     else if (monitor_) monitor_->control(command);
 }
@@ -246,7 +227,6 @@ void App::run(IslandCommand const& command) {
         if (!media_.sourceId.empty()) browserTabs_.activate(media_.sourceId);
         else activateMediaWindow(window_, media_.appId);
         break;
-    case IslandCommand::Kind::showDownload: downloads_.revealCompleted(); break;
     case IslandCommand::Kind::retryLyrics: if (lyrics_) lyrics_->retry(); break;
     case IslandCommand::Kind::editScratchpad:
         if (const auto bounds = island_.scratchEditorRect()) {
@@ -364,10 +344,11 @@ void App::addTray() {
 void App::showMenu(POINT point) {
     const auto menu = CreatePopupMenu();
     if (!menu) return;
-    const auto skip = media_.hasSession && media_.canSkip ? MF_ENABLED : MF_GRAYED;
-    AppendMenuW(menu, MF_STRING | skip, previousTrack, L"&Previous track");
+    const auto previousFlags = media_.hasSession && media_.canPrevious ? MF_ENABLED : MF_GRAYED;
+    const auto nextFlags = media_.hasSession && media_.canNext ? MF_ENABLED : MF_GRAYED;
+    AppendMenuW(menu, MF_STRING | previousFlags, previousTrack, L"&Previous track");
     AppendMenuW(menu, MF_STRING, togglePlayback, media_.playing ? L"P&ause" : L"&Play");
-    AppendMenuW(menu, MF_STRING | skip, nextTrack, L"&Next track");
+    AppendMenuW(menu, MF_STRING | nextFlags, nextTrack, L"&Next track");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, toggleVisibility, hidden_ ? L"&Show Zenith Dot" : L"&Hide Zenith Dot");
     AppendMenuW(menu, MF_STRING | (suppressed() ? MF_GRAYED : MF_ENABLED), openDropZone, L"&Drop Zone");
@@ -650,10 +631,6 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         }
         if (wparam == frameTimer) frame();
         if (wparam == clipboardTimer) refreshClipboard();
-        if (wparam == downloadTimer) {
-            downloads_.clearCompleted();
-            updateDownload();
-        }
         if (wparam == fullscreenTimer) {
             const bool changed = refreshFullscreen();
             queueClipboard();
@@ -672,9 +649,6 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
             return TRUE;
         }
         return FALSE;
-    case DownloadMonitor::changed:
-        if (downloads_.readChanges()) updateDownload();
-        return 0;
     case DesktopMonitor::foregroundChanged:
         if (refreshFullscreen()) frame();
         return 0;
@@ -802,8 +776,6 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         KillTimer(window_, frameTimer);
         KillTimer(window_, fullscreenTimer);
         KillTimer(window_, clipboardTimer);
-        KillTimer(window_, downloadTimer);
-        downloads_.stop();
         desktop_.stop();
         if (lyrics_) lyrics_->stop();
         RemoveClipboardFormatListener(window_);

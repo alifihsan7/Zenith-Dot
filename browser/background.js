@@ -48,7 +48,7 @@ function publish() {
       }, 5000);
     });
     host.onMessage.addListener((command) => {
-      if (!["toggle", "seek", "activate"].includes(command?.action)) return;
+      if (!["toggle", "seek", "activate", "previous", "next"].includes(command?.action)) return;
       const target = tabs().get(command.id);
       if (!target) return;
       if (command.action === "activate") {

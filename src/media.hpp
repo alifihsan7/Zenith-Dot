@@ -49,7 +49,8 @@ struct MediaState {
     std::shared_ptr<const Cover> cover;
     std::vector<MediaSource> sources;
     bool canSeek = false;
-    bool canSkip = true;
+    bool canPrevious = true;
+    bool canNext = true;
     double duration = 0;
     double position = 0;
     double rate = 1;

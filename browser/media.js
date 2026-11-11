@@ -5,8 +5,11 @@
   let update = null;
   let lastSnapshot = "";
   let reportedWatchId = null;
+  let skipButtons = [];
+  let skipObserver = null;
 
   const youtube = location.hostname === "www.youtube.com" || location.hostname === "youtube.com";
+  const skipSelectors = [".ytp-prev-button", ".ytp-next-button"];
 
   function youtubeWatchId() {
     if (!youtube || location.pathname !== "/watch") return null;
@@ -16,11 +19,31 @@
   function youtubeWatch(videoId) {
     const watch = document.querySelector("ytd-watch-flexy[video-id]");
     if (watch?.getAttribute("video-id") !== videoId) return null;
-    const video = watch.querySelector("#movie_player video.html5-main-video");
+    const player = watch.querySelector("#movie_player");
+    const video = player?.querySelector("video.html5-main-video");
     const title = watch.querySelector("ytd-watch-metadata h1")?.textContent.trim();
     if (!video || !title || video.ended || video.readyState < 1) return null;
     const artist = watch.querySelector("ytd-watch-metadata #owner ytd-channel-name a")?.textContent.trim() || "";
-    return { video, title, artist };
+    return { player, video, title, artist };
+  }
+
+  function available(button) {
+    return Boolean(button?.isConnected && !button.matches('[disabled], [aria-disabled="true"], [hidden]') &&
+      button.getClientRects().length &&
+      (!button.matches("a") || (button.getAttribute("href") && button.getAttribute("href") !== "#")));
+  }
+
+  function observeSkipButtons(player) {
+    const buttons = skipSelectors.map(selector => player?.querySelector(selector));
+    if (buttons.every((button, index) => button === skipButtons[index])) return;
+    skipButtons = buttons;
+    skipObserver ??= new MutationObserver(() => schedule());
+    skipObserver.disconnect();
+    for (const button of buttons) {
+      if (button) skipObserver.observe(button, {
+        attributes: true, attributeFilter: ["aria-disabled", "disabled", "hidden", "href", "class", "style"]
+      });
+    }
   }
 
   function candidate() {
@@ -35,6 +58,7 @@
     update = null;
     const watchId = youtubeWatchId();
     const watch = watchId ? youtubeWatch(watchId) : null;
+    if (youtube) observeSkipButtons(watch?.player);
     const video = watch?.video;
     if (watchId) {
       current = video && (!video.paused || video === current || video.currentTime > 0) ? video : null;
@@ -58,6 +82,8 @@
       duration,
       playing: !current.paused && !current.ended,
       canSeek: duration > 0 && current.seekable.length > 0,
+      canPrevious: available(skipButtons[0]),
+      canNext: available(skipButtons[1]),
       rate: current.playbackRate
     };
     const value = JSON.stringify(snapshot);
@@ -73,13 +99,17 @@
       });
       connected.onMessage.addListener((command) => {
         const id = youtubeWatchId();
-        if (!current?.isConnected || id !== reportedWatchId || (id && youtubeWatch(id)?.video !== current)) return;
+        const activeWatch = id ? youtubeWatch(id) : null;
+        if (!current?.isConnected || id !== reportedWatchId || (id && activeWatch?.video !== current)) return;
         if (command.action === "toggle") {
           if (current.paused) void current.play().catch(() => {});
           else current.pause();
         } else if (command.action === "seek" && Number.isFinite(command.seconds) &&
                    Number.isFinite(current.duration) && current.seekable.length) {
           current.currentTime = Math.min(current.duration, Math.max(0, command.seconds));
+        } else if (activeWatch && (command.action === "previous" || command.action === "next")) {
+          const button = activeWatch.player.querySelector(skipSelectors[command.action === "previous" ? 0 : 1]);
+          if (available(button)) button.click();
         }
       });
     }
