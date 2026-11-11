@@ -41,16 +41,21 @@ constexpr float systemContentBottom = 179;
 constexpr float appRowsTop = 89;
 constexpr float appRowHeight = 30;
 constexpr size_t visibleAppRows = 3;
-constexpr float mediaPanelHeight = 181;
-constexpr float mediaLyricsPanelHeight = 213;
+constexpr float mediaPanelHeight = 239;
 constexpr float mediaIdleHeight = 88;
-constexpr float mediaTitleWidth = 182;
+constexpr float mediaCoverSize = 58;
+constexpr float mediaCoverTop = 12;
+constexpr float mediaTitleLeft = 84;
+constexpr float mediaTitleTop = 23;
+constexpr float mediaActionsTop = 162;
+constexpr float mediaActionHeight = 32;
 constexpr size_t sourceColumns = 8;
 constexpr size_t visibleSources = 2 * sourceColumns;
 constexpr float maxLyricsWidth = 338;
 constexpr float panelRadius = 22;
 constexpr float padTop = 13;
 constexpr float padX = 14;
+constexpr float mediaTitleWidth = mediaPanelWidth - mediaTitleLeft - padX;
 constexpr float padBottom = 8;
 constexpr float innerWidth = panelWidth - 2 * padX;
 constexpr float navHeight = 31;
@@ -510,6 +515,7 @@ void Island::setMedia(MediaState const& media) {
     // The media screen changes height when a session comes or goes; animate that like a screen change.
     if (open_ && screen_ == Screen::media && media.hasSession != media_.hasSession) {
         heightFrom_ = panelHeight(now);
+        centerFrom_ = panelCenterAt(now);
         screenFrom_ = screen_;
         screenStart_ = animate_ ? now : Clock::time_point{};
         widthFrom_ = panelWidthAt(now);
@@ -747,9 +753,7 @@ float Island::panelValue(Clock::time_point now) const {
 float Island::screenHeight(Screen screen) const {
     if (screens_.empty()) return mediaIdleHeight;
     switch (screen) {
-    case Screen::media:
-        if (!media_.hasSession) return mediaIdleHeight;
-        return lyricsOpen_ ? mediaLyricsPanelHeight : mediaPanelHeight;
+    case Screen::media: return media_.hasSession ? mediaPanelHeight : mediaIdleHeight;
     case Screen::timers: return 238;
     case Screen::scratch: return 216.0f;
     case Screen::drop: return dropItems_.empty() ? dropEmptyHeight :
@@ -774,7 +778,13 @@ float Island::panelWidthAt(Clock::time_point now) const {
 
 D2D1_RECT_F Island::panelRect(Clock::time_point now) const {
     const float width = panelWidthAt(now);
-    return box(-width / 2, pillTop, width, panelHeight(now) + inlineInset());
+    return box(panelCenterAt(now) - width / 2, pillTop, width, panelHeight(now) + inlineInset());
+}
+
+float Island::panelCenterAt(Clock::time_point now) const {
+    const float center = screen_ == Screen::media && preferences_.enabled(Screen::media) &&
+                         media_.hasSession && lyricsOpen_ ? lyricsCenterShift_ : 0;
+    return animate_ ? std::lerp(centerFrom_, center, sampleSpring(widthStart_, shapeTime, now, 0, 1).value) : center;
 }
 
 bool Island::moving(Clock::time_point now) const {
@@ -1031,6 +1041,7 @@ void Island::showScreen(Screen screen, Clock::time_point now) {
     const bool lyricsVisible = wantsLyrics();
     heightFrom_ = panelHeight(now);
     widthFrom_ = panelWidthAt(now);
+    centerFrom_ = panelCenterAt(now);
     keepHeight_ = std::max(keepHeight_, heightFrom_);
     screenFrom_ = screen_;
     screen_ = screen;
@@ -1475,11 +1486,8 @@ IslandCommand Island::pointerUp(POINT client) {
     case Hit::lyrics: {
         const bool lyricsVisible = wantsLyrics();
         widthFrom_ = panelWidthAt(now);
-        heightFrom_ = panelHeight(now);
-        keepHeight_ = std::max(keepHeight_, heightFrom_);
-        screenFrom_ = screen_;
-        screenStart_ = animate_ ? now : Clock::time_point{};
-        widthStart_ = screenStart_;
+        centerFrom_ = panelCenterAt(now);
+        widthStart_ = animate_ ? now : Clock::time_point{};
         lyricsOpen_ = !lyricsOpen_;
         updateLyricVisibility(lyricsVisible, now);
         break;
@@ -2073,7 +2081,7 @@ void Island::drawIsland(Clock::time_point now, float value, float amount, bool m
         if (panelOpacity < 1) popLayer();
     }
     if (sharedArt) {
-        const auto panelArt = box(content.left + 14, content.top + 12, 44, 44);
+        const auto panelArt = box(content.left + padX, content.top + mediaCoverTop, mediaCoverSize, mediaCoverSize);
         drawArt(mixRect(pillArtRect(from, captureWidth(now)), panelArt, value), 1);
     }
     if (morphTitle) drawSharedTitle(from, content, captureWidth(now), value);
@@ -2105,42 +2113,44 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
         return;
     }
     constexpr float mediaInnerWidth = mediaPanelWidth - 2 * padX;
-    const auto cover = box(x + 14, y + 12, 44, 44);
+    const auto cover = box(x + padX, y + mediaCoverTop, mediaCoverSize, mediaCoverSize);
     drawArt(cover, artOpacity);
     if (!media_.appId.empty()) {
         if (hovered(Hit::cover) || pressed(Hit::cover))
             target_->DrawRoundedRectangle(rounded(cover, 8), ink(accent_), 1);
         if (record) addTarget(cover, Hit::cover);
     }
-    if (!hideTitle) text(title(), titleFont_.get(), box(x + 68, y + 14.4f, mediaTitleWidth, 22.4f), rgb(inkColor));
+    if (!hideTitle)
+        text(title(), titleFont_.get(), box(x + mediaTitleLeft, y + mediaTitleTop, mediaTitleWidth, 22.4f), rgb(inkColor));
     const auto& detail = media_.artist.empty() ? media_.album : media_.artist;
-    text(detail, bodyFont_.get(), box(x + 68, y + 36.8f, mediaTitleWidth, 16.8f), rgb(mutedColor));
+    text(detail, bodyFont_.get(), box(x + mediaTitleLeft, y + mediaTitleTop + 22.4f, mediaTitleWidth, 16.8f),
+         rgb(mutedColor));
 
     if (!media_.sources.empty()) {
         const auto selected = std::ranges::find_if(media_.sources, [this](MediaSource const& source) {
             return source.id == media_.sourceId && source.appId == media_.appId;
         });
         const auto& source = selected != media_.sources.end() ? *selected : media_.sources.front();
-        const auto picker = box(x + 258, y + 17, 38, 34);
+        const auto picker = box(x + padX, y + mediaActionsTop, 38, mediaActionHeight);
+        const float middle = picker.top + mediaActionHeight / 2;
         const bool multiple = media_.sources.size() > 1;
         if (multiple) {
             drawButton(picker, L"", Hit::sourcePicker, record, 0, sourcePickerOpen_);
             const auto color = ink(rgb(mutedColor));
-            target_->DrawLine(pt(picker.right - 12, y + 33), pt(picker.right - 8, y + 37), color, 1);
-            target_->DrawLine(pt(picker.right - 8, y + 37), pt(picker.right - 4, y + 33), color, 1);
+            target_->DrawLine(pt(picker.right - 12, middle - 2), pt(picker.right - 8, middle + 2), color, 1);
+            target_->DrawLine(pt(picker.right - 8, middle + 2), pt(picker.right - 4, middle - 2), color, 1);
         }
-        drawSourceIcon(source, pt(picker.left + (multiple ? 11 : 19), y + 34));
+        drawSourceIcon(source, pt(picker.left + (multiple ? 11 : 19), middle));
     }
 
-    const auto lyricButton = box(x + 302, y + 17, 28, 34);
-    if (lyricsOpen_ || hovered(Hit::lyrics) || pressed(Hit::lyrics)) {
-        target_->FillRoundedRectangle(rounded(lyricButton, 7), ink(white(0.10f)));
-    }
-    drawLyricsGlyph(pt(lyricButton.left + 6, lyricButton.top + 9), lyricsOpen_ ? rgb(readoutColor) : rgb(inkColor));
-    if (record) addTarget(lyricButton, Hit::lyrics);
+    constexpr float lyricButtonWidth = 34;
+    const auto lyricButton = box(x + mediaPanelWidth - padX - lyricButtonWidth, y + mediaActionsTop,
+                                 lyricButtonWidth, mediaActionHeight);
+    drawButton(lyricButton, L"", Hit::lyrics, record, 0, lyricsOpen_);
+    drawLyricsGlyph(pt(lyricButton.left + 9, lyricButton.top + 8), lyricsOpen_ ? rgb(readoutColor) : rgb(inkColor));
 
     // Timeline.
-    const auto rail = box(x + padX, y + 61, mediaInnerWidth, 15);
+    const auto rail = box(x + padX, y + 78, mediaInnerWidth, 15);
     timelineRect_ = rail;
     const float middle = rail.top + 7.5f;
     const bool timed = media_.duration > 0;
@@ -2157,22 +2167,23 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
         }
         const double shown = dragging_ ? fraction * media_.duration : position;
         const bool showHours = media_.duration >= 3600;
-        text(timestamp(shown, showHours), monoFont_.get(), box(rail.left, y + 76, mediaInnerWidth / 2, 14), rgb(mutedColor));
+        text(timestamp(shown, showHours), monoFont_.get(), box(rail.left, rail.bottom, mediaInnerWidth / 2, 14), rgb(mutedColor));
         text(timestamp(media_.duration, showHours), monoEndFont_.get(),
-             box(rail.left + mediaInnerWidth / 2, y + 76, mediaInnerWidth / 2, 14), rgb(mutedColor));
+             box(rail.left + mediaInnerWidth / 2, rail.bottom, mediaInnerWidth / 2, 14), rgb(mutedColor));
     } else {
-        text(L"Live", monoFont_.get(), box(rail.left, y + 76, mediaInnerWidth / 2, 14), rgb(mutedColor));
+        text(L"Live", monoFont_.get(), box(rail.left, rail.bottom, mediaInnerWidth / 2, 14), rgb(mutedColor));
     }
 
     // Transport: previous, play/pause on an accent disc, next.
-    const float middleY = y + 112;
+    const float middleY = y + 133;
+    constexpr float transportRadius = 22;
     const float centerX = x + mediaPanelWidth / 2;
     const Hit buttons[]{Hit::previous, Hit::toggle, Hit::next};
     const auto onAccent = mixColor(accent_, D2D1::ColorF(0, 0, 0), 0.86f);
     for (int i = 0; i < 3; ++i) {
         const bool enabled = buttons[i] == Hit::toggle || media_.canSkip;
-        const D2D1_POINT_2F c{centerX + (i - 1) * 45.0f, middleY};
-        const auto disc = D2D1::Ellipse(c, 18, 18);
+        const D2D1_POINT_2F c{centerX + (i - 1) * 52.0f, middleY};
+        const auto disc = D2D1::Ellipse(c, transportRadius, transportRadius);
         if (buttons[i] == Hit::toggle) {
             auto face = accent_;
             if (pressed(Hit::toggle)) face = mixColor(face, D2D1::ColorF(0, 0, 0), 0.18f);
@@ -2193,7 +2204,9 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
             const float bar = d > 0 ? c.x + 4 : c.x - 6;
             target_->FillRectangle(box(bar, c.y - 5.5f, 2, 11), ink(color));
         }
-        if (record && enabled) addTarget(box(c.x - 18, c.y - 18, 36, 36), buttons[i]);
+        if (record && enabled)
+            addTarget(box(c.x - transportRadius, c.y - transportRadius, 2 * transportRadius, 2 * transportRadius),
+                      buttons[i]);
     }
 
     if (panel.right - panel.left > mediaPanelWidth) {
@@ -2223,7 +2236,7 @@ void Island::drawSourceMenu(D2D1_RECT_F panel) {
     const size_t count = std::min(visibleSources, total - sourceOffset_);
     const float width = 12 + 34 * static_cast<float>(std::min(count, sourceColumns));
     const float height = 12 + 34 * static_cast<float>((count + sourceColumns - 1) / sourceColumns);
-    sourceMenuRect_ = box(panel.left + 296 - width, panel.top + 55, width, height);
+    sourceMenuRect_ = box(panel.left + padX, panel.top + mediaActionsTop - 6 - height, width, height);
     target_->FillRoundedRectangle(rounded(sourceMenuRect_, 9), ink(rgb(0x1c1b20)));
     target_->DrawRoundedRectangle(rounded(sourceMenuRect_, 9), ink(white(0.18f)), 1);
     addTarget(sourceMenuRect_, Hit::sourceMenu);
@@ -2824,8 +2837,8 @@ void Island::drawNav(D2D1_RECT_F panel, bool record) {
 void Island::drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float capture, float value) {
     // The title is drawn at its panel size and scaled down to the pill's 12px at the start.
     const float scale = std::lerp(12.0f / 16.0f, 1.0f, value);
-    const float x = std::lerp(compact.left + pillTrackLeft, panel.left + 68, value);
-    const float y = std::lerp((compact.top + compact.bottom - 22.4f * 0.75f) / 2, panel.top + 14.4f, value);
+    const float x = std::lerp(compact.left + pillTrackLeft, panel.left + mediaTitleLeft, value);
+    const float y = std::lerp((compact.top + compact.bottom - 22.4f * 0.75f) / 2, panel.top + mediaTitleTop, value);
     const float compactWidth = compact.right - compact.left - capture - pillTrackLeft - pillTrackRight;
     const float width = std::lerp(compactWidth / 0.75f, mediaTitleWidth, value);
     target_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) * D2D1::Matrix3x2F::Translation(x, y) * base_);
@@ -3204,6 +3217,8 @@ void Island::draw(HWND window) {
     const float workWidth = (work.right - work.left) / scale_;
     lyricsWidth_ = std::clamp(workWidth - mediaPanelWidth - 16.0f,
                               130.0f, maxLyricsWidth);
+    const float expandedWidth = mediaPanelWidth + lyricsWidth_;
+    lyricsCenterShift_ = std::clamp((workWidth - expandedWidth) / 2 - 8, 0.0f, lyricsWidth_ / 2);
     const float opacity = visibility(now);
     anchor_ = {work.left + (work.right - work.left) / 2, work.top - std::lround((1 - opacity) * 14 * scale_)};
     prepareText();
