@@ -8,6 +8,7 @@ struct Settings {
     bool autoAddText = false;
     bool autoAddScreenshots = true;
     bool showClipboardPreviews = true;
+    bool autoCycle = false;   // Focus and Break follow each other automatically
 
     static Settings load();
     bool save() const;

@@ -28,9 +28,10 @@ namespace zenith {
 // Something a click on the island asks the app to do.
 struct IslandCommand {
     enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, editScratchpad,
-                      audioPicker, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute };
+                      audioPicker, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute,
+                      autoCycle };
     Kind kind = Kind::none;
-    double seconds = 0;              // seek position; for appVolume the level 0..1, for appMute 1 = mute
+    double seconds = 0;              // seek position; appVolume: level 0..1; appMute, autoCycle: 1 = on
     std::wstring appId;
     size_t index = 0;
 };
@@ -66,6 +67,7 @@ public:
     void setSystem(SystemStats const& stats);
     void setAudioOutput(std::wstring const& output);
     void setAppVolumes(std::vector<AppVolume> apps);
+    void setAutoCycle(bool enabled);
     // A command produced while dragging (an app volume slider), to apply before the button is released.
     std::optional<IslandCommand> takeLiveCommand();
     bool setWindowsNotificationsQuiet(std::optional<bool> quiet);
@@ -108,7 +110,7 @@ private:
                      navScratch, navSystem, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
                      timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
-                     appVolume, appMute };
+                     appVolume, appMute, autoCycle };
     enum class Screen { media, timers, scratch, drop, system };
     static constexpr Screen screens[]{Screen::media, Screen::timers, Screen::scratch, Screen::drop, Screen::system};
     enum class PillMode { dot, media, focus, timer, preview, privacy, idle };
@@ -158,6 +160,9 @@ private:
     void selectTimerView(size_t index);
     void selectFocusPhase(bool resting);
     void adjustFocus(int direction);
+    int phaseMinutes(bool resting) const;
+    std::wstring phaseName(bool resting) const;
+    void finishFocus(Clock::time_point now);
     D2D1_POINT_2F stagePoint(POINT client) const;
     std::optional<Target> targetAt(D2D1_POINT_2F point) const;
     float timelineFraction(D2D1_POINT_2F point) const;
@@ -343,6 +348,8 @@ private:
     int breakMinutes_ = 5;
     bool breakPhase_ = false;
     bool quickView_ = false;
+    bool autoCycle_ = false;
+    int focusRound_ = 1;     // 1..focusRounds while the automatic cycle is on
     Countdown focus_{25 * 60};
     Countdown quick_{60};
 

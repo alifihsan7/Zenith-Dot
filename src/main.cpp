@@ -127,6 +127,7 @@ int App::run(HINSTANCE instance) {
     power_ = readPower();
     island_.setPower(power_);
     island_.setSystem(system_.sample());
+    island_.setAutoCycle(settings_.autoCycle);
     powerNotification_ = RegisterPowerSettingNotification(window_, &GUID_ACDC_POWER_SOURCE,
                                                            DEVICE_NOTIFY_WINDOW_HANDLE);
     SetTimer(window_, powerTimer, 10'000, nullptr);
@@ -250,6 +251,12 @@ void App::run(IslandCommand const& command) {
         desktop_.setAppVolume(command.appId, static_cast<float>(command.seconds), false);
         island_.setAppVolumes(desktop_.appVolumes());
         break;
+    case IslandCommand::Kind::autoCycle: {
+        auto updated = settings_;
+        updated.autoCycle = command.seconds != 0;
+        if (updated.save()) settings_ = updated;
+        break;
+    }
     case IslandCommand::Kind::appMute:
         desktop_.setAppVolume(command.appId, std::nullopt, command.seconds != 0);
         island_.setAppVolumes(desktop_.appVolumes());

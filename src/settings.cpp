@@ -4,6 +4,8 @@
 #include <shlobj.h>
 #include <winrt/base.h>
 
+#include <optional>
+
 namespace zenith {
 namespace {
 
@@ -12,22 +14,39 @@ constexpr wchar_t clipboardValue[] = L"ClipboardOptions";
 constexpr DWORD autoAddTextBit = 1;
 constexpr DWORD autoAddScreenshotsBit = 2;
 constexpr DWORD showClipboardPreviewsBit = 4;
+constexpr wchar_t timerValue[] = L"TimerOptions";
+constexpr DWORD autoCycleBit = 1;
+
+std::optional<DWORD> read(wchar_t const* name) {
+    DWORD value = 0;
+    DWORD bytes = sizeof(value);
+    if (RegGetValueW(HKEY_CURRENT_USER, settingsKey, name, RRF_RT_REG_DWORD, nullptr, &value, &bytes) != ERROR_SUCCESS) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+bool write(wchar_t const* name, DWORD value) {
+    return RegSetKeyValueW(HKEY_CURRENT_USER, settingsKey, name, REG_DWORD, &value, sizeof(value)) == ERROR_SUCCESS;
+}
 
 }
 
 Settings Settings::load() {
-    DWORD value = 0;
-    DWORD bytes = sizeof(value);
-    if (RegGetValueW(HKEY_CURRENT_USER, settingsKey, clipboardValue, RRF_RT_REG_DWORD,
-                     nullptr, &value, &bytes) != ERROR_SUCCESS) return {};
-    return {(value & autoAddTextBit) != 0, (value & autoAddScreenshotsBit) != 0,
-            (value & showClipboardPreviewsBit) != 0};
+    Settings settings;
+    if (const auto value = read(clipboardValue)) {
+        settings.autoAddText = (*value & autoAddTextBit) != 0;
+        settings.autoAddScreenshots = (*value & autoAddScreenshotsBit) != 0;
+        settings.showClipboardPreviews = (*value & showClipboardPreviewsBit) != 0;
+    }
+    if (const auto value = read(timerValue)) settings.autoCycle = (*value & autoCycleBit) != 0;
+    return settings;
 }
 
 bool Settings::save() const {
-    const DWORD value = (autoAddText ? autoAddTextBit : 0) |
+    const DWORD clipboard = (autoAddText ? autoAddTextBit : 0) |
         (autoAddScreenshots ? autoAddScreenshotsBit : 0) | (showClipboardPreviews ? showClipboardPreviewsBit : 0);
-    return RegSetKeyValueW(HKEY_CURRENT_USER, settingsKey, clipboardValue, REG_DWORD, &value, sizeof(value)) == ERROR_SUCCESS;
+    return write(clipboardValue, clipboard) && write(timerValue, autoCycle ? autoCycleBit : 0);
 }
 
 std::wstring startupShortcut() {
