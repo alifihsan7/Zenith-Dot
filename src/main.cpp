@@ -90,7 +90,7 @@ private:
     std::shared_ptr<Lyrics> lyrics_;
     MediaState media_;
     MediaState nativeMedia_;
-    AudioWaveform waveform_;
+    AudioSpectrum spectrum_;
     BrowserTabs browserTabs_;
     PowerState power_;
     DesktopMonitor desktop_;
@@ -219,9 +219,9 @@ void App::frame() {
         applyVisibility();
     }
     island_.tick();
-    const bool showWaveform = !suppressed() && island_.wantsAudioWaveform();
-    waveform_.select(showWaveform ? std::wstring_view(media_.appId) : std::wstring_view{});
-    if (showWaveform) island_.setWaveform(waveform_.samples());
+    const bool showSpectrum = !suppressed() && island_.wantsAudioSpectrum();
+    spectrum_.select(showSpectrum ? std::wstring_view(media_.appId) : std::wstring_view{});
+    if (showSpectrum) island_.setSpectrum(spectrum_.levels());
     if (island_.wantsPrayerClock()) refreshPrayers();
     if (scratchpad_.window() && !island_.scratchEditorRect()) {
         scratchpad_.close();
@@ -254,7 +254,7 @@ void App::startSettingsTest(SettingsTest test, Feature feature) {
     BOOL animations = TRUE;
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0);
     if (GetCapture() == window_) ReleaseCapture();
-    waveform_.select({});
+    spectrum_.select({});
     example_.emplace(test, feature, settings_, animations != FALSE);
     applyVisibility();
     frame();
@@ -953,7 +953,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         }
         return 0;
     case WM_DESTROY:
-        waveform_.select({});
+        spectrum_.select({});
         dropZone_.detach();
         scratchpad_.close();
         KillTimer(window_, powerTimer);

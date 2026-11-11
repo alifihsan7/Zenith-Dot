@@ -9,7 +9,7 @@ add_executable(ZenithDot WIN32
     src/main.cpp
     src/island.cpp
     src/media.cpp
-    src/audio_waveform.cpp
+    src/audio_spectrum.cpp
     src/lyrics.cpp
     src/prayer.cpp
     src/notifications.cpp

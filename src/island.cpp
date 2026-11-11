@@ -47,7 +47,8 @@ constexpr float mediaCoverSize = 80;
 constexpr float mediaCoverTop = 12;
 constexpr float mediaTitleSize = 19;
 constexpr float mediaTitleHeight = 26;
-constexpr float mediaTitleTop = 30;
+constexpr float mediaTitleTop = mediaCoverTop;
+constexpr float mediaArtistHeight = 16.8f;
 constexpr float mediaControlsCenterY = 159;
 constexpr float mediaActionHeight = 32;
 constexpr float mediaActionsTop = mediaControlsCenterY - mediaActionHeight / 2;
@@ -503,7 +504,7 @@ void Island::setPreferences(Settings const& settings) {
 }
 
 void Island::setMedia(MediaState const& media) {
-    if (media.appId != media_.appId || media.sourceId != media_.sourceId) waveform_ = {};
+    if (media.appId != media_.appId || media.sourceId != media_.sourceId) spectrum_ = {};
     const auto now = Clock::now();
     if (!media.hasSession || media.playing) {
         pausedAt_ = {};
@@ -1179,7 +1180,7 @@ void Island::tick() {
     updateTheme(now);
 }
 
-bool Island::wantsAudioWaveform() const {
+bool Island::wantsAudioSpectrum() const {
     return animate_ && !suppressed_ && preferences_.showWaveform && preferences_.enabled(Screen::media) &&
            media_.playing && (open_ ? screen_ == Screen::media : pillMode_ == PillMode::media && !wantsLyricPill());
 }
@@ -1190,7 +1191,7 @@ unsigned Island::frameInterval() const {
     if (animate_ && now - visibilityStart_ < visibilityTime) return 10;
     if (suppressed_) return timerRunning ? 1000 : 0;
     if (moving(now) || openAt_ || closeAt_ || dragging_) return 10;
-    if (wantsAudioWaveform()) return 33;
+    if (wantsAudioSpectrum()) return 33;
     if (wantsPrayerClock() && !alert_) return 1000;
     if (panelPinned() && !alert_) {
         if (screen_ == Screen::media && (media_.playing || (wantsLyrics() && now < lyricFollowAt_) ||
@@ -1985,9 +1986,12 @@ void Island::drawPillContent(Clock::time_point now, float width, bool hideTitle)
     const float trackRight = trackWidth / 2;
     const float full = lin(pausedPillWidth, pillWidth, trackWidth);
     if (pillPlaying_ && preferences_.showWaveform) {
+        constexpr size_t barCount = 4;
+        constexpr size_t bandsPerBar = Spectrum{}.size() / barCount;
         const float left = trackRight - 29.5f;
-        for (size_t bar = 0; bar < 4; ++bar) {
-            const float level = animate_ ? waveform_[waveform_.size() - 7 + bar * 2] : 0;
+        for (size_t bar = 0; bar < barCount; ++bar) {
+            const auto first = spectrum_.begin() + bar * bandsPerBar;
+            const float level = animate_ ? *std::max_element(first, first + bandsPerBar) : 0;
             const float height = std::lerp(2.5f, 15.0f, level);
             target_->FillRoundedRectangle(
                 rounded(box(left + static_cast<float>(bar) * 5, pillCenterY - height / 2, 2.5f, height), 1.25f),
@@ -2118,18 +2122,21 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
         text(title(), mediaTitleFont_.get(), box(x + mediaTitleLeft, y + mediaTitleTop, mediaTitleWidth, mediaTitleHeight),
              rgb(inkColor));
     const auto& detail = media_.artist.empty() ? media_.album : media_.artist;
-    text(detail, bodyFont_.get(), box(x + mediaTitleLeft, y + mediaTitleTop + mediaTitleHeight, mediaTitleWidth, 16.8f),
-         rgb(mutedColor));
+    const auto artist = box(x + mediaTitleLeft, y + mediaTitleTop + mediaTitleHeight, mediaTitleWidth, mediaArtistHeight);
+    text(detail, bodyFont_.get(), artist, rgb(mutedColor));
     if (preferences_.showWaveform) {
         const float pauseSeconds = std::chrono::duration<float>(now - pausedAt_).count();
         const float strength = !animate_ ? 0 : media_.playing ? 1 : 1 - lin(0, 0.35f, pauseSeconds);
-        constexpr float barWidth = 3;
-        const float step = (mediaTitleWidth - barWidth) / static_cast<float>(waveform_.size() - 1);
-        for (size_t i = 0; i < waveform_.size(); ++i) {
-            const float height = std::lerp(2.0f, 14.0f, waveform_[i] * strength);
+        constexpr float barWidth = 4;
+        const float top = artist.bottom + 5;
+        const float bottom = cover.bottom - 2;
+        const float step = (mediaTitleWidth - barWidth) / static_cast<float>(spectrum_.size() - 1);
+        for (size_t i = 0; i < spectrum_.size(); ++i) {
+            const float level = spectrum_[i] * strength;
+            const float height = std::lerp(2.0f, bottom - top, level);
             const float left = x + mediaTitleLeft + static_cast<float>(i) * step;
-            target_->FillRoundedRectangle(rounded(box(left, y + 82 - height / 2, barWidth, height), 1.5f),
-                                          ink(withAlpha(accent_, std::lerp(0.35f, 0.92f, waveform_[i] * strength))));
+            target_->FillRoundedRectangle(rounded(box(left, bottom - height, barWidth, height), 1.5f),
+                                          ink(withAlpha(accent_, std::lerp(0.35f, 0.92f, level))));
         }
     }
 

@@ -8,19 +8,19 @@
 
 namespace zenith {
 
-using Waveform = std::array<float, 24>;
+using Spectrum = std::array<float, 20>;
 
-class AudioWaveform {
+class AudioSpectrum {
 public:
     void select(std::wstring_view app);
-    Waveform samples() const;
+    Spectrum levels() const;
 
 private:
     void listen(std::stop_token stop, std::wstring const& app);
 
     std::wstring app_;
     mutable std::mutex mutex_;
-    Waveform samples_{};
+    Spectrum levels_{};
     std::jthread worker_;
 };
 
