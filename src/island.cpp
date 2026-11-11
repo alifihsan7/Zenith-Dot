@@ -42,6 +42,7 @@ constexpr float appRowsTop = 89;
 constexpr float appRowHeight = 30;
 constexpr size_t visibleAppRows = 3;
 constexpr float mediaPanelHeight = 181;
+constexpr float mediaLyricsPanelHeight = 213;
 constexpr float mediaIdleHeight = 88;
 constexpr float mediaTitleWidth = 182;
 constexpr size_t sourceColumns = 8;
@@ -746,7 +747,9 @@ float Island::panelValue(Clock::time_point now) const {
 float Island::screenHeight(Screen screen) const {
     if (screens_.empty()) return mediaIdleHeight;
     switch (screen) {
-    case Screen::media: return media_.hasSession ? mediaPanelHeight : mediaIdleHeight;
+    case Screen::media:
+        if (!media_.hasSession) return mediaIdleHeight;
+        return lyricsOpen_ ? mediaLyricsPanelHeight : mediaPanelHeight;
     case Screen::timers: return 238;
     case Screen::scratch: return 216.0f;
     case Screen::drop: return dropItems_.empty() ? dropEmptyHeight :
@@ -1472,7 +1475,11 @@ IslandCommand Island::pointerUp(POINT client) {
     case Hit::lyrics: {
         const bool lyricsVisible = wantsLyrics();
         widthFrom_ = panelWidthAt(now);
-        widthStart_ = animate_ ? now : Clock::time_point{};
+        heightFrom_ = panelHeight(now);
+        keepHeight_ = std::max(keepHeight_, heightFrom_);
+        screenFrom_ = screen_;
+        screenStart_ = animate_ ? now : Clock::time_point{};
+        widthStart_ = screenStart_;
         lyricsOpen_ = !lyricsOpen_;
         updateLyricVisibility(lyricsVisible, now);
         break;
@@ -2274,7 +2281,7 @@ void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double positio
     if (!lyrics_) return;
     const float x = panel.left + mediaPanelWidth + 8, y = panel.top + 16;
     const float width = lyricsWidth_ - padX - 8;
-    constexpr float viewportBottom = mediaPanelHeight - padBottom - navHeight - 16 - 6;
+    const float viewportBottom = panel.bottom - y - padBottom - navHeight - 6;
     text(L"Lyrics", titleFont_.get(), box(x, y, width, 22), rgb(inkColor));
     const bool synced = lyrics_->status == LyricsStatus::ready;
     const bool plain = lyrics_->status == LyricsStatus::plain;
@@ -2295,7 +2302,7 @@ void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double positio
         text(L"Unsynced", bodyEndFont_.get(), box(x + 57, y, width - 57, 22), rgb(mutedColor));
     }
     const float viewportTop = synced ? 50.0f : 34.0f;
-    const float viewportHeight = viewportBottom - viewportTop;
+    const float viewportHeight = std::max(0.0f, viewportBottom - viewportTop);
     if (synced) {
         constexpr float controlWidth = 100;
         constexpr float buttonWidth = 24;
