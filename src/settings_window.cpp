@@ -3,9 +3,16 @@
 #include "resource.h"
 
 #include <commctrl.h>
+#include <d2d1.h>
+#include <dwrite.h>
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <winrt/base.h>
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
 
 namespace zenith {
 namespace {
@@ -20,6 +27,11 @@ constexpr COLORREF foreground = RGB(240, 244, 250);
 constexpr COLORREF muted = RGB(165, 178, 196);
 constexpr COLORREF accent = RGB(145, 202, 255);
 constexpr COLORREF border = RGB(47, 57, 72);
+using Clock = std::chrono::steady_clock;
+using namespace std::chrono_literals;
+constexpr auto pageDuration = 180ms;
+constexpr auto toggleDuration = 160ms;
+constexpr UINT_PTR motionTimer = 1;
 
 struct Page {
     int id;
@@ -59,44 +71,141 @@ constexpr Option options[]{
         &Settings::autoCycle, &Settings::saveTimer},
 };
 
-void fill(HDC dc, RECT area, COLORREF color) {
-    SetDCBrushColor(dc, color);
-    FillRect(dc, &area, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+D2D1_RECT_F rect(RECT value) {
+    return D2D1::RectF(static_cast<float>(value.left), static_cast<float>(value.top),
+                       static_cast<float>(value.right), static_cast<float>(value.bottom));
 }
 
-void rounded(HDC dc, RECT area, int diameter, COLORREF color) {
-    const auto brush = SelectObject(dc, GetStockObject(DC_BRUSH));
-    const auto pen = SelectObject(dc, GetStockObject(NULL_PEN));
-    SetDCBrushColor(dc, color);
-    RoundRect(dc, area.left, area.top, area.right, area.bottom, diameter, diameter);
-    SelectObject(dc, pen);
-    SelectObject(dc, brush);
+D2D1_COLOR_F color(COLORREF value) {
+    return D2D1::ColorF(GetRValue(value) / 255.0f, GetGValue(value) / 255.0f, GetBValue(value) / 255.0f);
 }
 
-void text(HDC dc, RECT area, wchar_t const* value, HFONT font, COLORREF color,
-          UINT format = DT_LEFT | DT_SINGLELINE | DT_VCENTER) {
-    const auto oldFont = font ? SelectObject(dc, font) : nullptr;
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, color);
-    DrawTextW(dc, value, -1, &area, format);
-    if (oldFont) SelectObject(dc, oldFont);
+D2D1_COLOR_F blend(COLORREF from, COLORREF to, float amount) {
+    const auto a = color(from);
+    const auto b = color(to);
+    return D2D1::ColorF(std::lerp(a.r, b.r, amount), std::lerp(a.g, b.g, amount), std::lerp(a.b, b.b, amount));
+}
+
+float progress(Clock::time_point start, Clock::duration duration, Clock::time_point now) {
+    if (start == Clock::time_point{} || now - start >= duration) return 1;
+    const float t = std::chrono::duration<float>(now - start) / std::chrono::duration<float>(duration);
+    const float remaining = 1 - t;
+    return 1 - remaining * remaining * remaining;
+}
+
+struct ToggleMotion {
+    float from = 0;
+    float to = 0;
+    Clock::time_point start{};
+
+    float value(Clock::time_point now) const {
+        return std::lerp(from, to, progress(start, toggleDuration, now));
+    }
+};
+
+class Canvas {
+public:
+    Canvas();
+    void setDpi(UINT dpi);
+    bool begin(HDC dc, RECT area, COLORREF clear);
+    void end();
+    void fill(RECT area, COLORREF value);
+    void rounded(D2D1_RECT_F area, float radius, D2D1_COLOR_F value);
+    void focus(RECT area, float radius, COLORREF value);
+    void text(RECT area, wchar_t const* value, IDWriteTextFormat* font, D2D1_COLOR_F ink);
+    IDWriteTextFormat* body() const { return body_.get(); }
+    IDWriteTextFormat* strong() const { return strong_.get(); }
+    IDWriteTextFormat* heading() const { return heading_.get(); }
+
+private:
+    winrt::com_ptr<ID2D1Factory> graphics_;
+    winrt::com_ptr<IDWriteFactory> writing_;
+    winrt::com_ptr<ID2D1DCRenderTarget> target_;
+    winrt::com_ptr<ID2D1SolidColorBrush> brush_;
+    winrt::com_ptr<IDWriteTextFormat> body_, strong_, heading_;
+};
+
+Canvas::Canvas() {
+    winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, graphics_.put()));
+    winrt::check_hresult(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                             reinterpret_cast<IUnknown**>(writing_.put())));
+    setDpi(96);
+}
+
+void Canvas::setDpi(UINT dpi) {
+    const auto create = [&](winrt::com_ptr<IDWriteTextFormat>& font, float size, DWRITE_FONT_WEIGHT weight) {
+        winrt::com_ptr<IDWriteTextFormat> next;
+        if (SUCCEEDED(writing_->CreateTextFormat(L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, size * dpi / 96.0f, L"", next.put()))) {
+            next->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            next->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            font = std::move(next);
+        }
+    };
+    create(body_, 13, DWRITE_FONT_WEIGHT_NORMAL);
+    create(strong_, 14, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+    create(heading_, 30, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+}
+
+bool Canvas::begin(HDC dc, RECT area, COLORREF clear) {
+    if (!target_) {
+        const auto properties = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), 96, 96);
+        if (FAILED(graphics_->CreateDCRenderTarget(&properties, target_.put()))) return false;
+        if (FAILED(target_->CreateSolidColorBrush(color(clear), brush_.put()))) {
+            target_ = nullptr;
+            return false;
+        }
+        target_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
+    }
+    if (FAILED(target_->BindDC(dc, &area))) return false;
+    target_->BeginDraw();
+    target_->Clear(color(clear));
+    return true;
+}
+
+void Canvas::end() {
+    if (FAILED(target_->EndDraw())) {
+        brush_ = nullptr;
+        target_ = nullptr;
+    }
+}
+
+void Canvas::fill(RECT area, COLORREF value) {
+    brush_->SetColor(color(value));
+    target_->FillRectangle(rect(area), brush_.get());
+}
+
+void Canvas::rounded(D2D1_RECT_F area, float radius, D2D1_COLOR_F value) {
+    brush_->SetColor(value);
+    target_->FillRoundedRectangle(D2D1::RoundedRect(area, radius, radius), brush_.get());
+}
+
+void Canvas::focus(RECT area, float radius, COLORREF value) {
+    brush_->SetColor(color(value));
+    target_->DrawRoundedRectangle(D2D1::RoundedRect(rect(area), radius, radius), brush_.get());
+}
+
+void Canvas::text(RECT area, wchar_t const* value, IDWriteTextFormat* font, D2D1_COLOR_F ink) {
+    if (!font) return;
+    brush_->SetColor(ink);
+    target_->DrawText(value, static_cast<UINT32>(wcslen(value)), font, rect(area), brush_.get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
 class SettingsWindow {
 public:
-    ~SettingsWindow() {
-        for (const auto font : {body_, strong_, heading_}) if (font) DeleteObject(font);
-    }
     static INT_PTR CALLBACK dialog(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
 
 private:
     static LRESULT CALLBACK optionProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
                                       UINT_PTR id, DWORD_PTR data);
     void initialize(HWND window);
-    void createFonts(UINT dpi);
+    void setDpi(UINT dpi);
     void selectPage(int id);
     void sync();
     bool command(int id);
+    void redrawMotion();
+    float pageOpacity() const;
     void paint(HDC dc);
     void drawOption(HWND control, HDC dc, Option const& option);
     void drawButton(DRAWITEMSTRUCT const& item);
@@ -109,28 +218,26 @@ private:
 
     HWND window_{};
     HICON icon_{};
-    HFONT body_{}, strong_{}, heading_{};
+    Canvas canvas_;
     UINT dpi_ = 96;
     int page_ = IDC_SETTINGS_GENERAL;
+    bool animate_ = true;
+    Clock::time_point pageStart_{};
+    std::array<ToggleMotion, std::size(options)> toggles_{};
     std::wstring startup_;
 };
 
-void SettingsWindow::createFonts(UINT dpi) {
-    for (const auto font : {body_, strong_, heading_}) if (font) DeleteObject(font);
+void SettingsWindow::setDpi(UINT dpi) {
     dpi_ = dpi;
-    const auto font = [this](int points, int weight) {
-        return CreateFontW(-MulDiv(points, dpi_, 72), 0, 0, 0, weight, FALSE, FALSE, FALSE,
-                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                           DEFAULT_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    };
-    body_ = font(9, FW_NORMAL);
-    strong_ = font(10, FW_SEMIBOLD);
-    heading_ = font(22, FW_SEMIBOLD);
+    canvas_.setDpi(dpi);
 }
 
 void SettingsWindow::initialize(HWND window) {
     window_ = window;
-    createFonts(GetDpiForWindow(window));
+    setDpi(GetDpiForWindow(window));
+    BOOL motion = TRUE;
+    SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &motion, 0);
+    animate_ = motion != FALSE;
     const BOOL dark = TRUE;
     DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
     icon_ = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_ZENITH_DOT));
@@ -145,6 +252,10 @@ void SettingsWindow::initialize(HWND window) {
 }
 
 void SettingsWindow::selectPage(int id) {
+    if (page_ != id && animate_) {
+        pageStart_ = Clock::now();
+        SetTimer(window_, motionTimer, 16, nullptr);
+    }
     page_ = id;
     for (const auto& option : options) {
         ShowWindow(GetDlgItem(window_, option.id), option.page == id ? SW_SHOW : SW_HIDE);
@@ -158,6 +269,8 @@ void SettingsWindow::sync() {
     const auto settings = Settings::load();
     for (const auto& option : options) {
         const bool checked = option.field ? settings.*option.field : startupEnabled(startup_);
+        auto& motion = toggles_[&option - options];
+        if (motion.to != static_cast<float>(checked)) motion = {static_cast<float>(checked), static_cast<float>(checked), {}};
         CheckDlgButton(window_, option.id, checked ? BST_CHECKED : BST_UNCHECKED);
         InvalidateRect(GetDlgItem(window_, option.id), nullptr, FALSE);
     }
@@ -194,81 +307,126 @@ bool SettingsWindow::command(int id) {
         if (!saved) {
             sync();
             MessageBoxW(window_, L"Couldn’t save this setting.", title, MB_OK | MB_ICONWARNING);
+        } else {
+            const auto now = Clock::now();
+            auto& motion = toggles_[&option - options];
+            const float destination = checked ? 1.0f : 0.0f;
+            motion = {animate_ ? motion.value(now) : destination, destination, animate_ ? now : Clock::time_point{}};
+            if (animate_) SetTimer(window_, motionTimer, 16, nullptr);
+            InvalidateRect(GetDlgItem(window_, id), nullptr, FALSE);
         }
         return true;
     }
     return false;
 }
 
+float SettingsWindow::pageOpacity() const {
+    return animate_ ? progress(pageStart_, pageDuration, Clock::now()) : 1.0f;
+}
+
+void SettingsWindow::redrawMotion() {
+    const auto now = Clock::now();
+    const bool pageMoving = animate_ && now - pageStart_ < pageDuration;
+    bool moving = pageMoving;
+    if (pageStart_ != Clock::time_point{}) {
+        auto content = units(122, 0, 440, 292);
+        InvalidateRect(window_, &content, FALSE);
+        if (page_ == IDC_SETTINGS_ABOUT) InvalidateRect(GetDlgItem(window_, IDC_SETTINGS_GITHUB), nullptr, FALSE);
+    }
+    for (const auto& option : options) {
+        auto& motion = toggles_[&option - options];
+        if (option.page == page_ && (pageStart_ != Clock::time_point{} || motion.start != Clock::time_point{})) {
+            InvalidateRect(GetDlgItem(window_, option.id), nullptr, FALSE);
+        }
+        if (animate_ && now - motion.start < toggleDuration) moving = true;
+        else motion.start = {};
+    }
+    if (!pageMoving) pageStart_ = {};
+    if (!moving) KillTimer(window_, motionTimer);
+}
+
 void SettingsWindow::paint(HDC dc) {
     RECT client{};
     GetClientRect(window_, &client);
-    fill(dc, client, background);
+    if (!canvas_.begin(dc, client, background)) return;
     const auto rail = units(0, 0, 122, 0);
-    fill(dc, {0, 0, rail.right, client.bottom}, sidebar);
-    fill(dc, {rail.right - 1, 0, rail.right, client.bottom}, border);
-    const auto logo = units(13, 13, 13, 13);
-    if (icon_) DrawIconEx(dc, logo.left, logo.top, icon_, px(30), px(30), 0, nullptr, DI_NORMAL);
-    text(dc, units(38, 12, 115, 34), L"Zenith Dot", strong_, foreground);
+    canvas_.fill({0, 0, rail.right, client.bottom}, sidebar);
+    canvas_.fill({rail.right - 1, 0, rail.right, client.bottom}, border);
+    canvas_.text(units(38, 12, 115, 34), L"Zenith Dot", canvas_.strong(), color(foreground));
 
+    const float phase = pageOpacity();
+    const auto label = [&](RECT area, wchar_t const* value, IDWriteTextFormat* font, COLORREF ink) {
+        const int offset = static_cast<int>(std::round(px(5) * (1 - phase)));
+        OffsetRect(&area, 0, offset);
+        canvas_.text(area, value, font, blend(background, ink, std::lerp(0.72f, 1.0f, phase)));
+    };
     const auto& page = pages[page_ - IDC_SETTINGS_GENERAL];
-    text(dc, units(144, 12, 418, 38), page.title, heading_, foreground);
-    text(dc, units(145, 39, 418, 53), page.description, body_, muted);
-    if (page.group) text(dc, units(145, 61, 418, 75), page.group, strong_, foreground);
+    label(units(144, 12, 418, 38), page.title, canvas_.heading(), foreground);
+    label(units(145, 39, 418, 53), page.description, canvas_.body(), muted);
+    if (page.group) label(units(145, 61, 418, 75), page.group, canvas_.strong(), foreground);
     if (page_ == IDC_SETTINGS_FEATURES) {
-        text(dc, units(145, 205, 418, 220), L"Timers", strong_, foreground);
+        label(units(145, 205, 418, 220), L"Timers", canvas_.strong(), foreground);
     }
     if (page_ == IDC_SETTINGS_ABOUT) {
-        text(dc, units(145, 70, 418, 92), L"Version " ZENITH_VERSION_TEXT, strong_, foreground);
+        label(units(145, 70, 418, 92), L"Version " ZENITH_VERSION_TEXT, canvas_.strong(), foreground);
     }
+    canvas_.end();
+    const auto logo = units(13, 13, 13, 13);
+    if (icon_) DrawIconEx(dc, logo.left, logo.top, icon_, px(32), px(32), 0, nullptr, DI_NORMAL);
 }
 
 void SettingsWindow::drawOption(HWND control, HDC dc, Option const& option) {
     RECT row{};
     GetClientRect(control, &row);
-    fill(dc, row, background);
-    rounded(dc, row, px(12), surface);
+    if (!canvas_.begin(dc, row, background)) return;
+    const float phase = std::lerp(0.72f, 1.0f, pageOpacity());
+    canvas_.rounded(rect(row), static_cast<float>(px(8)), blend(background, surface, phase));
     const bool enabled = IsWindowEnabled(control) != FALSE;
-    const bool checked = SendMessageW(control, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    const float checked = animate_ ? toggles_[&option - options].value(Clock::now()) : toggles_[&option - options].to;
     const int right = row.right - px(15);
     const int middle = row.bottom / 2;
     const RECT track{right - px(34), middle - px(10), right, middle + px(10)};
-    rounded(dc, track, px(20), checked && enabled ? accent : border);
-    const int knob = checked ? track.right - px(16) : track.left + px(3);
-    rounded(dc, {knob, middle - px(7), knob + px(14), middle + px(7)}, px(14),
-            checked && enabled ? selected : muted);
+    const float active = enabled ? checked : 0;
+    canvas_.rounded(rect(track), static_cast<float>(px(10)), blend(border, accent, active * phase));
+    const float knob = std::lerp(static_cast<float>(track.left + px(3)), static_cast<float>(track.right - px(17)), checked);
+    const float radius = static_cast<float>(px(7));
+    canvas_.rounded(D2D1::RectF(knob, middle - radius, knob + 2 * radius, middle + radius),
+                    radius, blend(muted, selected, active));
 
     wchar_t label[96]{};
     GetWindowTextW(control, label, ARRAYSIZE(label));
     const int left = px(14);
     const int textRight = track.left - px(12);
-    text(dc, {left, px(5), textRight, middle + px(1)}, label, strong_, enabled ? foreground : muted);
-    text(dc, {left, middle, textRight, row.bottom - px(6)}, option.description, body_, muted,
-         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    canvas_.text({left, px(5), textRight, middle + px(1)}, label, canvas_.strong(),
+                 blend(surface, enabled ? foreground : muted, phase));
+    canvas_.text({left, middle, textRight, row.bottom - px(6)}, option.description, canvas_.body(),
+                 blend(surface, muted, phase));
     if (GetFocus() == control) {
         InflateRect(&row, -px(2), -px(2));
-        DrawFocusRect(dc, &row);
+        canvas_.focus(row, static_cast<float>(px(7)), accent);
     }
+    canvas_.end();
 }
 
 void SettingsWindow::drawButton(DRAWITEMSTRUCT const& item) {
-    auto rect = item.rcItem;
+    RECT area{0, 0, item.rcItem.right - item.rcItem.left, item.rcItem.bottom - item.rcItem.top};
     const bool active = static_cast<int>(item.CtlID) == page_;
     const bool link = item.CtlID == IDC_SETTINGS_GITHUB;
-    fill(item.hDC, rect, link ? background : sidebar);
+    if (!canvas_.begin(item.hDC, item.rcItem, link ? background : sidebar)) return;
+    const float phase = link ? std::lerp(0.72f, 1.0f, pageOpacity()) : 1.0f;
     if (active || link || (item.itemState & (ODS_SELECTED | ODS_FOCUS))) {
-        rounded(item.hDC, rect, px(10), active || link ? selected : surface);
+        canvas_.rounded(rect(area), static_cast<float>(px(6)),
+                        blend(link ? background : sidebar, active || link ? selected : surface, phase));
     }
     if (item.itemState & ODS_FOCUS) {
-        auto focus = rect;
+        auto focus = area;
         InflateRect(&focus, -px(2), -px(2));
-        DrawFocusRect(item.hDC, &focus);
+        canvas_.focus(focus, static_cast<float>(px(5)), accent);
     }
-    wchar_t label[64]{};
-    GetWindowTextW(item.hwndItem, label, ARRAYSIZE(label));
-    rect.left += px(12);
-    text(item.hDC, rect, label, strong_, active || link ? accent : muted,
-         DT_LEFT | DT_SINGLELINE | DT_VCENTER | ((item.itemState & ODS_NOACCEL) ? DT_HIDEPREFIX : 0));
+    const auto* label = link ? L"View on GitHub" : pages[item.CtlID - IDC_SETTINGS_GENERAL].title;
+    area.left += px(12);
+    canvas_.text(area, label, canvas_.strong(), blend(link ? selected : sidebar, active || link ? accent : muted, phase));
+    canvas_.end();
 }
 
 LRESULT CALLBACK SettingsWindow::optionProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
@@ -307,8 +465,21 @@ INT_PTR CALLBACK SettingsWindow::dialog(HWND window, UINT message, WPARAM wparam
         if (LOWORD(wparam) != WA_INACTIVE) self->sync();
         break;
     case WM_DPICHANGED:
-        self->createFonts(HIWORD(wparam));
+        self->setDpi(HIWORD(wparam));
         InvalidateRect(window, nullptr, TRUE);
+        break;
+    case WM_SETTINGCHANGE: {
+        BOOL motion = TRUE;
+        SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &motion, 0);
+        self->animate_ = motion != FALSE;
+        self->redrawMotion();
+        break;
+    }
+    case WM_TIMER:
+        if (wparam == motionTimer) {
+            self->redrawMotion();
+            return TRUE;
+        }
         break;
     case WM_ERASEBKGND:
         return TRUE;
