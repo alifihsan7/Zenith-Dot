@@ -167,6 +167,7 @@ private:
     void updatePill(Clock::time_point now);
     void updatePillLayout(Clock::time_point now, float workWidth);
     void updateTheme(Clock::time_point now);
+    bool alertAllowed(IslandAlert::Kind kind) const;
     void setOpen(bool open, Clock::time_point now);
     void showScreen(Screen screen, Clock::time_point now);
     void toggleFocus(Clock::time_point now);

@@ -17,6 +17,9 @@ struct Settings {
     bool autoAddText = false;
     bool autoAddScreenshots = true;
     bool showClipboardPreviews = true;
+    bool showClipboardBubble = true;
+    bool showCameraIndicator = true;
+    bool showMicrophoneIndicator = true;
     bool autoCycle = false;   // Focus and Break follow each other automatically
     bool animateIsland = true;
     bool hideInFullscreen = true;
@@ -40,6 +43,7 @@ struct Settings {
 
     static Settings load();
     bool saveClipboard() const;
+    bool savePrivacy() const;
     bool saveTimer() const;
     bool saveDisplay() const;
     bool saveIsland() const;

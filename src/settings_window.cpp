@@ -8,6 +8,7 @@
 #include <dwrite.h>
 #include <dwmapi.h>
 #include <shellapi.h>
+#include <wincodec.h>
 #include <winrt/base.h>
 
 #include <algorithm>
@@ -34,7 +35,6 @@ using namespace std::chrono_literals;
 constexpr auto pageDuration = 180ms;
 constexpr auto toggleDuration = 160ms;
 constexpr UINT_PTR motionTimer = 1;
-constexpr UINT_PTR previewTimer = 2;
 
 void notifyOverlay() {
     if (const auto overlay = FindWindowW(overlayWindowClass, nullptr)) {
@@ -53,6 +53,7 @@ constexpr Page pages[]{
     {IDC_SETTINGS_GENERAL, L"General", L"Choose how Zenith Dot starts on this PC.", L"Startup"},
     {IDC_SETTINGS_DISPLAY, L"Appearance", L"Adjust the island's size, shape, and accent.", nullptr},
     {IDC_SETTINGS_FEATURES, L"Features", L"Choose what appears in the island and arrange its feature bar.", nullptr},
+    {IDC_SETTINGS_PRIVACY, L"Privacy & Clipboard", L"Choose which clipboard and device indicators appear.", nullptr},
     {IDC_SETTINGS_ABOUT, L"About", L"Zenith Dot for Windows", nullptr},
 };
 
@@ -75,8 +76,14 @@ constexpr Option options[]{
         &Settings::autoAddText, &Settings::saveClipboard, IDC_FEATURE_DROP},
     {IDC_ADD_SCREENSHOTS, IDC_SETTINGS_FEATURES, L"Add screenshots and other clipboard images to Drop Zone.",
         &Settings::autoAddScreenshots, &Settings::saveClipboard, IDC_FEATURE_DROP},
-    {IDC_CLIPBOARD_PREVIEWS, IDC_SETTINGS_FEATURES, L"Show a short preview in the Copied bubble.",
-        &Settings::showClipboardPreviews, &Settings::saveClipboard, IDC_FEATURE_DROP},
+    {IDC_CLIPBOARD_BUBBLE, IDC_SETTINGS_PRIVACY, L"Show a notification when you copy something.",
+        &Settings::showClipboardBubble, &Settings::saveClipboard},
+    {IDC_CLIPBOARD_PREVIEWS, IDC_SETTINGS_PRIVACY, L"Include a short text snippet in the Copied bubble.",
+        &Settings::showClipboardPreviews, &Settings::saveClipboard},
+    {IDC_CAMERA_INDICATOR, IDC_SETTINGS_PRIVACY, L"Show when an app is using the camera.",
+        &Settings::showCameraIndicator, &Settings::savePrivacy},
+    {IDC_MICROPHONE_INDICATOR, IDC_SETTINGS_PRIVACY, L"Show when an app is using the microphone.",
+        &Settings::showMicrophoneIndicator, &Settings::savePrivacy},
     {IDC_AUTO_CYCLE, IDC_SETTINGS_FEATURES, L"Start the next Focus or Break phase automatically.",
         &Settings::autoCycle, &Settings::saveTimer, IDC_FEATURE_TIMERS},
     {IDC_FEATURE_ENABLED, IDC_SETTINGS_FEATURES, L"Show this feature in the feature bar.", nullptr, nullptr},
@@ -97,8 +104,6 @@ bool hovered(HWND window) {
     POINT pointer{};
     return IsWindowEnabled(window) && GetCursorPos(&pointer) && WindowFromPoint(pointer) == window;
 }
-constexpr int previewButtons[]{IDC_PREVIEW_DOT, IDC_PREVIEW_PILL, IDC_PREVIEW_PANEL, IDC_PREVIEW_PLAY,
-    IDC_PREVIEW_COPY_TEXT, IDC_PREVIEW_COPY_IMAGE, IDC_PREVIEW_STATUS, IDC_PREVIEW_AUDIO};
 
 constexpr wchar_t const* featureNames[]{L"Now Playing", L"Timers", L"Scratchpad", L"Drop Zone", L"System"};
 constexpr wchar_t const* widthChoices[]{L"Fit to title", L"147 px minimum"};
@@ -107,9 +112,6 @@ constexpr wchar_t const* accentChoices[]{L"Album artwork", L"Zenith blue", L"Cus
 constexpr wchar_t const* pauseChoices[]{L"Immediately", L"3 seconds", L"5 seconds", L"Keep the title"};
 constexpr wchar_t const* focusChoices[]{L"15 minutes", L"25 minutes", L"45 minutes"};
 constexpr wchar_t const* breakChoices[]{L"5 minutes", L"10 minutes", L"15 minutes"};
-constexpr wchar_t const* appearanceSamples[]{L"Short title", L"Long title"};
-constexpr wchar_t const* mediaSamples[]{L"Song title", L"Synced lyrics"};
-constexpr wchar_t const* timerSamples[]{L"Focus", L"Break"};
 constexpr int choiceControls[]{IDC_PILL_WIDTH, IDC_ISLAND_SIZE, IDC_ACCENT_MODE, IDC_CUSTOM_ACCENT,
     IDC_PAUSE_DELAY, IDC_FOCUS_DURATION, IDC_BREAK_DURATION};
 
@@ -166,7 +168,8 @@ public:
     void fill(RECT area, COLORREF value);
     void rounded(D2D1_RECT_F area, float radius, D2D1_COLOR_F value);
     void focus(RECT area, float radius, COLORREF value);
-    void text(RECT area, wchar_t const* value, IDWriteTextFormat* font, D2D1_COLOR_F ink, bool wrap = false);
+    void image(HMODULE module, int resource, RECT area, float scale);
+    void text(RECT area, wchar_t const* value, IDWriteTextFormat* font, D2D1_COLOR_F ink);
     IDWriteTextFormat* body() const { return body_.get(); }
     IDWriteTextFormat* strong() const { return strong_.get(); }
     IDWriteTextFormat* heading() const { return heading_.get(); }
@@ -176,6 +179,8 @@ private:
     winrt::com_ptr<IDWriteFactory> writing_;
     winrt::com_ptr<ID2D1DCRenderTarget> target_;
     winrt::com_ptr<ID2D1SolidColorBrush> brush_;
+    winrt::com_ptr<IWICImagingFactory> imaging_;
+    std::array<winrt::com_ptr<ID2D1Bitmap>, IDR_EXAMPLE_CLIPBOARD - IDR_EXAMPLE_DOT + 1> images_;
     winrt::com_ptr<IDWriteTextFormat> body_, strong_, heading_;
 };
 
@@ -220,9 +225,42 @@ bool Canvas::begin(HDC dc, RECT area, COLORREF clear) {
 
 void Canvas::end() {
     if (FAILED(target_->EndDraw())) {
+        for (auto& bitmap : images_) bitmap = nullptr;
         brush_ = nullptr;
         target_ = nullptr;
     }
+}
+
+void Canvas::image(HMODULE module, int resource, RECT area, float scale) {
+    auto& bitmap = images_[resource - IDR_EXAMPLE_DOT];
+    if (!bitmap) {
+        if (!imaging_ && FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                                IID_PPV_ARGS(imaging_.put())))) return;
+        const auto handle = FindResourceW(module, MAKEINTRESOURCEW(resource), RT_RCDATA);
+        if (!handle) return;
+        const auto memory = LoadResource(module, handle);
+        auto* bytes = memory ? static_cast<BYTE*>(LockResource(memory)) : nullptr;
+        if (!bytes) return;
+        winrt::com_ptr<IWICStream> stream;
+        winrt::com_ptr<IWICBitmapDecoder> decoder;
+        winrt::com_ptr<IWICBitmapFrameDecode> frame;
+        winrt::com_ptr<IWICFormatConverter> converter;
+        if (FAILED(imaging_->CreateStream(stream.put())) ||
+            FAILED(stream->InitializeFromMemory(bytes, SizeofResource(module, handle))) ||
+            FAILED(imaging_->CreateDecoderFromStream(stream.get(), nullptr, WICDecodeMetadataCacheOnLoad, decoder.put())) ||
+            FAILED(decoder->GetFrame(0, frame.put())) ||
+            FAILED(imaging_->CreateFormatConverter(converter.put())) ||
+            FAILED(converter->Initialize(frame.get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
+                                         nullptr, 0, WICBitmapPaletteTypeCustom)) ||
+            FAILED(target_->CreateBitmapFromWicBitmap(converter.get(), bitmap.put()))) return;
+    }
+    const auto size = bitmap->GetSize();
+    const float fit = std::min({scale, (area.right - area.left) / size.width, (area.bottom - area.top) / size.height});
+    const float width = size.width * fit;
+    const float height = size.height * fit;
+    const float x = (area.left + area.right - width) / 2;
+    const float y = (area.top + area.bottom - height) / 2;
+    target_->DrawBitmap(bitmap.get(), D2D1::RectF(x, y, x + width, y + height));
 }
 
 void Canvas::fill(RECT area, COLORREF value) {
@@ -240,12 +278,10 @@ void Canvas::focus(RECT area, float radius, COLORREF value) {
     target_->DrawRoundedRectangle(D2D1::RoundedRect(rect(area), radius, radius), brush_.get());
 }
 
-void Canvas::text(RECT area, wchar_t const* value, IDWriteTextFormat* font, D2D1_COLOR_F ink, bool wrap) {
+void Canvas::text(RECT area, wchar_t const* value, IDWriteTextFormat* font, D2D1_COLOR_F ink) {
     if (!font) return;
     brush_->SetColor(ink);
-    if (wrap) font->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
     target_->DrawText(value, static_cast<UINT32>(wcslen(value)), font, rect(area), brush_.get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-    if (wrap) font->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 }
 
 class SettingsWindow {
@@ -263,9 +299,7 @@ private:
     bool commandChoice(int id);
     void showControls();
     void openDetail(int id);
-    void drawPreview();
-    D2D1_SIZE_F previewSize(D2D1_SIZE_F target);
-    std::span<wchar_t const* const> samples() const;
+    void drawExamples();
     unsigned currentChoice(int id) const;
     Feature feature() const { return static_cast<Feature>(detail_ - IDC_FEATURE_MEDIA); }
     void redrawMotion();
@@ -281,22 +315,13 @@ private:
     int px(int value) const { return MulDiv(value, dpi_, 96); }
 
     HWND window_{};
+    HMODULE module_{};
     HICON icon_{};
     Canvas canvas_;
     UINT dpi_ = 96;
     int page_ = IDC_SETTINGS_GENERAL;
     int detail_ = 0;
-    unsigned sample_ = 0;
-    int appearanceShape_ = IDC_PREVIEW_PILL;
-    bool sampleTextAdded_ = false;
-    bool sampleImageAdded_ = false;
-    bool sampleCopyPreview_ = false;
     Settings settings_;
-    Clock::time_point sampleStarted_{};
-    Clock::time_point timerEnds_{};
-    Clock::time_point previewResizeStart_{};
-    D2D1_SIZE_F previewFrom_{};
-    D2D1_SIZE_F previewTarget_{};
     bool animate_ = true;
     Clock::time_point pageStart_{};
     std::array<ToggleMotion, std::size(options)> toggles_{};
@@ -310,6 +335,7 @@ void SettingsWindow::setDpi(UINT dpi) {
 
 void SettingsWindow::initialize(HWND window) {
     window_ = window;
+    module_ = reinterpret_cast<HMODULE>(GetWindowLongPtrW(window, GWLP_HINSTANCE));
     setDpi(GetDpiForWindow(window));
     BOOL motion = TRUE;
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &motion, 0);
@@ -327,13 +353,10 @@ void SettingsWindow::initialize(HWND window) {
         SetWindowSubclass(GetDlgItem(window, page.id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
     for (const int id : choiceControls)
         SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
-    for (const int id : previewButtons)
-        SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
-    for (const int id : {IDC_SETTINGS_GITHUB, IDC_PREVIEW_ACTION, IDC_PREVIEW_TIMER, IDC_FEATURE_BACK, IDC_FEATURE_UP, IDC_FEATURE_DOWN,
+    for (const int id : {IDC_SETTINGS_GITHUB, IDC_FEATURE_BACK, IDC_FEATURE_UP, IDC_FEATURE_DOWN,
                         IDC_FEATURE_MEDIA, IDC_FEATURE_TIMERS, IDC_FEATURE_SCRATCH, IDC_FEATURE_DROP, IDC_FEATURE_SYSTEM}) {
         SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
     }
-    SetWindowTextW(GetDlgItem(window, IDC_SAMPLE_NOTE), L"Review the first draft\r\nSend feedback by Friday");
     sync();
 }
 
@@ -345,16 +368,6 @@ void SettingsWindow::selectPage(int id) {
 
 void SettingsWindow::openDetail(int id) {
     detail_ = id;
-    sample_ = 0;
-    appearanceShape_ = IDC_PREVIEW_PILL;
-    sampleTextAdded_ = sampleImageAdded_ = sampleCopyPreview_ = false;
-    sampleStarted_ = {};
-    timerEnds_ = {};
-    previewResizeStart_ = {};
-    previewTarget_ = {};
-    SetWindowTextW(GetDlgItem(window_, IDC_PREVIEW_TIMER), L"Start");
-    SetWindowTextW(GetDlgItem(window_, IDC_PREVIEW_PLAY), L"Pause");
-    KillTimer(window_, previewTimer);
     if (animate_) {
         pageStart_ = Clock::now();
         SetTimer(window_, motionTimer, 16, nullptr);
@@ -406,16 +419,8 @@ void SettingsWindow::showControls() {
         EnableWindow(GetDlgItem(window_, IDC_FEATURE_UP), where != settings_.features.begin());
         EnableWindow(GetDlgItem(window_, IDC_FEATURE_DOWN), where + 1 != settings_.features.end());
     }
-    show(IDC_PREVIEW_ACTION, appearance || (enabled && !samples().empty()));
-    for (const int id : {IDC_PREVIEW_DOT, IDC_PREVIEW_PILL, IDC_PREVIEW_PANEL}) show(id, appearance);
-    show(IDC_PREVIEW_PLAY, enabled && detail_ == IDC_FEATURE_MEDIA);
-    show(IDC_PREVIEW_COPY_TEXT, enabled && detail_ == IDC_FEATURE_DROP);
-    show(IDC_PREVIEW_COPY_IMAGE, enabled && detail_ == IDC_FEATURE_DROP);
-    show(IDC_PREVIEW_STATUS, enabled && detail_ == IDC_FEATURE_SYSTEM);
-    show(IDC_PREVIEW_AUDIO, enabled && detail_ == IDC_FEATURE_SYSTEM);
-    show(IDC_PREVIEW_TIMER, enabled && detail_ == IDC_FEATURE_TIMERS);
-    show(IDC_SAMPLE_NOTE, enabled && detail_ == IDC_FEATURE_SCRATCH);
     show(IDC_SETTINGS_GITHUB, page_ == IDC_SETTINGS_ABOUT);
+    EnableWindow(GetDlgItem(window_, IDC_CLIPBOARD_PREVIEWS), settings_.showClipboardBubble);
     RedrawWindow(window_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
 }
 
@@ -432,15 +437,6 @@ void SettingsWindow::sync() {
     showControls();
 }
 
-std::span<wchar_t const* const> SettingsWindow::samples() const {
-    if (page_ == IDC_SETTINGS_DISPLAY) return appearanceSamples;
-    switch (detail_) {
-    case IDC_FEATURE_MEDIA: return mediaSamples;
-    case IDC_FEATURE_TIMERS: return timerSamples;
-    default: return {};
-    }
-}
-
 unsigned SettingsWindow::currentChoice(int id) const {
     switch (id) {
     case IDC_PILL_WIDTH: return settings_.fixedPillMinimum;
@@ -449,7 +445,7 @@ unsigned SettingsWindow::currentChoice(int id) const {
     case IDC_PAUSE_DELAY: return settings_.compactPause;
     case IDC_FOCUS_DURATION: return settings_.focusPreset;
     case IDC_BREAK_DURATION: return settings_.breakPreset;
-    default: return sample_;
+    default: return 0;
     }
 }
 
@@ -470,7 +466,7 @@ bool SettingsWindow::commandChoice(int id) {
         sync();
         return true;
     }
-    const auto values = id == IDC_PREVIEW_ACTION ? samples() : choices(id);
+    const auto values = choices(id);
     if (values.empty()) return false;
     const auto menu = CreatePopupMenu();
     if (!menu) return true;
@@ -484,16 +480,6 @@ bool SettingsWindow::commandChoice(int id) {
     DestroyMenu(menu);
     if (!result) return true;
     const auto index = static_cast<unsigned>(result - 1);
-    if (id == IDC_PREVIEW_ACTION) {
-        sample_ = index;
-        if (detail_ == IDC_FEATURE_TIMERS) {
-            KillTimer(window_, previewTimer);
-            timerEnds_ = {};
-            SetWindowTextW(GetDlgItem(window_, IDC_PREVIEW_TIMER), L"Start");
-        }
-        RedrawWindow(window_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
-        return true;
-    }
     auto updated = Settings::load();
     switch (id) {
     case IDC_PILL_WIDTH: updated.fixedPillMinimum = index != 0; break;
@@ -505,20 +491,6 @@ bool SettingsWindow::commandChoice(int id) {
     }
     if (updated.saveIsland()) notifyOverlay();
     else MessageBoxW(window_, L"Couldn’t save this setting.", title, MB_OK | MB_ICONWARNING);
-    sync();
-    if (detail_ == IDC_FEATURE_TIMERS) {
-        timerEnds_ = {};
-        KillTimer(window_, previewTimer);
-        SetWindowTextW(GetDlgItem(window_, IDC_PREVIEW_TIMER), L"Start");
-    }
-    if (id == IDC_PAUSE_DELAY && sampleStarted_ != Clock::time_point{}) {
-        KillTimer(window_, previewTimer);
-        const auto due = sampleStarted_ + std::chrono::seconds(settings_.pauseSeconds());
-        if (settings_.compactPause != 3 && Clock::now() < due) {
-            const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(due - Clock::now());
-            SetTimer(window_, previewTimer, static_cast<UINT>(std::max(1ms, remaining).count()), nullptr);
-        }
-    }
     return true;
 }
 
@@ -538,42 +510,6 @@ bool SettingsWindow::command(int id) {
         const auto previous = detail_;
         openDetail(0);
         SetFocus(GetDlgItem(window_, previous));
-        return true;
-    }
-    if (page_ == IDC_SETTINGS_DISPLAY && id >= IDC_PREVIEW_DOT && id <= IDC_PREVIEW_PANEL) {
-        appearanceShape_ = id;
-        RedrawWindow(window_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
-        return true;
-    }
-    if (id == IDC_PREVIEW_PLAY && detail_ == IDC_FEATURE_MEDIA) {
-        KillTimer(window_, previewTimer);
-        const bool pause = sampleStarted_ == Clock::time_point{};
-        sampleStarted_ = pause ? Clock::now() : Clock::time_point{};
-        SetWindowTextW(GetDlgItem(window_, id), pause ? L"Play" : L"Pause");
-        if (pause && settings_.pauseSeconds() > 0) SetTimer(window_, previewTimer, settings_.pauseSeconds() * 1000, nullptr);
-        InvalidateRect(window_, nullptr, FALSE);
-        return true;
-    }
-    if (detail_ == IDC_FEATURE_DROP && (id == IDC_PREVIEW_COPY_TEXT || id == IDC_PREVIEW_COPY_IMAGE)) {
-        sampleCopyPreview_ = id == IDC_PREVIEW_COPY_TEXT;
-        sampleTextAdded_ |= sampleCopyPreview_ && settings_.autoAddText;
-        sampleImageAdded_ |= !sampleCopyPreview_ && settings_.autoAddScreenshots;
-        InvalidateRect(window_, nullptr, FALSE);
-        return true;
-    }
-    if (detail_ == IDC_FEATURE_SYSTEM && (id == IDC_PREVIEW_STATUS || id == IDC_PREVIEW_AUDIO)) {
-        sample_ = id == IDC_PREVIEW_AUDIO;
-        RedrawWindow(window_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
-        return true;
-    }
-    if (id == IDC_PREVIEW_TIMER && detail_ == IDC_FEATURE_TIMERS) {
-        const bool start = timerEnds_ == Clock::time_point{};
-        timerEnds_ = start ? Clock::now() + std::chrono::minutes(sample_ == 0 ? settings_.focusMinutes() : settings_.breakMinutes())
-                           : Clock::time_point{};
-        SetWindowTextW(GetDlgItem(window_, id), start ? L"Reset" : L"Start");
-        if (start) SetTimer(window_, previewTimer, 250, nullptr);
-        else KillTimer(window_, previewTimer);
-        InvalidateRect(window_, nullptr, FALSE);
         return true;
     }
     if (detail_ && (id == IDC_FEATURE_UP || id == IDC_FEATURE_DOWN)) {
@@ -636,19 +572,12 @@ void SettingsWindow::redrawMotion() {
     const auto now = Clock::now();
     const bool pageMoving = animate_ && now - pageStart_ < pageDuration;
     bool moving = pageMoving;
-    if (previewResizeStart_ != Clock::time_point{}) {
-        auto preview = units(144, 62, 456, 147);
-        InvalidateRect(window_, &preview, FALSE);
-        if (animate_ && now - previewResizeStart_ < pageDuration) moving = true;
-        else previewResizeStart_ = {};
-    }
     if (pageStart_ != Clock::time_point{}) {
         auto content = units(122, 0, 478, 337);
         InvalidateRect(window_, &content, FALSE);
         for (const int id : choiceControls) InvalidateRect(GetDlgItem(window_, id), nullptr, FALSE);
         for (int id = IDC_FEATURE_MEDIA; id <= IDC_FEATURE_SYSTEM; ++id)
             InvalidateRect(GetDlgItem(window_, id), nullptr, FALSE);
-        InvalidateRect(GetDlgItem(window_, IDC_PREVIEW_ACTION), nullptr, FALSE);
         if (page_ == IDC_SETTINGS_ABOUT) InvalidateRect(GetDlgItem(window_, IDC_SETTINGS_GITHUB), nullptr, FALSE);
     }
     for (const auto& option : options) {
@@ -663,133 +592,27 @@ void SettingsWindow::redrawMotion() {
     if (!moving) KillTimer(window_, motionTimer);
 }
 
-D2D1_SIZE_F SettingsWindow::previewSize(D2D1_SIZE_F target) {
-    const auto now = Clock::now();
-    const auto shown = [&] {
-        const float t = animate_ ? progress(previewResizeStart_, pageDuration, now) : 1;
-        return D2D1::SizeF(std::lerp(previewFrom_.width, previewTarget_.width, t),
-                           std::lerp(previewFrom_.height, previewTarget_.height, t));
-    };
-    if (target.width != previewTarget_.width || target.height != previewTarget_.height) {
-        previewFrom_ = previewTarget_.width > 0 ? shown() : target;
-        previewResizeStart_ = animate_ && previewTarget_.width > 0 ? now : Clock::time_point{};
-        previewTarget_ = target;
-        if (previewResizeStart_ != Clock::time_point{}) SetTimer(window_, motionTimer, 16, nullptr);
-    }
-    return shown();
-}
-
-void SettingsWindow::drawPreview() {
-    const auto bounds = units(144, 62, 456, 147);
-    canvas_.rounded(rect(bounds), static_cast<float>(px(12)), color(RGB(34, 46, 63)));
-    const bool appearance = page_ == IDC_SETTINGS_DISPLAY;
-    if (detail_ && !settings_.enabled(feature())) {
-        canvas_.text(units(154, 92, 446, 112), L"Feature hidden from the island", canvas_.strong(), color(muted));
-        return;
-    }
-    if (detail_ == IDC_FEATURE_SCRATCH) {
-        canvas_.text(units(157, 72, 443, 90), L"Scratchpad", canvas_.strong(), color(foreground));
-        return;
-    }
-    const auto rgb = settings_.customAccent;
-    const auto tint = settings_.accentMode == 2 ? RGB(rgb >> 16, rgb >> 8, rgb) :
-        settings_.accentMode == 1 ? accent : RGB(233, 170, 130);
-    const bool longTitle = appearance && sample_ == 1;
-    const auto* track = longTitle ? L"A Walk Through the City After Midnight (Riverside Live Session)" : L"5% TINT";
-    if (detail_ == IDC_FEATURE_DROP || detail_ == IDC_FEATURE_SYSTEM || (appearance && appearanceShape_ == IDC_PREVIEW_PANEL)) {
-        const int inset = appearance ? static_cast<int>((1.12f - settings_.islandScale()) * 140) : 0;
-        const bool mediaPanel = appearance;
-        const auto panel = units(155 + inset, mediaPanel ? 68 : 83, 445 - inset, 118);
-        auto shell = rect(panel);
-        if (mediaPanel) {
-            const auto size = previewSize(D2D1::SizeF(shell.right - shell.left, shell.bottom - shell.top));
-            const float center = (shell.left + shell.right) / 2;
-            shell = D2D1::RectF(center - size.width / 2, shell.top, center + size.width / 2, shell.top + size.height);
-        }
-        canvas_.rounded(shell, std::min(static_cast<float>(px(10)), (shell.bottom - shell.top) / 2), color(RGB(8, 10, 14)));
-        if (mediaPanel && previewResizeStart_ != Clock::time_point{} &&
-            progress(previewResizeStart_, pageDuration, Clock::now()) < 0.92f) return;
-        const auto first = units(163 + inset, 85, 436 - inset, 100);
-        const auto second = units(163 + inset, 100, 436 - inset, 114);
-        if (detail_ == IDC_FEATURE_DROP) {
-            canvas_.text(first, L"Drop Zone  ·  Project brief.pdf", canvas_.strong(), color(foreground));
-            std::wstring items;
-            if (sampleImageAdded_) items = L"Screenshot.png";
-            if (sampleTextAdded_) {
-                if (!items.empty()) items += L"   ·   ";
-                items += L"Review the first draft";
-            }
-            canvas_.text(second, items.empty() ? L"Drop files or text here" : items.c_str(), canvas_.body(), color(muted));
-            if (sampleCopyPreview_ && settings_.showClipboardPreviews) {
-                canvas_.text(units(163, 67, 436, 82), L"Copied  ·  Review the first draft", canvas_.body(), color(foreground));
-            }
-        } else if (detail_ == IDC_FEATURE_SYSTEM) {
-            canvas_.text(first, sample_ == 1 ? L"Audio output" : L"System", canvas_.strong(), color(foreground));
-            canvas_.text(second, sample_ == 1 ? L"Speakers  ·  Volume 40%" : L"CPU 12%   ·   RAM 7.2 GB   ·   Battery 76%",
-                         canvas_.body(), color(muted));
-        } else {
-            const auto artwork = units(163 + inset, 73, 180 + inset, 90);
-            canvas_.rounded(rect(artwork), static_cast<float>(px(5)), blend(surface, tint, 0.33f));
-            canvas_.text(artwork, L" ♪", canvas_.body(), color(tint));
-            canvas_.text(units(186 + inset, 69, 436 - inset, longTitle ? 89 : 85), track,
-                         canvas_.strong(), color(foreground), longTitle);
-            canvas_.text(units(186 + inset, longTitle ? 89 : 86, 436 - inset, 97),
-                         longTitle ? L"Demo track   ·   0:58 / 2:16" : L"Travis Scott   ·   0:58 / 2:16", canvas_.body(), color(muted));
-            canvas_.fill(units(163 + inset, 98, 436 - inset, 100), border);
-            canvas_.fill(units(163 + inset, 98, 285, 100), tint);
-            canvas_.text(units(272, 101, 287, 116), L"‹", canvas_.strong(), color(foreground));
-            canvas_.rounded(rect(units(290, 101, 310, 116)), static_cast<float>(px(12)), color(tint));
-            canvas_.text(units(296, 101, 309, 116), L"Ⅱ", canvas_.body(), color(background));
-            canvas_.text(units(319, 101, 335, 116), L"›", canvas_.strong(), color(foreground));
-        }
-        return;
-    }
-
-    const bool timer = detail_ == IDC_FEATURE_TIMERS;
-    const bool paused = detail_ == IDC_FEATURE_MEDIA && sampleStarted_ != Clock::time_point{};
-    const bool compact = paused && settings_.compactPause != 3 &&
-        Clock::now() - sampleStarted_ >= std::chrono::seconds(settings_.pauseSeconds());
-    const bool lyrics = detail_ == IDC_FEATURE_MEDIA && sample_ == 1 && settings_.showPillLyrics && !paused;
-    const bool dot = appearance && appearanceShape_ == IDC_PREVIEW_DOT;
-    const int width = dot ? 13 : compact ? 50 : longTitle ? 330 : lyrics ? 318 :
-        timer ? 132 : settings_.fixedPillMinimum ? 147 : 114;
-    const int height = dot ? 13 : compact ? 28 : longTitle ? 48 : 34;
-    const float scale = settings_.islandScale();
-    const auto now = Clock::now();
-    const auto [span, tall] = previewSize(D2D1::SizeF(px(width) * scale, px(height) * scale));
-    const float x = (bounds.left + bounds.right - span) / 2;
-    const float y = appearance ? static_cast<float>(units(0, 68, 0, 68).top) : bounds.top + px(36) - tall / 2;
-    const auto pill = D2D1::RectF(x, y, x + span, y + tall);
-    canvas_.rounded(pill, tall / 2, color(RGB(8, 10, 14)));
-    if (dot) return;
-    const auto value = [&](int left, int right) {
-        return RECT{static_cast<LONG>(x) + px(left), static_cast<LONG>(y),
-                    static_cast<LONG>(x + span) - px(right), static_cast<LONG>(y + tall)};
-    };
-    std::wstring timerLabel;
-    if (timer) {
-        const auto seconds = timerEnds_ == Clock::time_point{} ?
-            60 * (sample_ == 0 ? settings_.focusMinutes() : settings_.breakMinutes()) :
-            std::max(0ll, static_cast<long long>(std::chrono::ceil<std::chrono::seconds>(timerEnds_ - now).count()));
-        timerLabel = sample_ == 0 ? L"Focus   " : L"Break   ";
-        timerLabel += std::to_wstring(seconds / 60) + (seconds % 60 < 10 ? L":0" : L":") + std::to_wstring(seconds % 60);
-    }
-    const auto* label = timer ? timerLabel.c_str() : lyrics ? L"City lights are fading, but I’m still wide awake" : track;
-    if (!lyrics && !timer) {
-        const float art = static_cast<float>(px(16));
-        canvas_.rounded(D2D1::RectF(x + px(7), y + (tall - art) / 2, x + px(7) + art, y + (tall + art) / 2),
-                        static_cast<float>(px(4)), blend(surface, tint, 0.33f));
-        canvas_.text(value(9, 18), L"♪", canvas_.body(), color(tint));
-    }
-    if (!compact) canvas_.text(value(lyrics || timer ? 12 : 29, 24), label, canvas_.body(), color(foreground), longTitle);
-    if (!lyrics && !timer && (paused || settings_.showWaveform)) {
-        const int heights[]{6, 12, 9, 5};
-        for (int i = 0; i < (paused ? 2 : 4); ++i) {
-            const float barX = x + span - px((paused ? 16 : 19) - 3 * i);
-            const float barHeight = static_cast<float>(px(paused ? 9 : heights[i]));
-            canvas_.rounded(D2D1::RectF(barX, y + (tall - barHeight) / 2, barX + px(2), y + (tall + barHeight) / 2),
-                            1, color(tint));
-        }
+void SettingsWindow::drawExamples() {
+    constexpr COLORREF desktop = RGB(34, 46, 63);
+    constexpr int featureImages[]{IDR_EXAMPLE_MEDIA, IDR_EXAMPLE_TIMERS, IDR_EXAMPLE_SCRATCH,
+                                  IDR_EXAMPLE_DROP, IDR_EXAMPLE_SYSTEM};
+    const auto exampleArea = units(144, 62, 456, 147);
+    canvas_.rounded(rect(exampleArea), static_cast<float>(px(12)), color(desktop));
+    const float scale = dpi_ / 96.0f;
+    if (detail_) {
+        canvas_.image(module_, featureImages[static_cast<unsigned>(feature())], units(153, 66, 447, 143), scale);
+    } else if (page_ == IDC_SETTINGS_PRIVACY) {
+        canvas_.image(module_, IDR_EXAMPLE_CLIPBOARD, units(153, 76, 294, 119), scale);
+        canvas_.image(module_, IDR_EXAMPLE_PRIVACY, units(306, 76, 447, 119), scale);
+        canvas_.text(units(163, 121, 294, 137), L"Clipboard", canvas_.body(), color(muted));
+        canvas_.text(units(316, 121, 447, 137), L"Camera and microphone", canvas_.body(), color(muted));
+    } else {
+        canvas_.image(module_, IDR_EXAMPLE_DOT, units(151, 66, 197, 126), scale);
+        canvas_.image(module_, IDR_EXAMPLE_PILL, units(199, 66, 286, 126), scale);
+        canvas_.image(module_, IDR_EXAMPLE_MEDIA, units(287, 66, 448, 126), scale);
+        canvas_.text(units(161, 128, 194, 142), L"Dot", canvas_.body(), color(muted));
+        canvas_.text(units(218, 128, 284, 142), L"Pill", canvas_.body(), color(muted));
+        canvas_.text(units(316, 128, 436, 142), L"Panel", canvas_.body(), color(muted));
     }
 }
 
@@ -808,7 +631,7 @@ void SettingsWindow::paint(HDC dc) {
         OffsetRect(&area, 0, offset);
         canvas_.text(area, value, font, blend(background, ink, std::lerp(0.72f, 1.0f, phase)));
     };
-    const auto& page = pages[page_ - IDC_SETTINGS_GENERAL];
+    const auto& page = *std::ranges::find(pages, page_, &Page::id);
     if (detail_) {
         label(units(144, 31, 456, 57), featureNames[static_cast<unsigned>(feature())], canvas_.heading(), foreground);
         const auto position = std::ranges::find(settings_.features, feature()) - settings_.features.begin();
@@ -820,7 +643,7 @@ void SettingsWindow::paint(HDC dc) {
         label(units(145, 39, 456, 53), page.description, canvas_.body(), muted);
         if (page.group) label(units(145, 61, 456, 75), page.group, canvas_.strong(), foreground);
     }
-    if (detail_ || page_ == IDC_SETTINGS_DISPLAY) drawPreview();
+    if (detail_ || page_ == IDC_SETTINGS_DISPLAY || page_ == IDC_SETTINGS_PRIVACY) drawExamples();
     if (page_ == IDC_SETTINGS_ABOUT) {
         label(units(145, 70, 418, 92), L"Version " ZENITH_VERSION_TEXT, canvas_.strong(), foreground);
     }
@@ -868,17 +691,15 @@ void SettingsWindow::drawOption(HWND control, HDC dc, Option const& option) {
 void SettingsWindow::drawButton(DRAWITEMSTRUCT const& item) {
     RECT area{0, 0, item.rcItem.right - item.rcItem.left, item.rcItem.bottom - item.rcItem.top};
     const int id = static_cast<int>(item.CtlID);
-    const bool nav = id >= IDC_SETTINGS_GENERAL && id <= IDC_SETTINGS_ABOUT;
-    const bool previewAction = std::ranges::find(previewButtons, id) != std::end(previewButtons);
-    const bool active = (nav && id == page_) ||
-        (page_ == IDC_SETTINGS_DISPLAY && id == appearanceShape_) ||
-        (detail_ == IDC_FEATURE_SYSTEM && id == (sample_ == 0 ? IDC_PREVIEW_STATUS : IDC_PREVIEW_AUDIO));
+    const auto page = std::ranges::find(pages, id, &Page::id);
+    const bool nav = page != std::end(pages);
+    const bool active = nav && id == page_;
     const bool featureRow = id >= IDC_FEATURE_MEDIA && id <= IDC_FEATURE_SYSTEM;
-    const bool compactButton = previewAction || id == IDC_PREVIEW_ACTION || id == IDC_PREVIEW_TIMER || id == IDC_FEATURE_BACK ||
+    const bool compactButton = id == IDC_FEATURE_BACK ||
         id == IDC_FEATURE_UP || id == IDC_FEATURE_DOWN;
     const bool disabled = (item.itemState & ODS_DISABLED) != 0;
     const bool hot = !disabled && hovered(item.hwndItem);
-    const auto base = nav ? sidebar : previewAction || id == IDC_PREVIEW_ACTION || id == IDC_PREVIEW_TIMER ? RGB(34, 46, 63) : background;
+    const auto base = nav ? sidebar : background;
     if (!canvas_.begin(item.hDC, item.rcItem, base)) return;
     const float phase = nav ? 1.0f : std::lerp(0.72f, 1.0f, pageOpacity());
     if (active || !nav || hot || (item.itemState & (ODS_SELECTED | ODS_FOCUS))) {
@@ -892,13 +713,12 @@ void SettingsWindow::drawButton(DRAWITEMSTRUCT const& item) {
     }
     wchar_t text[96]{};
     GetWindowTextW(item.hwndItem, text, ARRAYSIZE(text));
-    const auto values = id == IDC_PREVIEW_ACTION ? samples() : choices(id);
-    const auto* label = nav ? pages[id - IDC_SETTINGS_GENERAL].title :
-        id == IDC_PREVIEW_ACTION && !values.empty() ? values[sample_] : text;
+    const auto values = choices(id);
+    const auto* label = nav ? (id == IDC_SETTINGS_PRIVACY ? L"Privacy" : page->title) : text;
     area.left += px(compactButton ? 8 : 12);
     const auto ink = active ? accent : disabled || nav ? muted : foreground;
     canvas_.text(area, label, compactButton ? canvas_.body() : canvas_.strong(), blend(base, ink, phase));
-    if (featureRow || id == IDC_CUSTOM_ACCENT || (!values.empty() && id != IDC_PREVIEW_ACTION)) {
+    if (featureRow || id == IDC_CUSTOM_ACCENT || !values.empty()) {
         wchar_t hex[16]{};
         const wchar_t* value = nullptr;
         if (id == IDC_CUSTOM_ACCENT) {
@@ -985,19 +805,7 @@ INT_PTR CALLBACK SettingsWindow::dialog(HWND window, UINT message, WPARAM wparam
             self->redrawMotion();
             return TRUE;
         }
-        if (wparam == previewTimer) {
-            if (self->timerEnds_ == Clock::time_point{} || Clock::now() >= self->timerEnds_) KillTimer(window, previewTimer);
-            InvalidateRect(window, nullptr, FALSE);
-            return TRUE;
-        }
         break;
-    case WM_CTLCOLOREDIT: {
-        const auto dc = reinterpret_cast<HDC>(wparam);
-        SetTextColor(dc, foreground);
-        SetBkColor(dc, surface);
-        SetDCBrushColor(dc, surface);
-        return reinterpret_cast<INT_PTR>(GetStockObject(DC_BRUSH));
-    }
     case WM_ERASEBKGND:
         return TRUE;
     case WM_PAINT: {

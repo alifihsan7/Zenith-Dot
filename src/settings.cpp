@@ -14,6 +14,10 @@ constexpr wchar_t clipboardValue[] = L"ClipboardOptions";
 constexpr DWORD autoAddTextBit = 1;
 constexpr DWORD autoAddScreenshotsBit = 2;
 constexpr DWORD showClipboardPreviewsBit = 4;
+constexpr DWORD hideClipboardBubbleBit = 8;
+constexpr wchar_t privacyValue[] = L"PrivacyOptions";
+constexpr DWORD hideCameraBit = 1;
+constexpr DWORD hideMicrophoneBit = 2;
 constexpr wchar_t timerValue[] = L"TimerOptions";
 constexpr DWORD autoCycleBit = 1;
 constexpr wchar_t displayValue[] = L"DisplayOptions";
@@ -44,6 +48,11 @@ Settings Settings::load() {
         settings.autoAddText = (*value & autoAddTextBit) != 0;
         settings.autoAddScreenshots = (*value & autoAddScreenshotsBit) != 0;
         settings.showClipboardPreviews = (*value & showClipboardPreviewsBit) != 0;
+        settings.showClipboardBubble = (*value & hideClipboardBubbleBit) == 0;
+    }
+    if (const auto value = read(privacyValue)) {
+        settings.showCameraIndicator = (*value & hideCameraBit) == 0;
+        settings.showMicrophoneIndicator = (*value & hideMicrophoneBit) == 0;
     }
     if (const auto value = read(timerValue)) settings.autoCycle = (*value & autoCycleBit) != 0;
     if (const auto value = read(displayValue)) {
@@ -82,8 +91,14 @@ Settings Settings::load() {
 
 bool Settings::saveClipboard() const {
     const DWORD clipboard = (autoAddText ? autoAddTextBit : 0) |
-        (autoAddScreenshots ? autoAddScreenshotsBit : 0) | (showClipboardPreviews ? showClipboardPreviewsBit : 0);
+        (autoAddScreenshots ? autoAddScreenshotsBit : 0) | (showClipboardPreviews ? showClipboardPreviewsBit : 0) |
+        (showClipboardBubble ? 0 : hideClipboardBubbleBit);
     return write(clipboardValue, clipboard);
+}
+
+bool Settings::savePrivacy() const {
+    return write(privacyValue, (showCameraIndicator ? 0 : hideCameraBit) |
+                               (showMicrophoneIndicator ? 0 : hideMicrophoneBit));
 }
 
 bool Settings::saveTimer() const {

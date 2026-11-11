@@ -321,9 +321,9 @@ void App::applyVisibility() {
 
 void App::refreshCapture(bool announce) {
     auto activity = desktop_.captureActivity();
+    island_.setCaptureColors(settings_.showMicrophoneIndicator && !activity.microphone.empty() ? std::optional(microphoneColor) : std::nullopt,
+                             settings_.showCameraIndicator && !activity.camera.empty() ? std::optional(cameraColor) : std::nullopt);
     if (activity == capture_) return;
-    island_.setCaptureColors(activity.microphone.empty() ? std::nullopt : std::optional(microphoneColor),
-                             activity.camera.empty() ? std::nullopt : std::optional(cameraColor));
     if (announce) {
         if (capture_.microphone != activity.microphone && !activity.microphone.empty()) {
             island_.notify({IslandAlert::Kind::microphone, L"Microphone", activity.microphone, microphoneColor, 2});
@@ -507,7 +507,8 @@ std::optional<IslandAlert> App::clipboardAlert(bool& busy, HBITMAP& image, std::
     }
     if (suppressed() && !settings_.autoAddText) return std::nullopt;
     if (const auto data = GetClipboardData(CF_UNICODETEXT)) {
-        if (!settings_.autoAddText && !settings_.showClipboardPreviews) return alert;
+        const bool showPreview = settings_.showClipboardBubble && settings_.showClipboardPreviews && !suppressed();
+        if (!settings_.autoAddText && !showPreview) return alert;
         if (const auto text = static_cast<wchar_t const*>(GlobalLock(data))) {
             struct Unlock {
                 HGLOBAL data;
@@ -519,7 +520,7 @@ std::optional<IslandAlert> App::clipboardAlert(bool& busy, HBITMAP& image, std::
                 (!sequence || sequence != stagedTextSequence_) && dropZone_.canAddText(all.size())) {
                 stagedText.assign(all);
             }
-            if (suppressed() || !settings_.showClipboardPreviews) return alert;
+            if (!showPreview) return alert;
             // First non-empty line, trimmed, at most 60 characters.
             while (!all.empty()) {
                 const auto end = all.find_first_of(L"\r\n");
@@ -803,6 +804,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         refreshMotion();
         island_.setPreferences(settings_);
         dropZone_.setEnabled(settings_.enabled(Feature::drop));
+        refreshCapture(false);
         refreshFullscreen();
         frame();
         return 0;

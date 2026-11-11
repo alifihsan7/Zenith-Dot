@@ -468,6 +468,7 @@ void Island::setAnimate(bool animate) {
 void Island::setPreferences(Settings const& settings) {
     const bool newFocus = settings.focusPreset != preferences_.focusPreset;
     const bool newBreak = settings.breakPreset != preferences_.breakPreset;
+    const bool hideClipboardPreview = preferences_.showClipboardPreviews && !settings.showClipboardPreviews;
     preferences_ = settings;
     if (newFocus) focusMinutes_ = settings.focusMinutes();
     if (newBreak) breakMinutes_ = settings.breakMinutes();
@@ -480,6 +481,11 @@ void Island::setPreferences(Settings const& settings) {
     const auto now = Clock::now();
     if (!settings.enabled(screen_) && !screens_.empty()) showScreen(screens_.front(), now);
     if (!settings.enabled(Screen::drop)) dropHover_ = false;
+    const auto dismiss = [&](IslandAlert const& alert) {
+        return !alertAllowed(alert.kind) || (hideClipboardPreview && alert.kind == IslandAlert::Kind::copy);
+    };
+    if (queued_ && dismiss(*queued_)) queued_.reset();
+    if (alert_ && dismiss(*alert_)) finishAlert(now);
     updatePill(now);
 }
 
@@ -2631,10 +2637,20 @@ void Island::drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float captu
 
 // ---- Alerts --------------------------------------------------------------------------------------
 
+bool Island::alertAllowed(IslandAlert::Kind kind) const {
+    switch (kind) {
+    case IslandAlert::Kind::copy: return preferences_.showClipboardBubble;
+    case IslandAlert::Kind::camera: return preferences_.showCameraIndicator;
+    case IslandAlert::Kind::microphone: return preferences_.showMicrophoneIndicator;
+    case IslandAlert::Kind::focusDone:
+    case IslandAlert::Kind::breakDone:
+    case IslandAlert::Kind::timerDone: return preferences_.enabled(Screen::timers);
+    default: return true;
+    }
+}
+
 void Island::notify(IslandAlert alert) {
-    if (suppressed_) return;
-    if (!preferences_.enabled(Screen::timers) && (alert.kind == IslandAlert::Kind::focusDone ||
-        alert.kind == IslandAlert::Kind::breakDone || alert.kind == IslandAlert::Kind::timerDone)) return;
+    if (suppressed_ || !alertAllowed(alert.kind)) return;
     const auto now = Clock::now();
     prepareText();
     const bool replacesSameKind = alert.kind == IslandAlert::Kind::copy || alert.meter ||
