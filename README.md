@@ -14,7 +14,9 @@ Scroll over the compact pill or anywhere in the open panel to move one tab at a 
 
 Short notices split off the pill as a liquid bubble, or grow out of the dot: plugging in or unplugging the charger, low battery at 20% and 10%, the end of a Focus session, and copying something (with a short preview). While the panel is open they show as a row at its top instead. Zenith ignores clipboard content marked as private by the source app.
 
-Open **Zenith Dot Settings** from the Start menu or choose **Settings** from the tray. The settings window can run on its own. From a portable build, run `ZenithDot.exe --settings`. **Add copied text to Drop Zone** is off by default. When enabled, the full text is available to drag out of Drop Zone until you remove it, clear the list, or exit. **Show clipboard previews** controls the copied text snippet separately. **Auto-add screenshots** controls whether clipboard images are staged. Both are on by default. **Start with Windows** manages the current user's Startup shortcut.
+Open **Zenith Dot Settings** from the Start menu or choose **Settings** from the tray. From a portable build, run `ZenithDot.exe --settings`. **General** manages startup. **Display** controls island animations and whether Zenith hides in fullscreen. **Features** contains the Drop Zone and Focus timer options. **About** shows the version and links to the project.
+
+**Add copied text to Drop Zone** is off by default. When enabled, the full text is available to drag out of Drop Zone until you remove it, clear the list, or exit. **Show clipboard previews** controls the copied text snippet separately. **Auto-add screenshots** controls whether clipboard images are staged. Both are on by default.
 
 When the panel closes, it shrinks to a pill. The pill stays visible while an activity is running and shrinks to the black dot when idle.
 

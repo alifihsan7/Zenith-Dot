@@ -1,6 +1,4 @@
 #include "settings.hpp"
-#include "browser_tabs.hpp"
-#include "resource.h"
 
 #include <windows.h>
 #include <shlobj.h>
@@ -18,7 +16,9 @@ constexpr DWORD autoAddScreenshotsBit = 2;
 constexpr DWORD showClipboardPreviewsBit = 4;
 constexpr wchar_t timerValue[] = L"TimerOptions";
 constexpr DWORD autoCycleBit = 1;
-constexpr wchar_t settingsTitle[] = L"Zenith Dot Settings";
+constexpr wchar_t displayValue[] = L"DisplayOptions";
+constexpr DWORD animateIslandBit = 1;
+constexpr DWORD hideInFullscreenBit = 2;
 
 std::optional<DWORD> read(wchar_t const* name) {
     DWORD value = 0;
@@ -33,77 +33,6 @@ bool write(wchar_t const* name, DWORD value) {
     return RegSetKeyValueW(HKEY_CURRENT_USER, settingsKey, name, REG_DWORD, &value, sizeof(value)) == ERROR_SUCCESS;
 }
 
-void showClipboardOptions(HWND dialog, Settings const& settings) {
-    CheckDlgButton(dialog, IDC_ADD_COPIED_TEXT, settings.autoAddText ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(dialog, IDC_ADD_SCREENSHOTS, settings.autoAddScreenshots ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(dialog, IDC_CLIPBOARD_PREVIEWS, settings.showClipboardPreviews ? BST_CHECKED : BST_UNCHECKED);
-}
-
-INT_PTR CALLBACK settingsDialog(HWND dialog, UINT message, WPARAM wparam, LPARAM lparam) {
-    if (message == WM_INITDIALOG) {
-        SetWindowLongPtrW(dialog, DWLP_USER, lparam);
-        const auto icon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_ZENITH_DOT));
-        if (icon) SendMessageW(dialog, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
-        showClipboardOptions(dialog, *reinterpret_cast<Settings const*>(lparam));
-        const auto shortcut = startupShortcut();
-        CheckDlgButton(dialog, IDC_START_WITH_WINDOWS, startupEnabled(shortcut) ? BST_CHECKED : BST_UNCHECKED);
-        EnableWindow(GetDlgItem(dialog, IDC_START_WITH_WINDOWS), !shortcut.empty());
-        return TRUE;
-    }
-    if (message == WM_CLOSE || (message == WM_COMMAND && (LOWORD(wparam) == IDOK || LOWORD(wparam) == IDCANCEL))) {
-        EndDialog(dialog, 0);
-        return TRUE;
-    }
-    if (message != WM_COMMAND || HIWORD(wparam) != BN_CLICKED) return FALSE;
-
-    const auto checked = [dialog](int control) { return IsDlgButtonChecked(dialog, control) == BST_CHECKED; };
-    const auto control = LOWORD(wparam);
-    if (control == IDC_START_WITH_WINDOWS) {
-        const auto shortcut = startupShortcut();
-        if (!setStartupEnabled(shortcut, checked(control))) {
-            CheckDlgButton(dialog, control, startupEnabled(shortcut) ? BST_CHECKED : BST_UNCHECKED);
-            MessageBoxW(dialog, L"Couldn’t update the Windows startup shortcut.", settingsTitle, MB_OK | MB_ICONWARNING);
-        }
-        return TRUE;
-    }
-    if (control != IDC_ADD_COPIED_TEXT && control != IDC_ADD_SCREENSHOTS && control != IDC_CLIPBOARD_PREVIEWS) {
-        return FALSE;
-    }
-
-    auto& settings = *reinterpret_cast<Settings*>(GetWindowLongPtrW(dialog, DWLP_USER));
-    auto updated = settings;
-    updated.autoAddText = checked(IDC_ADD_COPIED_TEXT);
-    updated.autoAddScreenshots = checked(IDC_ADD_SCREENSHOTS);
-    updated.showClipboardPreviews = checked(IDC_CLIPBOARD_PREVIEWS);
-    if (updated.saveClipboard()) {
-        settings = updated;
-        if (const auto overlay = FindWindowW(overlayWindowClass, nullptr)) {
-            PostMessageW(overlay, settingsChangedMessage, 0, 0);
-        }
-    } else {
-        showClipboardOptions(dialog, settings);
-        MessageBoxW(dialog, L"Couldn’t save Drop Zone settings.", settingsTitle, MB_OK | MB_ICONWARNING);
-    }
-    return TRUE;
-}
-
-}
-
-int runSettingsWindow(HINSTANCE instance) {
-    winrt::handle singleInstance{CreateMutexW(nullptr, FALSE, L"Local\\ZenithDot.Settings")};
-    const auto error = GetLastError();
-    if (!singleInstance) return 1;
-    if (error == ERROR_ALREADY_EXISTS) {
-        if (const auto existing = FindWindowW(L"#32770", settingsTitle)) {
-            SetForegroundWindow(existing);
-        }
-        return 0;
-    }
-    auto settings = Settings::load();
-    const auto result = DialogBoxParamW(instance, MAKEINTRESOURCEW(IDD_SETTINGS), nullptr, settingsDialog,
-                                       reinterpret_cast<LPARAM>(&settings));
-    if (result == -1) winrt::throw_last_error();
-    return static_cast<int>(result);
 }
 
 Settings Settings::load() {
@@ -114,6 +43,10 @@ Settings Settings::load() {
         settings.showClipboardPreviews = (*value & showClipboardPreviewsBit) != 0;
     }
     if (const auto value = read(timerValue)) settings.autoCycle = (*value & autoCycleBit) != 0;
+    if (const auto value = read(displayValue)) {
+        settings.animateIsland = (*value & animateIslandBit) != 0;
+        settings.hideInFullscreen = (*value & hideInFullscreenBit) != 0;
+    }
     return settings;
 }
 
@@ -125,6 +58,12 @@ bool Settings::saveClipboard() const {
 
 bool Settings::saveTimer() const {
     return write(timerValue, autoCycle ? autoCycleBit : 0);
+}
+
+bool Settings::saveDisplay() const {
+    const DWORD display = (animateIsland ? animateIslandBit : 0) |
+        (hideInFullscreen ? hideInFullscreenBit : 0);
+    return write(displayValue, display);
 }
 
 std::wstring startupShortcut() {

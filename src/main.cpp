@@ -295,13 +295,15 @@ void App::refreshPower() {
 void App::refreshMotion() {
     BOOL animations = TRUE;
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0);
-    island_.setAnimate(animations != FALSE);
+    island_.setAnimate(settings_.animateIsland && animations != FALSE);
 }
 
 bool App::refreshFullscreen() {
     const auto foreground = GetForegroundWindow();
-    if (foreground && (foreground == window_ || foreground == scratchpad_.window())) return false;
-    const bool fullscreen = foreground != dropZone_.previewWindow() && fullscreenOnPrimary(window_);
+    if (settings_.hideInFullscreen && foreground &&
+        (foreground == window_ || foreground == scratchpad_.window())) return false;
+    const bool fullscreen = settings_.hideInFullscreen &&
+        foreground != dropZone_.previewWindow() && fullscreenOnPrimary(window_);
     if (fullscreen == fullscreen_) return false;
     fullscreen_ = fullscreen;
     applyVisibility();
@@ -795,6 +797,10 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     }
     case settingsChangedMessage:
         settings_ = Settings::load();
+        island_.setAutoCycle(settings_.autoCycle);
+        refreshMotion();
+        refreshFullscreen();
+        frame();
         return 0;
     case trayMessage:
         if (LOWORD(lparam) == WM_CONTEXTMENU || LOWORD(lparam) == NIN_KEYSELECT ||

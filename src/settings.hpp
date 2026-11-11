@@ -14,10 +14,13 @@ struct Settings {
     bool autoAddScreenshots = true;
     bool showClipboardPreviews = true;
     bool autoCycle = false;   // Focus and Break follow each other automatically
+    bool animateIsland = true;
+    bool hideInFullscreen = true;
 
     static Settings load();
     bool saveClipboard() const;
     bool saveTimer() const;
+    bool saveDisplay() const;
 };
 
 std::wstring startupShortcut();
