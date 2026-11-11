@@ -1,8 +1,24 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
+#include <string>
 
 namespace zenith {
+
+enum class NetworkAccess { unknown, disconnected, local, limited, internet };
+enum class NetworkType { other, wifi, ethernet, cellular };
+
+struct NetworkStatus {
+    NetworkAccess access = NetworkAccess::unknown;
+    NetworkType type = NetworkType::other;
+    std::wstring name;
+    bool operator==(NetworkStatus const&) const = default;
+};
+
+NetworkStatus readNetwork();
+// A missing result means the status was unknown, unchanged, or the first known sample.
+std::optional<bool> updateInternetStatus(std::optional<bool>& lastOnline, NetworkAccess access);
 
 struct SystemStats {
     unsigned cpu = 0;

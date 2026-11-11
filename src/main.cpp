@@ -14,6 +14,7 @@
 #include <set>
 #include <shellapi.h>
 #include <windowsx.h>
+#include <winrt/Windows.Networking.Connectivity.h>
 
 namespace zenith {
 namespace {
@@ -23,10 +24,12 @@ using namespace std::chrono_literals;
 constexpr wchar_t appName[] = L"Zenith Dot";
 constexpr UINT trayMessage = WM_APP + 2;
 constexpr UINT redrawMessage = WM_APP + 3;
+constexpr UINT networkChangedMessage = WM_APP + 21;
 constexpr UINT_PTR powerTimer = 1;
 constexpr UINT_PTR frameTimer = 2;
 constexpr UINT_PTR fullscreenTimer = 3;
 constexpr UINT_PTR clipboardTimer = 5;
+constexpr UINT_PTR networkTimer = 6;
 static_assert(clipboardTimer != MediaMonitor::artworkTimer);
 constexpr UINT clipboardRetryInterval = 40;
 constexpr unsigned clipboardRetryLimit = 25;
@@ -58,6 +61,10 @@ private:
     void control(MediaCommand command);
     void run(IslandCommand const& command);
     void refreshPower();
+    void queueNetworkRefresh();
+    void startNetworkRefresh();
+    winrt::Windows::Foundation::IAsyncAction refreshNetwork();
+    void applyNetwork(NetworkStatus status);
     bool refreshPrayers();
     void refreshMotion();
     bool refreshFullscreen();
@@ -90,6 +97,10 @@ private:
     BluetoothMonitor bluetooth_;
     CaptureActivity capture_;
     SystemMonitor system_;
+    NetworkStatus network_;
+    std::optional<bool> lastOnline_;
+    winrt::Windows::Networking::Connectivity::NetworkInformation::NetworkStatusChanged_revoker networkChanged_;
+    winrt::Windows::Foundation::IAsyncAction networkRequest_{nullptr};
     Scratchpad scratchpad_;
     DropZone dropZone_;
     Settings settings_;
@@ -157,6 +168,15 @@ int App::run(HINSTANCE instance, std::optional<SettingsTest> test, Feature featu
     desktop_.start(window_);
     notifications_.refresh(window_, settings_.showAppNotifications);
     bluetooth_.start(window_);
+    try {
+        using winrt::Windows::Networking::Connectivity::NetworkInformation;
+        networkChanged_ = NetworkInformation::NetworkStatusChanged(winrt::auto_revoke, [window = window_](auto const&) {
+            PostMessageW(window, networkChangedMessage, 0, 0);
+        });
+    } catch (winrt::hresult_error const&) {
+        OutputDebugStringW(L"Zenith Dot could not subscribe to network status changes.\n");
+    }
+    startNetworkRefresh();
     island_.setAudioOutput(desktop_.audioOutput());
     island_.setWindowsNotificationsQuiet(desktop_.notificationsQuiet());
     refreshPrayers();
@@ -325,6 +345,40 @@ void App::refreshPower() {
         }
     }
     frame();
+}
+
+void App::queueNetworkRefresh() {
+    if (networkRequest_) networkRequest_.Cancel();
+    if (!SetTimer(window_, networkTimer, 1200, nullptr)) startNetworkRefresh();
+}
+
+void App::startNetworkRefresh() {
+    if (networkRequest_) networkRequest_.Cancel();
+    networkRequest_ = refreshNetwork();
+}
+
+winrt::Windows::Foundation::IAsyncAction App::refreshNetwork() {
+    const auto cancellation = co_await winrt::get_cancellation_token();
+    const winrt::apartment_context ui;
+    co_await winrt::resume_background();
+    auto status = readNetwork();
+    if (cancellation()) co_return;
+    co_await ui;
+    if (!cancellation()) applyNetwork(std::move(status));
+}
+
+void App::applyNetwork(NetworkStatus status) {
+    if (network_ == status) return;
+    network_ = std::move(status);
+    island_.setNetwork(network_);
+    const auto online = updateInternetStatus(lastOnline_, network_.access);
+    if (online && !suppressed()) {
+        island_.notify({IslandAlert::Kind::connection, *online ? L"Back online" : L"Connection lost",
+                        L"", *online ? 0x91caffu : 0xff9f0au, 2});
+        frame();
+    } else if (island_.wantsSystemStats()) {
+        frame();
+    }
 }
 
 bool App::refreshPrayers() {
@@ -702,11 +756,20 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         frame();
         return 0;
     case WM_POWERBROADCAST:
+        if (wparam == PBT_APMRESUMEAUTOMATIC) queueNetworkRefresh();
         refreshPower();
         return TRUE;
+    case networkChangedMessage:
+        queueNetworkRefresh();
+        return 0;
     case WM_TIMER:
         if (wparam == MediaMonitor::artworkTimer && monitor_) monitor_->retryArtwork();
+        if (wparam == networkTimer) {
+            KillTimer(window_, networkTimer);
+            startNetworkRefresh();
+        }
         if (wparam == powerTimer) {
+            if (!networkChanged_) startNetworkRefresh();
             if (!clipboardListening_) clipboardListening_ = AddClipboardFormatListener(window_) != FALSE;
             const bool changed = island_.setWindowsNotificationsQuiet(desktop_.notificationsQuiet());
             notifications_.refresh(window_, settings_.showAppNotifications);
@@ -886,6 +949,9 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         KillTimer(window_, frameTimer);
         KillTimer(window_, fullscreenTimer);
         KillTimer(window_, clipboardTimer);
+        KillTimer(window_, networkTimer);
+        networkChanged_.revoke();
+        if (networkRequest_) networkRequest_.Cancel();
         desktop_.stop();
         notifications_.stop();
         bluetooth_.stop();

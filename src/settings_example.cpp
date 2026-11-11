@@ -90,6 +90,7 @@ SettingsExample::SettingsExample(SettingsTest test, Feature feature, Settings co
         if (feature == Feature::scratch) island_.setScratchpad({L"Example note"});
         if (feature == Feature::system) {
             island_.setSystem({12, 45});
+            island_.setNetwork({NetworkAccess::internet, NetworkType::wifi, L"Home Wi-Fi"});
             island_.setAudioOutput(L"Speakers");
         }
         showFeature(feature, start_);

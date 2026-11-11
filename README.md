@@ -36,7 +36,11 @@ The accent colour follows the current cover. The tray menu has media controls, *
 
 Choose Jakarta, Makassar, or Jayapura under **Prayer timetable city** to show the five daily prayer times on an arc in the island’s Prayer tab. The arc shows the selected city’s local time, highlights the next prayer, and counts down to it, including tomorrow’s Subuh. Zenith calculates estimated times offline using the selected city’s time zone. Local official timetables can differ. Turn off **Prayer reminders** to keep the timetable visible without showing reminders.
 
-### Notifications from Windows apps
+### Connection status
+
+The System panel shows the active connection and whether Windows reports internet access. Wi-Fi includes the network name when available. Zenith shows **Connection lost** or **Back online** after a change in internet availability. These alerts follow the island’s Do Not Disturb setting.
+
+## Notifications from Windows apps
 
 The MSIX build can show the app name and notification title for incoming Windows toasts. The user enables it with **Settings → Notifications → Connect Windows apps** and grants notification access in Windows. Zenith keeps the preview in memory while it is shown. Use **Test notification** to show a sample Clock alert on the island before connecting Windows apps.
 

@@ -528,6 +528,10 @@ void Island::setPrayerSchedule(std::optional<PrayerSchedule> const& schedule) {
     prayerSchedule_ = schedule;
 }
 
+void Island::setNetwork(NetworkStatus const& status) {
+    network_ = status;
+}
+
 void Island::setSystem(SystemStats const& stats) {
     system_ = stats;
 }
@@ -2484,6 +2488,27 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
     const auto level = power_.percent ? std::to_wstring(*power_.percent) + L"%" : std::wstring{};
     text(status, bodyFont_.get(), box(x, y + 96.4f, left - 42, 17), rgb(readoutColor));
     text(level, strongEndFont_.get(), box(x + left - 40, y + 96.4f, 40, 17), rgb(readoutColor));
+    std::wstring network;
+    std::wstring_view connectivity;
+    switch (network_.access) {
+    case NetworkAccess::unknown: network = L"Network status unavailable"; break;
+    case NetworkAccess::disconnected: network = L"No connection"; break;
+    case NetworkAccess::local: connectivity = L"No internet"; break;
+    case NetworkAccess::limited: connectivity = L"Limited internet"; break;
+    case NetworkAccess::internet: connectivity = L"Online"; break;
+    }
+    if (!connectivity.empty()) {
+        switch (network_.type) {
+        case NetworkType::wifi: network = L"Wi-Fi"; break;
+        case NetworkType::ethernet: network = L"Ethernet"; break;
+        case NetworkType::cellular: network = L"Cellular"; break;
+        case NetworkType::other: network = L"Network"; break;
+        }
+        if (!network_.name.empty()) network += L" · " + network_.name;
+        text(connectivity, bodyFont_.get(), box(x, y + 133, left, 16), rgb(mutedColor));
+    }
+    text(network, bodyFont_.get(), box(x, y + 116, left, 17), rgb(readoutColor));
+
     const auto notificationLabel = !windowsNotificationsQuiet_ ? L"Notification status unavailable" :
         *windowsNotificationsQuiet_ ? L"Do Not Disturb on" : L"Do Not Disturb off";
     drawButton(box(x, y + systemContentBottom - 25, left, 25), notificationLabel, Hit::notificationSettings, record);
@@ -2738,7 +2763,7 @@ void Island::notify(IslandAlert alert) {
     if (suppressed_ || !alertAllowed(alert.kind)) return;
     const auto now = Clock::now();
     prepareText();
-    const bool replacesSameKind = alert.kind == IslandAlert::Kind::copy ||
+    const bool replacesSameKind = alert.kind == IslandAlert::Kind::copy || alert.kind == IslandAlert::Kind::connection ||
                                   alert.kind == IslandAlert::Kind::capsLock || alert.kind == IslandAlert::Kind::numLock;
     if (alert_ && alert_->kind == alert.kind && replacesSameKind) {
         if (alertInline_) {
@@ -3016,6 +3041,15 @@ void Island::drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_CO
         crescent.move(pt(10.5f, 2), false).arc(pt(13.5f, 11), 6.2f, true, false)
             .arc(pt(10.5f, 2), 5.4f, false, true);
         target_->DrawGeometry(crescent.finish().get(), ink(color), 1.5f, roundStroke_.get());
+        break;
+    }
+    case IslandAlert::Kind::connection: {
+        PathBuilder signal(graphics_.get());
+        signal.move(pt(1.5f, 5), false).curve(pt(5, 1.5f), pt(11, 1.5f), pt(14.5f, 5));
+        signal.move(pt(4, 8), false).curve(pt(6, 6), pt(10, 6), pt(12, 8));
+        signal.move(pt(6, 10.5f), false).curve(pt(7, 9.5f), pt(9, 9.5f), pt(10, 10.5f));
+        target_->DrawGeometry(signal.finish().get(), ink(color), 1.4f, roundStroke_.get());
+        target_->FillEllipse(D2D1::Ellipse(pt(8, 13.3f), 1.1f, 1.1f), ink(color));
         break;
     }
     case IslandAlert::Kind::notification: {

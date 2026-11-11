@@ -43,7 +43,7 @@ struct IslandCommand {
 // A short notice that splits off the pill as a liquid bubble (or shows inside the open panel).
 struct IslandAlert {
     enum class Kind { copy, charging, battery, lowBattery, focusDone, breakDone, timerDone,
-                      microphone, camera, capsLock, numLock, bluetooth, bluetoothAudio, prayer, notification };
+                      microphone, camera, capsLock, numLock, bluetooth, bluetoothAudio, prayer, notification, connection };
     Kind kind = Kind::copy;
     std::wstring title;
     std::wstring value;
@@ -69,6 +69,7 @@ public:
     void setMedia(MediaState const& media);
     void setPower(PowerState const& power);
     void setSystem(SystemStats const& stats);
+    void setNetwork(NetworkStatus const& status);
     void setPrayerSchedule(std::optional<PrayerSchedule> const& schedule);
     void setAudioOutput(std::wstring const& output);
     void setAppVolumes(std::vector<AppVolume> apps);
@@ -250,6 +251,7 @@ private:
     MediaState media_;
     PowerState power_;
     SystemStats system_;
+    NetworkStatus network_;
     std::optional<PrayerSchedule> prayerSchedule_;
     std::wstring audioOutput_;
     std::vector<AppVolume> appVolumes_;
