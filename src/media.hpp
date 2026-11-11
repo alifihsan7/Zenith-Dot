@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Media.Control.h>
+#include <winrt/Windows.Storage.Streams.h>
 
 #include <chrono>
 #include <cstdint>
@@ -91,6 +92,9 @@ private:
     void updateState();
     void requestMetadata();
     winrt::Windows::Foundation::IAsyncAction readMetadata();
+    winrt::Windows::Foundation::IAsyncAction readArtwork(
+        winrt::Windows::Storage::Streams::IRandomAccessStreamReference thumbnail, unsigned revision);
+    void scheduleArtworkRetry(unsigned revision);
     void restoreArtwork();
     void rememberArtwork();
 
@@ -109,6 +113,7 @@ private:
     winrt::Windows::Foundation::DateTime timelineUpdated_{};
     unsigned metadataRevision_ = 0;
     unsigned artworkRetries_ = 0;
+    winrt::Windows::Foundation::IAsyncAction artworkRead_{nullptr};
     std::vector<Artwork> artwork_;
     bool readingMetadata_ = false;
     bool stopped_ = false;
