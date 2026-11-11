@@ -8,7 +8,6 @@
 #include <dwrite.h>
 #include <dwmapi.h>
 #include <shellapi.h>
-#include <wincodec.h>
 #include <winrt/base.h>
 
 #include <algorithm>
@@ -115,6 +114,38 @@ constexpr wchar_t const* breakChoices[]{L"5 minutes", L"10 minutes", L"15 minute
 constexpr int choiceControls[]{IDC_PILL_WIDTH, IDC_ISLAND_SIZE, IDC_ACCENT_MODE, IDC_CUSTOM_ACCENT,
     IDC_PAUSE_DELAY, IDC_FOCUS_DURATION, IDC_BREAK_DURATION};
 
+struct TestButton {
+    int control;
+    SettingsTest test;
+};
+
+constexpr int firstTestButton = 1200;
+constexpr TestButton testButtons[]{
+    {IDC_PILL_WIDTH, SettingsTest::appearance},
+    {IDC_ISLAND_SIZE, SettingsTest::appearance},
+    {IDC_ACCENT_MODE, SettingsTest::appearance},
+    {IDC_CUSTOM_ACCENT, SettingsTest::appearance},
+    {IDC_ANIMATE_ISLAND, SettingsTest::appearance},
+    {IDC_SHOW_WAVEFORM, SettingsTest::waveform},
+    {IDC_PILL_LYRICS, SettingsTest::lyrics},
+    {IDC_PAUSE_DELAY, SettingsTest::pause},
+    {IDC_FOCUS_DURATION, SettingsTest::focus},
+    {IDC_BREAK_DURATION, SettingsTest::resting},
+    {IDC_AUTO_CYCLE, SettingsTest::cycle},
+    {IDC_ADD_COPIED_TEXT, SettingsTest::copiedText},
+    {IDC_ADD_SCREENSHOTS, SettingsTest::screenshot},
+    {IDC_CLIPBOARD_BUBBLE, SettingsTest::copied},
+    {IDC_CLIPBOARD_PREVIEWS, SettingsTest::copied},
+    {IDC_CAMERA_INDICATOR, SettingsTest::camera},
+    {IDC_MICROPHONE_INDICATOR, SettingsTest::microphone},
+    {IDC_FEATURE_ENABLED, SettingsTest::feature},
+    {IDC_FEATURE_DOWN, SettingsTest::order},
+};
+
+bool isTestButton(int id) {
+    return id >= firstTestButton && id < firstTestButton + static_cast<int>(std::size(testButtons));
+}
+
 std::span<wchar_t const* const> choices(int id) {
     switch (id) {
     case IDC_PILL_WIDTH: return widthChoices;
@@ -168,7 +199,6 @@ public:
     void fill(RECT area, COLORREF value);
     void rounded(D2D1_RECT_F area, float radius, D2D1_COLOR_F value);
     void focus(RECT area, float radius, COLORREF value);
-    void image(HMODULE module, int resource, RECT area, float scale);
     void text(RECT area, wchar_t const* value, IDWriteTextFormat* font, D2D1_COLOR_F ink);
     IDWriteTextFormat* body() const { return body_.get(); }
     IDWriteTextFormat* strong() const { return strong_.get(); }
@@ -179,8 +209,6 @@ private:
     winrt::com_ptr<IDWriteFactory> writing_;
     winrt::com_ptr<ID2D1DCRenderTarget> target_;
     winrt::com_ptr<ID2D1SolidColorBrush> brush_;
-    winrt::com_ptr<IWICImagingFactory> imaging_;
-    std::array<winrt::com_ptr<ID2D1Bitmap>, IDR_EXAMPLE_CLIPBOARD - IDR_EXAMPLE_DOT + 1> images_;
     winrt::com_ptr<IDWriteTextFormat> body_, strong_, heading_;
 };
 
@@ -225,42 +253,9 @@ bool Canvas::begin(HDC dc, RECT area, COLORREF clear) {
 
 void Canvas::end() {
     if (FAILED(target_->EndDraw())) {
-        for (auto& bitmap : images_) bitmap = nullptr;
         brush_ = nullptr;
         target_ = nullptr;
     }
-}
-
-void Canvas::image(HMODULE module, int resource, RECT area, float scale) {
-    auto& bitmap = images_[resource - IDR_EXAMPLE_DOT];
-    if (!bitmap) {
-        if (!imaging_ && FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                                IID_PPV_ARGS(imaging_.put())))) return;
-        const auto handle = FindResourceW(module, MAKEINTRESOURCEW(resource), RT_RCDATA);
-        if (!handle) return;
-        const auto memory = LoadResource(module, handle);
-        auto* bytes = memory ? static_cast<BYTE*>(LockResource(memory)) : nullptr;
-        if (!bytes) return;
-        winrt::com_ptr<IWICStream> stream;
-        winrt::com_ptr<IWICBitmapDecoder> decoder;
-        winrt::com_ptr<IWICBitmapFrameDecode> frame;
-        winrt::com_ptr<IWICFormatConverter> converter;
-        if (FAILED(imaging_->CreateStream(stream.put())) ||
-            FAILED(stream->InitializeFromMemory(bytes, SizeofResource(module, handle))) ||
-            FAILED(imaging_->CreateDecoderFromStream(stream.get(), nullptr, WICDecodeMetadataCacheOnLoad, decoder.put())) ||
-            FAILED(decoder->GetFrame(0, frame.put())) ||
-            FAILED(imaging_->CreateFormatConverter(converter.put())) ||
-            FAILED(converter->Initialize(frame.get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
-                                         nullptr, 0, WICBitmapPaletteTypeCustom)) ||
-            FAILED(target_->CreateBitmapFromWicBitmap(converter.get(), bitmap.put()))) return;
-    }
-    const auto size = bitmap->GetSize();
-    const float fit = std::min({scale, (area.right - area.left) / size.width, (area.bottom - area.top) / size.height});
-    const float width = size.width * fit;
-    const float height = size.height * fit;
-    const float x = (area.left + area.right - width) / 2;
-    const float y = (area.top + area.bottom - height) / 2;
-    target_->DrawBitmap(bitmap.get(), D2D1::RectF(x, y, x + width, y + height));
 }
 
 void Canvas::fill(RECT area, COLORREF value) {
@@ -297,9 +292,9 @@ private:
     void sync();
     bool command(int id);
     bool commandChoice(int id);
+    void runTest(SettingsTest test);
     void showControls();
     void openDetail(int id);
-    void drawExamples();
     unsigned currentChoice(int id) const;
     Feature feature() const { return static_cast<Feature>(detail_ - IDC_FEATURE_MEDIA); }
     void redrawMotion();
@@ -315,7 +310,6 @@ private:
     int px(int value) const { return MulDiv(value, dpi_, 96); }
 
     HWND window_{};
-    HMODULE module_{};
     HICON icon_{};
     Canvas canvas_;
     UINT dpi_ = 96;
@@ -335,7 +329,6 @@ void SettingsWindow::setDpi(UINT dpi) {
 
 void SettingsWindow::initialize(HWND window) {
     window_ = window;
-    module_ = reinterpret_cast<HMODULE>(GetWindowLongPtrW(window, GWLP_HINSTANCE));
     setDpi(GetDpiForWindow(window));
     BOOL motion = TRUE;
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &motion, 0);
@@ -356,6 +349,16 @@ void SettingsWindow::initialize(HWND window) {
     for (const int id : {IDC_SETTINGS_GITHUB, IDC_FEATURE_BACK, IDC_FEATURE_UP, IDC_FEATURE_DOWN,
                         IDC_FEATURE_MEDIA, IDC_FEATURE_TIMERS, IDC_FEATURE_SCRATCH, IDC_FEATURE_DROP, IDC_FEATURE_SYSTEM}) {
         SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
+    }
+    const auto instance = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(window, GWLP_HINSTANCE));
+    for (size_t i = 0; i < std::size(testButtons); ++i) {
+        wchar_t label[96]{};
+        GetWindowTextW(GetDlgItem(window, testButtons[i].control), label, ARRAYSIZE(label));
+        const auto name = testButtons[i].test == SettingsTest::order ? L"Test feature order" : L"Test " + std::wstring(label);
+        const auto id = firstTestButton + static_cast<int>(i);
+        const auto button = CreateWindowExW(0, L"Button", name.c_str(), WS_CHILD | WS_TABSTOP | BS_OWNERDRAW,
+            0, 0, 0, 0, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
+        if (button) SetWindowSubclass(button, optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
     }
     sync();
 }
@@ -392,7 +395,7 @@ void SettingsWindow::showControls() {
             appearance && (id != IDC_CUSTOM_ACCENT || settings_.accentMode == 2);
         show(id, visible);
     }
-    const int motionTop = settings_.accentMode == 2 ? 263 : 236;
+    const int motionTop = settings_.accentMode == 2 ? 178 : 151;
     for (const auto id : {IDC_ANIMATE_ISLAND, IDC_HIDE_FULLSCREEN}) {
         const int y = motionTop + (id == IDC_HIDE_FULLSCREEN ? 32 : 0);
         const auto bounds = units(144, y, 456, y + 30);
@@ -421,7 +424,44 @@ void SettingsWindow::showControls() {
     }
     show(IDC_SETTINGS_GITHUB, page_ == IDC_SETTINGS_ABOUT);
     EnableWindow(GetDlgItem(window_, IDC_CLIPBOARD_PREVIEWS), settings_.showClipboardBubble);
+    const auto column = units(410, 0, 456, 0);
+    for (size_t i = 0; i < std::size(testButtons); ++i) {
+        const auto control = GetDlgItem(window_, testButtons[i].control);
+        const auto button = GetDlgItem(window_, firstTestButton + static_cast<int>(i));
+        const bool visible = (GetWindowLongPtrW(control, GWL_STYLE) & WS_VISIBLE) != 0;
+        if (visible) {
+            RECT row{};
+            GetWindowRect(control, &row);
+            MapWindowPoints(nullptr, window_, reinterpret_cast<POINT*>(&row), 2);
+            SetWindowPos(control, nullptr, row.left, row.top, column.left - px(8) - row.left, row.bottom - row.top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+            const auto height = std::min<LONG>(row.bottom - row.top, px(33));
+            SetWindowPos(button, control, column.left, (row.top + row.bottom - height) / 2,
+                         column.right - column.left, height, SWP_NOACTIVATE);
+        }
+        ShowWindow(button, visible ? SW_SHOW : SW_HIDE);
+    }
     RedrawWindow(window_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+}
+
+void SettingsWindow::runTest(SettingsTest test) {
+    const auto target = detail_ ? feature() : Feature::media;
+    if (const auto overlay = FindWindowW(overlayWindowClass, nullptr)) {
+        DWORD_PTR accepted = 0;
+        if (SendMessageTimeoutW(overlay, settingsTestMessage, static_cast<WPARAM>(test), static_cast<LPARAM>(target),
+                                SMTO_ABORTIFHUNG, 1500, &accepted) && accepted) return;
+        MessageBoxW(window_, L"Restart Zenith Dot with this build to run the test.", title, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    std::wstring executable(32768, L'\0');
+    const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    const auto args = L"--test=" + std::to_wstring(static_cast<unsigned>(test)) + L"," +
+        std::to_wstring(static_cast<unsigned>(target));
+    if (!length || length >= executable.size() ||
+        reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", executable.c_str(), args.c_str(),
+                                               nullptr, SW_SHOWNOACTIVATE)) <= 32) {
+        MessageBoxW(window_, L"Couldn’t start Zenith Dot to run the test.", title, MB_OK | MB_ICONWARNING);
+    }
 }
 
 void SettingsWindow::sync() {
@@ -495,6 +535,10 @@ bool SettingsWindow::commandChoice(int id) {
 }
 
 bool SettingsWindow::command(int id) {
+    if (isTestButton(id)) {
+        runTest(testButtons[id - firstTestButton].test);
+        return true;
+    }
     for (const auto& page : pages) {
         if (id == page.id) {
             selectPage(id);
@@ -573,7 +617,7 @@ void SettingsWindow::redrawMotion() {
     const bool pageMoving = animate_ && now - pageStart_ < pageDuration;
     bool moving = pageMoving;
     if (pageStart_ != Clock::time_point{}) {
-        auto content = units(122, 0, 478, 337);
+        auto content = units(122, 0, 478, 288);
         InvalidateRect(window_, &content, FALSE);
         for (const int id : choiceControls) InvalidateRect(GetDlgItem(window_, id), nullptr, FALSE);
         for (int id = IDC_FEATURE_MEDIA; id <= IDC_FEATURE_SYSTEM; ++id)
@@ -590,30 +634,6 @@ void SettingsWindow::redrawMotion() {
     }
     if (!pageMoving) pageStart_ = {};
     if (!moving) KillTimer(window_, motionTimer);
-}
-
-void SettingsWindow::drawExamples() {
-    constexpr COLORREF desktop = RGB(34, 46, 63);
-    constexpr int featureImages[]{IDR_EXAMPLE_MEDIA, IDR_EXAMPLE_TIMERS, IDR_EXAMPLE_SCRATCH,
-                                  IDR_EXAMPLE_DROP, IDR_EXAMPLE_SYSTEM};
-    const auto exampleArea = units(144, 62, 456, 147);
-    canvas_.rounded(rect(exampleArea), static_cast<float>(px(12)), color(desktop));
-    const float scale = dpi_ / 96.0f;
-    if (detail_) {
-        canvas_.image(module_, featureImages[static_cast<unsigned>(feature())], units(153, 66, 447, 143), scale);
-    } else if (page_ == IDC_SETTINGS_PRIVACY) {
-        canvas_.image(module_, IDR_EXAMPLE_CLIPBOARD, units(153, 76, 294, 119), scale);
-        canvas_.image(module_, IDR_EXAMPLE_PRIVACY, units(306, 76, 447, 119), scale);
-        canvas_.text(units(163, 121, 294, 137), L"Clipboard", canvas_.body(), color(muted));
-        canvas_.text(units(316, 121, 447, 137), L"Camera and microphone", canvas_.body(), color(muted));
-    } else {
-        canvas_.image(module_, IDR_EXAMPLE_DOT, units(151, 66, 197, 126), scale);
-        canvas_.image(module_, IDR_EXAMPLE_PILL, units(199, 66, 286, 126), scale);
-        canvas_.image(module_, IDR_EXAMPLE_MEDIA, units(287, 66, 448, 126), scale);
-        canvas_.text(units(161, 128, 194, 142), L"Dot", canvas_.body(), color(muted));
-        canvas_.text(units(218, 128, 284, 142), L"Pill", canvas_.body(), color(muted));
-        canvas_.text(units(316, 128, 436, 142), L"Panel", canvas_.body(), color(muted));
-    }
 }
 
 void SettingsWindow::paint(HDC dc) {
@@ -637,13 +657,12 @@ void SettingsWindow::paint(HDC dc) {
         const auto position = std::ranges::find(settings_.features, feature()) - settings_.features.begin();
         const auto order = L"Feature bar position  " + std::to_wstring(position + 1) + L" of " +
             std::to_wstring(settings_.features.size());
-        label(units(145, 296, 323, 319), order.c_str(), canvas_.body(), muted);
+        label(units(145, 211, 276, 234), order.c_str(), canvas_.body(), muted);
     } else {
         label(units(144, 12, 456, 38), page.title, canvas_.heading(), foreground);
         label(units(145, 39, 456, 53), page.description, canvas_.body(), muted);
         if (page.group) label(units(145, 61, 456, 75), page.group, canvas_.strong(), foreground);
     }
-    if (detail_ || page_ == IDC_SETTINGS_DISPLAY || page_ == IDC_SETTINGS_PRIVACY) drawExamples();
     if (page_ == IDC_SETTINGS_ABOUT) {
         label(units(145, 70, 418, 92), L"Version " ZENITH_VERSION_TEXT, canvas_.strong(), foreground);
     }
@@ -678,7 +697,10 @@ void SettingsWindow::drawOption(HWND control, HDC dc, Option const& option) {
     if (!listToggle) {
         canvas_.text({left, px(5), textRight, middle + px(1)}, label, canvas_.strong(),
                      blend(surface, enabled ? foreground : muted, phase));
-        canvas_.text({left, middle, textRight, row.bottom - px(6)}, option.description, canvas_.body(),
+        const auto* description = option.id == IDC_START_WITH_WINDOWS
+            ? (toggles_[&option - options].to > 0 ? L"Enabled · Launch at sign-in." : L"Disabled · Launch manually.")
+            : option.description;
+        canvas_.text({left, middle, textRight, row.bottom - px(6)}, description, canvas_.body(),
                      blend(surface, muted, phase));
     }
     if (GetFocus() == control) {
@@ -695,7 +717,7 @@ void SettingsWindow::drawButton(DRAWITEMSTRUCT const& item) {
     const bool nav = page != std::end(pages);
     const bool active = nav && id == page_;
     const bool featureRow = id >= IDC_FEATURE_MEDIA && id <= IDC_FEATURE_SYSTEM;
-    const bool compactButton = id == IDC_FEATURE_BACK ||
+    const bool compactButton = isTestButton(id) || id == IDC_FEATURE_BACK ||
         id == IDC_FEATURE_UP || id == IDC_FEATURE_DOWN;
     const bool disabled = (item.itemState & ODS_DISABLED) != 0;
     const bool hot = !disabled && hovered(item.hwndItem);
@@ -714,7 +736,7 @@ void SettingsWindow::drawButton(DRAWITEMSTRUCT const& item) {
     wchar_t text[96]{};
     GetWindowTextW(item.hwndItem, text, ARRAYSIZE(text));
     const auto values = choices(id);
-    const auto* label = nav ? (id == IDC_SETTINGS_PRIVACY ? L"Privacy" : page->title) : text;
+    const auto* label = isTestButton(id) ? L"Test" : nav ? (id == IDC_SETTINGS_PRIVACY ? L"Privacy" : page->title) : text;
     area.left += px(compactButton ? 8 : 12);
     const auto ink = active ? accent : disabled || nav ? muted : foreground;
     canvas_.text(area, label, compactButton ? canvas_.body() : canvas_.strong(), blend(base, ink, phase));

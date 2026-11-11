@@ -26,6 +26,8 @@
 
 namespace zenith {
 
+class SettingsExample;
+
 // Something a click on the island asks the app to do.
 struct IslandCommand {
     enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, editScratchpad,
@@ -108,6 +110,7 @@ public:
     bool overControl() const;
 
 private:
+    friend class SettingsExample;
     enum class Hit { none, pill, previous, toggle, next, timeline, cover, sourcePicker, sourceMenu, source, navMedia, navTimers,
                      navScratch, navSystem, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
                      timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, scratchEdit,

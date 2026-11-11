@@ -14,7 +14,9 @@ Scroll over the compact pill or anywhere in the open panel to move one tab at a 
 
 Short notices split off the pill as a liquid bubble, or grow out of the dot: plugging in or unplugging the charger, low battery at 20% and 10%, the end of a Focus session, and copying something (with a short preview). While the panel is open they show as a row at its top instead. Zenith ignores clipboard content marked as private by the source app.
 
-Open **Zenith Dot Settings** from the Start menu or choose **Settings** from the tray. From a portable build, run `ZenithDot.exe --settings`. **Appearance** shows screenshots of the island and controls its scale, minimum media pill width, accent, motion, and fullscreen behavior. **Features** lets you show, hide, and reorder the five feature tabs. Each detail page includes a screenshot captured with sample data. Now Playing controls the waveform, pill lyrics, and compact pause delay. Timers controls the default Focus and Break durations. Drop Zone controls what is captured from the clipboard.
+Open **Zenith Dot Settings** from the Start menu or choose **Settings** from the tray. From a portable build, run `ZenithDot.exe --settings`. **Appearance** controls the island's scale, minimum media pill width, accent, motion, and fullscreen behavior. **Features** lets you show, hide, and reorder the five feature tabs. Now Playing controls the waveform, pill lyrics, and compact pause delay. Timers controls the default Focus and Break durations. Drop Zone controls what is captured from the clipboard.
+
+Click **Test** beside an appearance or feature setting to see a sample in the island at the top of the screen. The island returns to its live state automatically. Clipboard and device indicator tests use sample data.
 
 **Add copied text to Drop Zone** is off by default. When enabled, the full text is available to drag out of Drop Zone until you remove it, clear the list, or exit. **Auto-add screenshots** stages clipboard images and is on by default. In **Privacy**, you can turn off the Copied bubble or its text snippet independently of Drop Zone staging. The camera and microphone indicators each have their own switch.
 

@@ -7,6 +7,16 @@
 namespace zenith {
 
 inline constexpr UINT settingsChangedMessage = WM_APP + 13;
+inline constexpr UINT settingsTestMessage = WM_APP + 14;
+
+enum class SettingsTest : unsigned {
+    appearance = 1, waveform, lyrics, pause, focus, resting, cycle, copied, copiedText, screenshot,
+    camera, microphone, feature, order
+};
+
+constexpr bool validSettingsTest(unsigned test) {
+    return test >= static_cast<unsigned>(SettingsTest::appearance) && test <= static_cast<unsigned>(SettingsTest::order);
+}
 
 int runSettingsWindow(HINSTANCE instance);
 

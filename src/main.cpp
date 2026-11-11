@@ -7,6 +7,7 @@
 #include "island.hpp"
 #include "resource.h"
 #include "settings.hpp"
+#include "settings_example.hpp"
 #include <hidusage.h>
 #include <ole2.h>
 #include <set>
@@ -44,12 +45,14 @@ struct LockKey {
 
 class App {
 public:
-    int run(HINSTANCE instance);
+    int run(HINSTANCE instance, std::optional<SettingsTest> test, Feature feature);
 
 private:
     static LRESULT CALLBACK dispatch(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
     LRESULT handle(UINT message, WPARAM wparam, LPARAM lparam);
     void frame();
+    void scheduleFrames(UINT interval);
+    void startSettingsTest(SettingsTest test, Feature feature);
     void updateMedia();
     void control(MediaCommand command);
     void run(IslandCommand const& command);
@@ -91,6 +94,7 @@ private:
     Settings settings_;
     std::chrono::steady_clock::time_point systemSampled_{};
     Island island_;
+    std::optional<SettingsExample> example_;
     bool tracking_ = false;
     bool fullscreen_ = false;
     bool hidden_ = false;
@@ -107,7 +111,7 @@ private:
     };
 };
 
-int App::run(HINSTANCE instance) {
+int App::run(HINSTANCE instance, std::optional<SettingsTest> test, Feature feature) {
     settings_ = Settings::load();
     WNDCLASSW type{};
     type.lpfnWndProc = dispatch;
@@ -163,6 +167,7 @@ int App::run(HINSTANCE instance) {
         updateMedia();
     });
     monitor_->start();
+    if (test) startSettingsTest(*test, feature);
 
     MSG message{};
     BOOL result;
@@ -175,13 +180,23 @@ int App::run(HINSTANCE instance) {
 }
 
 void App::frame() {
+    const auto now = Island::Clock::now();
+    if (example_) {
+        if (!example_->finished(now)) {
+            example_->draw(window_, now);
+            if (!IsWindowVisible(window_)) ShowWindow(window_, SW_SHOWNOACTIVATE);
+            scheduleFrames(example_->frameInterval(now));
+            return;
+        }
+        example_.reset();
+        applyVisibility();
+    }
     island_.tick();
     if (scratchpad_.window() && !island_.scratchEditorRect()) {
         scratchpad_.close();
         island_.setScratchEditing(false);
     }
     if (lyrics_) lyrics_->update(media_, island_.wantsLyrics(), island_.wantsLyricPill());
-    const auto now = std::chrono::steady_clock::now();
     if (island_.wantsSystemStats() && now - systemSampled_ >= 1s) {
         island_.setSystem(system_.sample());
         island_.setAppVolumes(desktop_.appVolumes());
@@ -194,11 +209,23 @@ void App::frame() {
         if (const auto bounds = island_.scratchEditorRect()) scratchpad_.place(*bounds);
     }
     if (visible != shown) ShowWindow(window_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
-    const UINT interval = island_.frameInterval();
+    scheduleFrames(island_.frameInterval());
+}
+
+void App::scheduleFrames(UINT interval) {
     if (interval == frameInterval_) return;
     if (frameInterval_ != 0) KillTimer(window_, frameTimer);
     frameInterval_ = interval;
     if (frameInterval_ != 0) SetTimer(window_, frameTimer, frameInterval_, nullptr);
+}
+
+void App::startSettingsTest(SettingsTest test, Feature feature) {
+    BOOL animations = TRUE;
+    SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0);
+    if (GetCapture() == window_) ReleaseCapture();
+    example_.emplace(test, feature, settings_, settings_.animateIsland && animations != FALSE);
+    applyVisibility();
+    frame();
 }
 
 void App::updateMedia() {
@@ -315,7 +342,7 @@ void App::applyVisibility() {
     const bool hide = suppressed();
     island_.setSuppressed(hide);
     const auto style = GetWindowLongPtrW(window_, GWL_EXSTYLE);
-    SetWindowLongPtrW(window_, GWL_EXSTYLE, hide ? style | WS_EX_TRANSPARENT : style & ~WS_EX_TRANSPARENT);
+    SetWindowLongPtrW(window_, GWL_EXSTYLE, hide || example_ ? style | WS_EX_TRANSPARENT : style & ~WS_EX_TRANSPARENT);
     if (hide && GetCapture() == window_) ReleaseCapture();
 }
 
@@ -740,7 +767,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         }
         break;
     case WM_MOUSEMOVE:
-        if (suppressed()) return 0;
+        if (suppressed() || example_) return 0;
         if (!tracking_) {
             TRACKMOUSEEVENT tracking{sizeof(TRACKMOUSEEVENT), TME_LEAVE, window_, 0};
             tracking_ = TrackMouseEvent(&tracking) != FALSE;
@@ -753,15 +780,18 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     case WM_MOUSELEAVE:
         tracking_ = false;
+        if (example_) return 0;
         if (island_.pointerLeave()) frame();
         return 0;
     case WM_MOUSEWHEEL: {
+        if (example_) return 0;
         POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         ScreenToClient(window_, &point);
         if (island_.scroll(point, GET_WHEEL_DELTA_WPARAM(wparam))) frame();
         return 0;
     }
     case WM_LBUTTONDOWN: {
+        if (example_) return 0;
         POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         if (const auto item = island_.dropItemAt(point)) {
             ClientToScreen(window_, &point);
@@ -774,6 +804,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     }
     case WM_LBUTTONUP: {
+        if (example_) return 0;
         const auto command = island_.pointerUp({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
         if (GetCapture() == window_) ReleaseCapture();
         run(command);
@@ -799,6 +830,11 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         showMenu(point);
         return 0;
     }
+    case settingsTestMessage:
+        if (wparam > static_cast<unsigned>(SettingsTest::order) || !validSettingsTest(static_cast<unsigned>(wparam)) ||
+            lparam < 0 || lparam >= static_cast<LPARAM>(featureOrder.size())) return FALSE;
+        startSettingsTest(static_cast<SettingsTest>(wparam), static_cast<Feature>(lparam));
+        return TRUE;
     case settingsChangedMessage:
         settings_ = Settings::load();
         refreshMotion();
@@ -841,13 +877,29 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     if (zenith::browserHostRequested()) return zenith::runBrowserHost(instance);
     const bool settingsRequested = std::wstring_view(commandLine) == L"--settings";
+    std::optional<zenith::SettingsTest> test;
+    auto feature = zenith::Feature::media;
+    unsigned requested = 0, requestedFeature = 0;
+    wchar_t extra = 0;
+    if (swscanf_s(commandLine, L"--test=%u,%u%c", &requested, &requestedFeature, &extra, 1u) == 2 &&
+        zenith::validSettingsTest(requested) && requestedFeature < zenith::featureOrder.size()) {
+        test = static_cast<zenith::SettingsTest>(requested);
+        feature = static_cast<zenith::Feature>(requestedFeature);
+    }
     winrt::handle singleInstance;
     if (!settingsRequested) {
         const auto mutex = CreateMutexW(nullptr, FALSE, L"Local\\ZenithDot.Overlay.0A54ED53");
         const auto error = GetLastError();
         if (!mutex) return 1;
         singleInstance.attach(mutex);
-        if (error == ERROR_ALREADY_EXISTS) return 0;
+        if (error == ERROR_ALREADY_EXISTS) {
+            if (test) {
+                if (const auto overlay = FindWindowW(zenith::overlayWindowClass, nullptr)) {
+                    PostMessageW(overlay, zenith::settingsTestMessage, static_cast<WPARAM>(*test), static_cast<LPARAM>(feature));
+                }
+            }
+            return 0;
+        }
     }
     int result = 1;
     try {
@@ -856,7 +908,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
             HRESULT status = OleInitialize(nullptr);
             ~Ole() { if (SUCCEEDED(status)) OleUninitialize(); }
         } ole;
-        result = settingsRequested ? zenith::runSettingsWindow(instance) : zenith::App{}.run(instance);
+        result = settingsRequested ? zenith::runSettingsWindow(instance) : zenith::App{}.run(instance, test, feature);
     } catch (winrt::hresult_error const& failure) {
         MessageBoxW(nullptr, failure.message().c_str(), L"Zenith Dot could not start", MB_OK | MB_ICONERROR);
     }
