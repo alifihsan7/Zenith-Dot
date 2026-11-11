@@ -65,16 +65,13 @@ constexpr auto openDelay = 50ms;
 constexpr auto closeDelay = 185ms;
 constexpr auto parkDelay = 5s;
 constexpr auto featurePreviewTime = 850ms;
-constexpr auto pillGrowTime = 280ms;
-constexpr auto pillShrinkTime = 400ms;
-constexpr auto panelTime = 320ms;
-constexpr auto panelCloseTime = 360ms;
+constexpr auto shapeTime = 500ms;
+constexpr auto screenFadeTime = 310ms;
 constexpr auto idlePillHold = 240ms;
 constexpr auto captureTime = 230ms;
 constexpr float captureSlot = 19;
 constexpr auto themeTime = 700ms;
-constexpr auto alertOpenTime = 540ms;
-constexpr auto alertCloseTime = 440ms;
+constexpr auto splitTime = 960ms;
 constexpr auto inlineAlertTime = 2000ms;
 constexpr auto visibilityTime = 200ms;
 constexpr auto lyricScrollTime = 190ms;
@@ -169,10 +166,6 @@ float bezier(float x1, float y1, float x2, float y2, float x) {
         t = (low + high) / 2;
     }
     return sample(y1, y2, t);
-}
-
-float panelEase(float t) {
-    return bezier(0.22f, 0.78f, 0.23f, 1, clamp01(t));
 }
 
 float progress(Island::Clock::time_point start, Island::Clock::duration length, Island::Clock::time_point now) {
@@ -594,9 +587,35 @@ bool Island::wantsLyricPill() const {
     return !suppressed_ && lyricsOpen_ && pillMode_ == PillMode::media;
 }
 
+Island::MotionSample Island::sampleSpring(Clock::time_point start, Clock::duration duration, Clock::time_point now,
+                                          float from, float to, float velocity, Spring spring) {
+    if (now - start >= duration) return {to, 0};
+    const float seconds = std::max(0.0f, std::chrono::duration<float>(now - start).count());
+    // Same spring constants as the liquid preview, evaluated in elapsed time.
+    const float damping = spring == Spring::split ? 18.0f : 25.0f;
+    const float stiffness = spring == Spring::split ? 78.0f : 190.0f;
+    const float decayRate = damping / 2;
+    const float frequency = std::sqrt(std::abs(stiffness - decayRate * decayRate));
+    const float phase = frequency * seconds;
+    const float displacement = from - to;
+    const float slope = (velocity + decayRate * displacement) / frequency;
+    const float cosine = spring == Spring::split ? std::cosh(phase) : std::cos(phase);
+    const float sine = spring == Spring::split ? std::sinh(phase) : std::sin(phase);
+    const float curve = displacement * cosine + slope * sine;
+    const float curveSpeed = frequency * ((spring == Spring::split ? displacement : -displacement) * sine + slope * cosine);
+    const float decay = std::exp(-decayRate * seconds);
+    const float value = to + decay * curve;
+    if (value < 0 || value > 1) return {clamp01(value), 0};
+    return {value, decay * (curveSpeed - decayRate * curve)};
+}
+
+Island::MotionSample Island::pillMotion(Clock::time_point now) const {
+    if (!animate_) return {pillTarget_, 0};
+    return sampleSpring(pillStart_, shapeTime, now, pillFrom_, pillTarget_, pillVelocity_);
+}
+
 float Island::pillAmount(Clock::time_point now) const {
-    if (!animate_) return pillTarget_;
-    return std::lerp(pillFrom_, pillTarget_, progress(pillStart_, pillLength_, now));
+    return pillMotion(now).value;
 }
 
 float Island::pillLyricProgress(Clock::time_point now) const {
@@ -638,7 +657,7 @@ float Island::captureWidth(Clock::time_point now) const {
 }
 
 D2D1_RECT_F Island::compactShape(Clock::time_point now, float amount) const {
-    const float t = easeInOut(clamp01(amount));
+    const float t = clamp01(amount);
     const auto size = pillSize(now);
     const float width = std::lerp(dotSize, size.width, t);
     const float height = std::lerp(dotSize, size.height, t);
@@ -646,34 +665,14 @@ D2D1_RECT_F Island::compactShape(Clock::time_point now, float amount) const {
                std::lerp(pillCenterY - dotSize / 2, pillTop, t), width, height);
 }
 
-Island::PanelMotion Island::panelMotion(Clock::time_point now) const {
+Island::MotionSample Island::panelMotion(Clock::time_point now) const {
     const float target = open_ ? 1.0f : 0.0f;
-    const auto duration = open_ ? panelTime : panelCloseTime;
-    if (!animate_ || now - panelStart_ >= duration) return {target, 0};
-    const float seconds = std::max(0.0f, std::chrono::duration<float>(now - panelStart_).count());
-    const float omega = 8.5f / std::chrono::duration<float>(duration).count();
-    const float displacement = panelFrom_ - target;
-    const float coefficient = panelVelocity_ + omega * displacement;
-    const float decay = std::exp(-omega * seconds);
-    const float value = target + (displacement + coefficient * seconds) * decay;
-    const float velocity = (coefficient - omega * (displacement + coefficient * seconds)) * decay;
-    if (value < 0 || value > 1) return {clamp01(value), 0};
-    return {value, velocity};
+    if (!animate_) return {target, 0};
+    return sampleSpring(panelStart_, shapeTime, now, panelFrom_, target, panelVelocity_);
 }
 
 float Island::panelValue(Clock::time_point now) const {
     return panelMotion(now).value;
-}
-
-D2D1_ROUNDED_RECT Island::panelShape(Clock::time_point now, float value, float amount) const {
-    const auto full = panelRect(now);
-    const auto from = compactShape(now, amount);
-    const float fromRadius = std::min(from.right - from.left, from.bottom - from.top) / 2;
-    auto clip = mixRect(from, full, value);
-    const float breadth = value + 0.18f * value * (1 - value);
-    clip.left = std::lerp(from.left, full.left, breadth);
-    clip.right = std::lerp(from.right, full.right, breadth);
-    return rounded(clip, std::lerp(fromRadius, panelRadius, value));
 }
 
 float Island::screenHeight(Screen screen) const {
@@ -689,14 +688,15 @@ float Island::screenHeight(Screen screen) const {
 }
 
 float Island::panelHeight(Clock::time_point now) const {
-    return std::lerp(heightFrom_, screenHeight(screen_), panelEase(progress(screenStart_, panelTime, now)));
+    const float height = screenHeight(screen_);
+    return animate_ ? std::lerp(heightFrom_, height, sampleSpring(screenStart_, shapeTime, now, 0, 1).value) : height;
 }
 
 float Island::panelWidthAt(Clock::time_point now) const {
     const float width = screen_ == Screen::media
         ? mediaPanelWidth + (media_.hasSession && lyricsOpen_ ? lyricsWidth_ : 0)
         : screen_ == Screen::system ? systemPanelWidth : panelWidth;
-    return animate_ ? std::lerp(widthFrom_, width, panelEase(progress(widthStart_, panelTime, now))) : width;
+    return animate_ ? std::lerp(widthFrom_, width, sampleSpring(widthStart_, shapeTime, now, 0, 1).value) : width;
 }
 
 D2D1_RECT_F Island::panelRect(Clock::time_point now) const {
@@ -706,11 +706,11 @@ D2D1_RECT_F Island::panelRect(Clock::time_point now) const {
 
 bool Island::moving(Clock::time_point now) const {
     if (!animate_) return false;
-    return now - pillStart_ < pillLength_ || now - panelStart_ < (open_ ? panelTime : panelCloseTime) ||
-           now - captureStart_ < captureTime || now - screenStart_ < panelTime ||
-           now - widthStart_ < panelTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
+    return now - pillStart_ < shapeTime || now - panelStart_ < shapeTime ||
+           now - captureStart_ < captureTime || now - screenStart_ < shapeTime ||
+           now - widthStart_ < shapeTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
            now - themeStart_ < themeTime || now - pillLyricStart_ < pillLyricTime ||
-           (bubbleShowing() && now - alertStart_ < alertLength_);
+           (bubbleShowing() && now - alertStart_ < splitTime);
 }
 
 std::wstring Island::title() const {
@@ -761,11 +761,11 @@ void Island::updatePill(Clock::time_point now) {
     if (bubbleShowing()) return;   // never reshape while a bubble is split off
     const float target = mode == PillMode::dot ? 0.0f : 1.0f;
     if (target != pillTarget_) {
-        pillFrom_ = pillAmount(now);
+        const auto motion = pillMotion(now);
+        pillFrom_ = motion.value;
+        pillVelocity_ = motion.velocity;
         pillTarget_ = target;
         pillStart_ = now;
-        const bool closing = !open_ && now < idlePillUntil_;
-        pillLength_ = target > 0 ? Clock::duration(closing ? panelTime : pillGrowTime) : Clock::duration(pillShrinkTime);
     }
 }
 
@@ -865,7 +865,6 @@ void Island::setSuppressed(bool suppressed) {
     visibilityStart_ = now;
     suppressed_ = suppressed;
     if (!suppressed_) return;
-    effects_.hideBackdrop();
     previewUntil_ = {};
     idlePillUntil_ = {};
     clearAlerts();
@@ -907,7 +906,7 @@ void Island::setOpen(bool open, Clock::time_point now) {
                   !pillLyric_.layout && !previousPillLyric_.layout;
     open_ = open;
     sourcePickerOpen_ = false;
-    if (!open && !suppressed_) idlePillUntil_ = now + idlePillHold + (animate_ ? panelCloseTime : 0ms);
+    if (!open && !suppressed_) idlePillUntil_ = now + idlePillHold + (animate_ ? shapeTime : 0ms);
     updateLyricVisibility(lyricsVisible, now);
     if (!open) panelPinned_ = false;
     keepHeight_ = 0;
@@ -1049,17 +1048,17 @@ void Island::tick() {
                 startAlert(std::move(alert), now, false);
             }
         } else if (alertTo_ > 0) {
-            if (!alertHoldUntil_ && progress(alertStart_, alertLength_, now) >= 1) {
+            if (!alertHoldUntil_ && (!animate_ || now - alertStart_ >= splitTime)) {
                 alertHoldUntil_ = now + alert_->hold;
             }
             if (alertHoldUntil_ && now >= *alertHoldUntil_) {
                 alertFrom_ = 1;
+                alertVelocity_ = 0;
                 alertTo_ = 0;
                 alertStart_ = now;
-                alertLength_ = alertCloseTime;
                 alertHoldUntil_.reset();
             }
-        } else if (progress(alertStart_, alertLength_, now) >= 1) {
+        } else if (!animate_ || now - alertStart_ >= splitTime) {
             finishAlert(now);
         }
     }
@@ -1452,16 +1451,21 @@ void Island::addTarget(D2D1_RECT_F rect, Hit hit, size_t index) {
 
 // ---- Device resources ----------------------------------------------------------------------------
 
-void Island::prepareSurface(int width, int height) {
+void Island::prepareSurface(int width, int height, bool animating) {
     if (!surface_) {
         surface_ = CreateCompatibleDC(nullptr);
         if (!surface_) winrt::throw_last_error();
     }
-    if (surfaceSize_.cx != width || surfaceSize_.cy != height) {
+    if (width > bitmapSize_.cx || height > bitmapSize_.cy ||
+        (!animating && (bitmapSize_.cx != width || bitmapSize_.cy != height))) {
+        // Leave room for the next frame during a resize, then reclaim it when the shape settles.
+        constexpr LONG block = 64;
+        const LONG bitmapWidth = animating ? std::max(bitmapSize_.cx, (width + block - 1) / block * block) : width;
+        const LONG bitmapHeight = animating ? std::max(bitmapSize_.cy, (height + block - 1) / block * block) : height;
         BITMAPINFO info{};
         info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        info.bmiHeader.biWidth = width;
-        info.bmiHeader.biHeight = -height;
+        info.bmiHeader.biWidth = bitmapWidth;
+        info.bmiHeader.biHeight = -bitmapHeight;
         info.bmiHeader.biPlanes = 1;
         info.bmiHeader.biBitCount = 32;
         info.bmiHeader.biCompression = BI_RGB;
@@ -1472,9 +1476,9 @@ void Island::prepareSurface(int width, int height) {
         if (!originalBitmap_) originalBitmap_ = previous;
         if (bitmap_) DeleteObject(bitmap_);
         bitmap_ = next;
-        surfacePixels_ = static_cast<std::uint32_t*>(pixels);
-        surfaceSize_ = {width, height};
+        bitmapSize_ = {bitmapWidth, bitmapHeight};
     }
+    surfaceSize_ = {width, height};
     if (!graphics_) {
         winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, graphics_.put()));
         const auto round = D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
@@ -1611,8 +1615,8 @@ void Island::text(std::wstring_view value, IDWriteTextFormat* format, D2D1_RECT_
 }
 
 // Black-dominant glass; the cover only tints the far corner of the gradient.
-void Island::fillShell(D2D1_ROUNDED_RECT shape, float alpha) {
-    const D2D1_GRADIENT_STOP stops[]{{0, D2D1::ColorF(0, 0, 0, alpha)}, {1, withAlpha(tint_, alpha - 0.04f)}};
+void Island::fillShell(D2D1_ROUNDED_RECT shape) {
+    const D2D1_GRADIENT_STOP stops[]{{0, D2D1::ColorF(0, 0, 0, 0.94f)}, {1, withAlpha(tint_, 0.9f)}};
     winrt::com_ptr<ID2D1GradientStopCollection> collection;
     winrt::check_hresult(target_->CreateGradientStopCollection(stops, 2, collection.put()));
     winrt::com_ptr<ID2D1LinearGradientBrush> gradient;
@@ -1868,11 +1872,15 @@ void Island::drawPillContent(Clock::time_point now, bool hideTitle) {
 
 void Island::drawPanel(Clock::time_point now, float value, float amount, bool morphTitle) {
     const auto full = panelRect(now);
-    const auto shape = panelShape(now, value, amount);
-    const auto clip = shape.rect;
+    const auto from = compactShape(now, amount);
+    const float fromRadius = std::min(from.right - from.left, from.bottom - from.top) / 2;
+    auto clip = mixRect(from, full, value);
+    const float breadth = value + 0.18f * value * (1 - value);
+    clip.left = std::lerp(from.left, full.left, breadth);
+    clip.right = std::lerp(from.right, full.right, breadth);
     if (open_) panelWheel_ = clip;
     else closingPanel_ = clip;
-    const float radius = shape.radiusX;
+    const float radius = std::lerp(fromRadius, panelRadius, value);
     const float opacity = easeOut(value);
 
     // Soft drop shadow (0 8px 22px at 35%), faded in as the panel settles.
@@ -1887,7 +1895,7 @@ void Island::drawPanel(Clock::time_point now, float value, float amount, bool mo
     winrt::com_ptr<ID2D1RoundedRectangleGeometry> mask;
     winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(rounded(clip, radius), mask.put()));
     pushLayer(mask.get(), opacity);
-    fillShell(rounded(clip, radius), 0.9f);
+    fillShell(rounded(clip, radius));
     target_->DrawRoundedRectangle(rounded(grow(clip, -0.5f, -0.5f), radius - 0.5f), ink(white(0.12f)), 1);
 
     recordPanel_ = open_ && value >= 1;
@@ -1898,17 +1906,7 @@ void Island::drawPanel(Clock::time_point now, float value, float amount, bool mo
         drawInlineAlert(full);
         content.top += inset;
     }
-    const float switching = progress(screenStart_, panelTime, now);
-    if (animate_) {
-        const float switchingBlur = screenFrom_ != screen_ && switching < 1 ? 4 * std::sin(pi * switching) : 0;
-        blurRadius_ = std::max(4 * (1 - value), switchingBlur);
-        blurBounds_ = {
-            std::max(content.left + padX, clip.left + 8),
-            std::max(content.top + padTop, clip.top + 8),
-            std::min(content.right - padX, clip.right - 8),
-            std::min(full.bottom - padBottom - navHeight - 4, clip.bottom - 8)
-        };
-    }
+    const float switching = progress(screenStart_, screenFadeTime, now);
     if (switching < 1 && screenFrom_ != screen_) {
         const float enter = easeInOut(switching);
         pushLayer(nullptr, 1 - enter);
@@ -2554,10 +2552,11 @@ void Island::notify(IslandAlert alert) {
         if (alertInline_) {
             alertUntil_ = now + inlineAlertTime;
         } else if (alertTo_ == 0) {
-            alertFrom_ = alertValue(now);
+            const auto motion = alertMotion(now);
+            alertFrom_ = motion.value;
+            alertVelocity_ = motion.velocity;
             alertTo_ = 1;
             alertStart_ = now;
-            alertLength_ = std::chrono::duration_cast<Clock::duration>(alertOpenTime * (1 - alertFrom_));
         } else if (alertHoldUntil_) {
             alertHoldUntil_ = now + alert.hold;
         }
@@ -2588,6 +2587,7 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
     if (update) return;
     // A dot <-> pill morph in flight snaps to its end so the split starts from a settled shape.
     pillFrom_ = pillTarget_;
+    pillVelocity_ = 0;
     pillStart_ = {};
     alertHoldUntil_.reset();
     alertInline_ = open_;
@@ -2600,9 +2600,9 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
     previousPillLyric_ = {};
     openAt_.reset();
     alertFrom_ = 0;
+    alertVelocity_ = 0;
     alertTo_ = 1;
     alertStart_ = now;
-    alertLength_ = alertOpenTime;
 }
 
 void Island::finishAlert(Clock::time_point now) {
@@ -2617,9 +2617,13 @@ void Island::finishAlert(Clock::time_point now) {
     }
 }
 
+Island::MotionSample Island::alertMotion(Clock::time_point now) const {
+    if (!animate_) return {alertTo_, 0};
+    return sampleSpring(alertStart_, splitTime, now, alertFrom_, alertTo_, alertVelocity_, Spring::split);
+}
+
 float Island::alertValue(Clock::time_point now) const {
-    if (!animate_) return alertTo_;
-    return std::lerp(alertFrom_, alertTo_, progress(alertStart_, alertLength_, now));
+    return alertMotion(now).value;
 }
 
 bool Island::bubbleShowing() const {
@@ -2897,20 +2901,8 @@ void Island::draw(HWND window) {
     const float amount = pillAmount(now);
     const float value = panelValue(now);
     const bool panelVisible = open_ || value > 0;
-    if (panelVisible && value > .8f && opacity >= 1 && !suppressed_ && IsWindowVisible(window)) {
-        const auto glass = panelShape(now, value, amount);
-        const RECT glassBounds{
-            anchor_.x + static_cast<LONG>(std::ceil(glass.rect.left * scale_)) + 1,
-            anchor_.y + static_cast<LONG>(std::ceil(glass.rect.top * scale_)) + 1,
-            anchor_.x + static_cast<LONG>(std::floor(glass.rect.right * scale_)) - 1,
-            anchor_.y + static_cast<LONG>(std::floor(glass.rect.bottom * scale_)) - 1
-        };
-        effects_.showBackdrop(window, glassBounds, std::max(1, static_cast<int>(glass.radiusX * scale_) - 1));
-    } else {
-        effects_.hideBackdrop();
-    }
     const bool compactVisible = !open_;
-    const bool switchingScreen = screenFrom_ != screen_ && progress(screenStart_, panelTime, now) < 1;
+    const bool switchingScreen = screenFrom_ != screen_ && progress(screenStart_, screenFadeTime, now) < 1;
     const bool morphTitle = shareTitle_ && screen_ == Screen::media && media_.hasSession &&
                             !switchingScreen && value > 0 && value < 1;
     if (!panelVisible || panelWidthAt(now) <= mediaPanelWidth) lyricLayout_ = nullptr;
@@ -2931,7 +2923,7 @@ void Island::draw(HWND window) {
     origin_ = {static_cast<LONG>(std::floor(bounds.left * scale_)), static_cast<LONG>(std::floor(bounds.top * scale_))};
     const int width = static_cast<int>(std::ceil(bounds.right * scale_)) - origin_.x;
     const int height = static_cast<int>(std::ceil(bounds.bottom * scale_)) - origin_.y;
-    prepareSurface(width, height);
+    prepareSurface(width, height, moving(now));
     const RECT pixels{0, 0, surfaceSize_.cx, surfaceSize_.cy};
     winrt::check_hresult(target_->BindDC(surface_, &pixels));
 
@@ -2945,8 +2937,6 @@ void Island::draw(HWND window) {
     sourceMenuRect_ = {};
     panelWheel_ = {};
     closingPanel_ = {};
-    blurBounds_ = {};
-    blurRadius_ = 0;
     layerDepth_ = 0;
     target_->BeginDraw();
     target_->SetTransform(base_);
@@ -2960,13 +2950,6 @@ void Island::draw(HWND window) {
         return;
     }
     winrt::check_hresult(result);
-    const RECT blurPixels{
-        static_cast<LONG>(std::ceil(blurBounds_.left * scale_)) - origin_.x,
-        static_cast<LONG>(std::ceil(blurBounds_.top * scale_)) - origin_.y,
-        static_cast<LONG>(std::floor(blurBounds_.right * scale_)) - origin_.x,
-        static_cast<LONG>(std::floor(blurBounds_.bottom * scale_)) - origin_.y
-    };
-    effects_.blur(surfacePixels_, surfaceSize_, blurPixels, blurRadius_ * scale_);
 
     POINT position{anchor_.x + origin_.x, anchor_.y + origin_.y};
     POINT source{};

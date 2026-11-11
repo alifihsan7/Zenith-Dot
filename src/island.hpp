@@ -8,7 +8,6 @@
 #include "drop_zone.hpp"
 #include "power.hpp"
 #include "system.hpp"
-#include "visual_effects.hpp"
 
 #include <d2d1.h>
 #include <dwrite.h>
@@ -133,6 +132,14 @@ private:
     };
 
     float pillAmount(Clock::time_point now) const;
+    struct MotionSample {
+        float value;
+        float velocity;
+    };
+    enum class Spring { shape, split };
+    static MotionSample sampleSpring(Clock::time_point start, Clock::duration duration, Clock::time_point now,
+                                     float from, float to, float velocity = 0, Spring spring = Spring::shape);
+    MotionSample pillMotion(Clock::time_point now) const;
     float pillLyricProgress(Clock::time_point now) const;
     bool pillLyricGrowing() const;
     float pillLyricOut(float progress) const;
@@ -142,13 +149,8 @@ private:
     float captureProgress(Clock::time_point now, float from, bool active) const;
     D2D1_RECT_F compactShape(Clock::time_point now, float amount) const;
     float visibility(Clock::time_point now) const;
-    struct PanelMotion {
-        float value;
-        float velocity;
-    };
-    PanelMotion panelMotion(Clock::time_point now) const;
     float panelValue(Clock::time_point now) const;
-    D2D1_ROUNDED_RECT panelShape(Clock::time_point now, float value, float amount) const;
+    MotionSample panelMotion(Clock::time_point now) const;
     float panelHeight(Clock::time_point now) const;
     float panelWidthAt(Clock::time_point now) const;
     float lyricScroll(Clock::time_point now) const;
@@ -178,11 +180,12 @@ private:
     void finishAlert(Clock::time_point now);
     void clearAlerts();
     float alertValue(Clock::time_point now) const;
+    MotionSample alertMotion(Clock::time_point now) const;
     bool bubbleShowing() const;
     float inlineInset() const;
     float measure(std::wstring_view value, IDWriteTextFormat* format);
 
-    void prepareSurface(int width, int height);
+    void prepareSurface(int width, int height, bool animating);
     void prepareText();
     void releaseDeviceResources();
     void drawCompact(Clock::time_point now, float amount, bool hideTitle);
@@ -213,7 +216,7 @@ private:
     void drawChipGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color);
     void drawButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record,
                     size_t index = 0, bool selected = false);
-    void fillShell(D2D1_ROUNDED_RECT shape, float alpha = 0.94f);
+    void fillShell(D2D1_ROUNDED_RECT shape);
     void fillShell(ID2D1Geometry* shape);
     void drawSplit(Clock::time_point now, float amount);
     void drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity);
@@ -271,9 +274,9 @@ private:
     std::wstring pillTitle_;
     bool pillPlaying_ = false;
     float pillFrom_ = 0;
+    float pillVelocity_ = 0;
     float pillTarget_ = 0;
     Clock::time_point pillStart_{};
-    Clock::duration pillLength_{};
     Clock::time_point lastActive_{};
     Clock::time_point previewUntil_{};
     Clock::time_point idlePillUntil_{};
@@ -367,9 +370,9 @@ private:
     std::optional<IslandAlert> queued_;
     bool alertInline_ = false;
     float alertFrom_ = 0;
+    float alertVelocity_ = 0;
     float alertTo_ = 0;
     Clock::time_point alertStart_{};
-    Clock::duration alertLength_{};
     std::optional<Clock::time_point> alertHoldUntil_;
     Clock::time_point alertUntil_{};
     float alertWidth_ = 52;
@@ -413,11 +416,8 @@ private:
     HDC surface_ = nullptr;
     HBITMAP bitmap_ = nullptr;
     HGDIOBJ originalBitmap_ = nullptr;
+    SIZE bitmapSize_{};
     SIZE surfaceSize_{};
-    std::uint32_t* surfacePixels_ = nullptr;
-    VisualEffects effects_;
-    D2D1_RECT_F blurBounds_{};
-    float blurRadius_ = 0;
 
     std::shared_ptr<const Cover> coverSource_;
     Image cover_;
