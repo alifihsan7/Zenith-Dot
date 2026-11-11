@@ -85,6 +85,7 @@ constexpr float captureSlot = 19;
 constexpr float privacyHeight = 30;
 constexpr float privacyPadding = 6;
 constexpr float privacyGap = 8;
+constexpr float privacyTextRevealSpace = 12;
 constexpr auto themeTime = 700ms;
 constexpr auto splitTime = 960ms;
 constexpr auto inlineAlertTime = 2000ms;
@@ -92,6 +93,11 @@ constexpr auto visibilityTime = 200ms;
 constexpr auto lyricScrollTime = 190ms;
 constexpr auto pillLyricTime = 250ms;
 constexpr auto pillLyricSwitchTime = 750ms;
+
+bool isCaptureAlert(IslandAlert::Kind kind) {
+    return kind == IslandAlert::Kind::camera || kind == IslandAlert::Kind::microphone ||
+           kind == IslandAlert::Kind::screenCapture;
+}
 constexpr int timerPresets[]{1, 5, 10};
 constexpr int quickMinMinutes = 1;
 constexpr int quickMaxMinutes = 120;
@@ -1012,11 +1018,7 @@ bool Island::setCaptureActivity(CaptureActivity const& activity, bool announce) 
 }
 
 void Island::updateCaptureIndicators(Clock::time_point now) {
-    const auto isCaptureAlert = [this](auto const& alert) {
-        return alert && std::ranges::find(captureIndicators_, alert->kind, &CaptureIndicator::kind) !=
-            captureIndicators_.end();
-    };
-    const bool starting = isCaptureAlert(alert_) || isCaptureAlert(queued_);
+    const bool starting = (alert_ && isCaptureAlert(alert_->kind)) || (queued_ && isCaptureAlert(queued_->kind));
     for (auto& item : captureIndicators_) {
         const bool shown = !item.app.empty() && (item.shown || !starting);
         if (shown == item.shown) continue;
@@ -2946,6 +2948,7 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
     if (!alert.title.empty()) width += 7 + measure(alert.title, alertTitleFont_.get());
     if (!alert.value.empty()) width += 7 + measure(alert.value, alertValueFont_.get());
     if (alert.battery) width += batteryCellWidth;
+    if (isCaptureAlert(alert.kind)) width += privacyTextRevealSpace;
     alertWidth_ = std::clamp(width + 1, 52.0f, maxBubble);
     alert_ = std::move(alert);
     if (update) return;
@@ -3142,14 +3145,21 @@ void Island::drawSplit(Clock::time_point now, float amount) {
     }
 }
 
-void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity) {
+void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity) {
     if (opacity <= 0 || !alert_) return;
     const float width = area.right - area.left;
     const bool copied = alert_->kind == IslandAlert::Kind::copy;
-    const float contentWidth = copied ? alertWidth_ : width;
+    const bool capture = isCaptureAlert(alert_->kind);
+    const float contentWidth = capture ? alertWidth_ - privacyTextRevealSpace : copied ? alertWidth_ : width;
     const float contentLeft = area.left + std::max(0.0f, (width - contentWidth) / 2);
-    const float iconProgress = copied ? easeInOut(lin(contentWidth - 24, contentWidth - 6, width)) : copyOpacity;
-    if (copied) copyOpacity *= easeInOut(lin(contentWidth - 6, contentWidth, width));
+    float iconProgress = textOpacity;
+    if (copied) {
+        iconProgress = easeInOut(lin(contentWidth - 24, contentWidth - 6, width));
+        textOpacity *= easeInOut(lin(contentWidth - 6, contentWidth, width));
+    } else if (capture) {
+        iconProgress = easeInOut(lin(contentWidth - 24, contentWidth, width));
+        textOpacity *= easeInOut(lin(contentWidth + 2, alertWidth_ - 1, width));
+    }
     const float radius = std::min(width, area.bottom - area.top) / 2;
     winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
     winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(rounded(area, radius), clip.put()));
@@ -3159,15 +3169,15 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity
     const float iconLeft = std::lerp(area.left + std::max(0.0f, (width - 15) / 2),
                                      contentLeft + 12, iconProgress);
     drawAlertIcon(alert_->kind, pt(iconLeft, middle - 7.5f), alert_->color ? rgb(*alert_->color) : accent_);
-    if (copyOpacity <= 0) {
+    if (textOpacity <= 0) {
         popLayer();
         return;
     }
-    float x = (copied ? contentLeft + 12 : iconLeft) + 15 + 7;
+    float x = (copied || capture ? contentLeft + 12 : iconLeft) + 15 + 7;
     const float end = contentLeft + contentWidth - 12;
     // A long title (a device name) gives way so the value after it stays readable.
     float valueWidth = 0;
-    if (!copied && !alert_->value.empty()) {
+    if (!copied && !capture && !alert_->value.empty()) {
         valueWidth = 7 + measure(alert_->value, alertValueFont_.get()) + (alert_->battery ? batteryCellWidth : 0);
     }
     if (!alert_->title.empty() && end > x) {
@@ -3175,13 +3185,13 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity
         const float titleWidth = copied ? std::ceil(measuredTitle) + 2 :
             std::min(measuredTitle + 1, std::max(0.0f, end - x - valueWidth));
         text(alert_->title, alertTitleFont_.get(), box(x, middle - 10, titleWidth, 20),
-             withAlpha(rgb(inkColor), copyOpacity));
+             withAlpha(rgb(inkColor), textOpacity));
         x += titleWidth + 6;
     }
     if (!alert_->value.empty() && end > x) {
-        auto color = withAlpha(rgb(mutedColor), copyOpacity);
+        auto color = withAlpha(rgb(mutedColor), textOpacity);
         if (alert_->battery && end - x > batteryCellWidth) {
-            color = withAlpha(rgb(batteryColor(*alert_->battery)), copyOpacity);
+            color = withAlpha(rgb(batteryColor(*alert_->battery)), textOpacity);
             drawBatteryCell(x, middle, *alert_->battery, color);
             x += batteryCellWidth;
         }
