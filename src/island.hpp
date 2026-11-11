@@ -1,6 +1,7 @@
 #pragma once
 
 #include "desktop.hpp"
+#include "audio_waveform.hpp"
 #include "media.hpp"
 #include "lyrics.hpp"
 #include "scratchpad.hpp"
@@ -67,6 +68,8 @@ public:
     void setAnimate(bool animate);
     void setPreferences(Settings const& settings);
     void setMedia(MediaState const& media);
+    void setWaveform(Waveform const& waveform) { waveform_ = waveform; }
+    bool wantsAudioWaveform() const;
     void setPower(PowerState const& power);
     void setSystem(SystemStats const& stats);
     void setNetwork(NetworkStatus const& status);
@@ -290,6 +293,7 @@ private:
     PillMode preferredPill_ = PillMode::media;
     std::wstring pillTitle_;
     bool pillPlaying_ = false;
+    Waveform waveform_{};
     Clock::time_point pausedAt_{};
     float pillFrom_ = 0;
     float pillVelocity_ = 0;

@@ -1,5 +1,7 @@
 #include "settings_example.hpp"
 
+#include <cmath>
+
 namespace zenith {
 namespace {
 using namespace std::chrono_literals;
@@ -108,6 +110,15 @@ void SettingsExample::showFeature(Feature feature, Clock::time_point now) {
 
 void SettingsExample::draw(HWND window, Clock::time_point now) {
     const auto elapsed = now - start_;
+    if (test_ == SettingsTest::waveform || test_ == SettingsTest::appearance) {
+        Waveform sample{};
+        const auto seconds = std::chrono::duration<float>(elapsed).count();
+        for (size_t i = 0; i < sample.size(); ++i) {
+            const float phase = seconds * 11 - static_cast<float>(sample.size() - i - 1) * 0.48f;
+            sample[i] = 0.18f + 0.70f * std::pow(std::max(0.0f, std::sin(phase)), 3.0f);
+        }
+        island_.setWaveform(sample);
+    }
     if (test_ == SettingsTest::appearance) {
         if (!playing_ && elapsed >= 350ms) {
             island_.setMedia(media_);

@@ -88,7 +88,7 @@ constexpr Option options[]{
     {IDC_AUTO_CYCLE, IDC_SETTINGS_FEATURES, L"Start the next Focus or Break phase automatically.",
         &Settings::autoCycle, &Settings::saveTimer, IDC_FEATURE_TIMERS},
     {IDC_FEATURE_ENABLED, IDC_SETTINGS_FEATURES, L"Show this feature in the feature bar.", nullptr, nullptr},
-    {IDC_SHOW_WAVEFORM, IDC_SETTINGS_FEATURES, L"Show the animated bars during playback.",
+    {IDC_SHOW_WAVEFORM, IDC_SETTINGS_FEATURES, L"Show bars that react to the selected player's audio.",
         &Settings::showWaveform, &Settings::saveIsland, IDC_FEATURE_MEDIA},
     {IDC_PILL_LYRICS, IDC_SETTINGS_FEATURES, L"Show the current line while the Lyrics view is active.",
         &Settings::showPillLyrics, &Settings::saveIsland, IDC_FEATURE_MEDIA},

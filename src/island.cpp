@@ -503,6 +503,7 @@ void Island::setPreferences(Settings const& settings) {
 }
 
 void Island::setMedia(MediaState const& media) {
+    if (media.appId != media_.appId || media.sourceId != media_.sourceId) waveform_ = {};
     const auto now = Clock::now();
     if (!media.hasSession || media.playing) {
         pausedAt_ = {};
@@ -1178,15 +1179,22 @@ void Island::tick() {
     updateTheme(now);
 }
 
+bool Island::wantsAudioWaveform() const {
+    return animate_ && !suppressed_ && preferences_.showWaveform && preferences_.enabled(Screen::media) &&
+           media_.playing && (open_ ? screen_ == Screen::media : pillMode_ == PillMode::media && !wantsLyricPill());
+}
+
 unsigned Island::frameInterval() const {
     const auto now = Clock::now();
     const bool timerRunning = focus_.running() || quick_.running();
     if (animate_ && now - visibilityStart_ < visibilityTime) return 10;
     if (suppressed_) return timerRunning ? 1000 : 0;
     if (moving(now) || openAt_ || closeAt_ || dragging_) return 10;
+    if (wantsAudioWaveform()) return 33;
     if (wantsPrayerClock() && !alert_) return 1000;
     if (panelPinned() && !alert_) {
-        if (screen_ == Screen::media && (media_.playing || (wantsLyrics() && now < lyricFollowAt_))) return 50;
+        if (screen_ == Screen::media && (media_.playing || (wantsLyrics() && now < lyricFollowAt_) ||
+            (animate_ && preferences_.showWaveform && now - pausedAt_ < 350ms))) return 50;
         return screen_ == Screen::system || scratchEditing_ || timerRunning ? 1000 : 0;
     }
     if (open_ || alert_) return 50;
@@ -1977,22 +1985,13 @@ void Island::drawPillContent(Clock::time_point now, float width, bool hideTitle)
     const float trackRight = trackWidth / 2;
     const float full = lin(pausedPillWidth, pillWidth, trackWidth);
     if (pillPlaying_ && preferences_.showWaveform) {
-        // Four bars, each scaling between 40% and 100% (V7's 0.75s alternate ease-in-out loop).
-        constexpr float heights[]{8, 14, 10, 6};
-        constexpr float delays[]{0, -0.39f, -0.24f, -0.55f};
         const float left = trackRight - 29.5f;
-        const double seconds = std::chrono::duration<double>(now.time_since_epoch()).count();
-        for (int bar = 0; bar < 4; ++bar) {
-            float scale = 1;
-            if (animate_) {
-                const double phase = (seconds - delays[bar]) / 0.75;
-                float t = static_cast<float>(phase - std::floor(phase));
-                if (static_cast<long long>(std::floor(phase)) % 2 != 0) t = 1 - t;
-                scale = 0.4f + 0.6f * bezier(0.42f, 0, 0.58f, 1, t);
-            }
-            const float height = heights[bar] * scale;
+        for (size_t bar = 0; bar < 4; ++bar) {
+            const float level = animate_ ? waveform_[waveform_.size() - 7 + bar * 2] : 0;
+            const float height = std::lerp(2.5f, 15.0f, level);
             target_->FillRoundedRectangle(
-                rounded(box(left + bar * 5, pillCenterY - height / 2, 2.5f, height), 1.25f), ink(accent_));
+                rounded(box(left + static_cast<float>(bar) * 5, pillCenterY - height / 2, 2.5f, height), 1.25f),
+                ink(accent_));
         }
     } else if (!pillPlaying_) {
         // Paused: the panel's pause glyph (two bars), scaled for the pill.
@@ -2121,6 +2120,18 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
     const auto& detail = media_.artist.empty() ? media_.album : media_.artist;
     text(detail, bodyFont_.get(), box(x + mediaTitleLeft, y + mediaTitleTop + mediaTitleHeight, mediaTitleWidth, 16.8f),
          rgb(mutedColor));
+    if (preferences_.showWaveform) {
+        const float pauseSeconds = std::chrono::duration<float>(now - pausedAt_).count();
+        const float strength = !animate_ ? 0 : media_.playing ? 1 : 1 - lin(0, 0.35f, pauseSeconds);
+        constexpr float barWidth = 3;
+        const float step = (mediaTitleWidth - barWidth) / static_cast<float>(waveform_.size() - 1);
+        for (size_t i = 0; i < waveform_.size(); ++i) {
+            const float height = std::lerp(2.0f, 14.0f, waveform_[i] * strength);
+            const float left = x + mediaTitleLeft + static_cast<float>(i) * step;
+            target_->FillRoundedRectangle(rounded(box(left, y + 82 - height / 2, barWidth, height), 1.5f),
+                                          ink(withAlpha(accent_, std::lerp(0.35f, 0.92f, waveform_[i] * strength))));
+        }
+    }
 
     if (!media_.sources.empty()) {
         const auto selected = std::ranges::find_if(media_.sources, [this](MediaSource const& source) {
