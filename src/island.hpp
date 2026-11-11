@@ -160,7 +160,6 @@ private:
     float pillLyricIn(float progress) const;
     float pillTitleOpacity(Clock::time_point now) const;
     D2D1_SIZE_F pillSize(Clock::time_point now) const;
-    float captureWidth(Clock::time_point now) const;
     struct CaptureIndicator {
         IslandAlert::Kind kind;
         unsigned color;
@@ -174,7 +173,7 @@ private:
     std::array<float, 3> captureAmounts(Clock::time_point now) const;
     CaptureIndicator const* captureHandoff() const;
     D2D1_RECT_F compactShape(Clock::time_point now, float amount) const;
-    std::optional<D2D1_RECT_F> mediaPrivacyShape(Clock::time_point now, D2D1_RECT_F anchor) const;
+    std::optional<D2D1_RECT_F> companionPrivacyShape(Clock::time_point now, D2D1_RECT_F anchor) const;
     float visibility(Clock::time_point now) const;
     float panelValue(Clock::time_point now) const;
     MotionSample panelMotion(Clock::time_point now) const;
@@ -232,7 +231,7 @@ private:
     void drawCaptureIndicators(D2D1_POINT_2F right, std::array<float, 3> const& amounts);
     void drawCaptureHandoff(Clock::time_point now, float amount);
     void drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F shape);
-    void drawMediaPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity);
+    void drawCompanionPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity);
     void drawSystem(D2D1_RECT_F panel, bool record);
     void drawPrayerSchedule(D2D1_RECT_F panel);
     void drawAppVolume(size_t index, D2D1_RECT_F row, bool record);
@@ -240,8 +239,8 @@ private:
     void drawNav(D2D1_RECT_F panel, bool record);
     void drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color);
     static std::wstring_view screenLabel(Screen screen);
-    void drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float capture, float value);
-    D2D1_RECT_F pillArtRect(D2D1_RECT_F pill, float capture) const;
+    void drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float value);
+    D2D1_RECT_F pillArtRect(D2D1_RECT_F pill) const;
     void drawArt(D2D1_RECT_F rect, float opacity);
     void drawFocusGlyph(D2D1_POINT_2F center, float size, D2D1_COLOR_F color);
     void drawTimerGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color);

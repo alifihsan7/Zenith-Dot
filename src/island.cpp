@@ -702,14 +702,13 @@ float Island::pillTitleOpacity(Clock::time_point now) const {
 }
 
 D2D1_SIZE_F Island::pillSize(Clock::time_point now) const {
-    const float extra = captureWidth(now);
-    if (pillSizeTarget_.width == 0) return {pillWidth + extra, pillHeight};
+    if (pillSizeTarget_.width == 0) return {pillWidth, pillHeight};
     const float t = pillTransitionProgress(now);
     const auto resize = [t](float from, float to) {
         const float phase = to >= from ? lin(0, 0.64f, t) : lin(0.46f, 1, t);
         return std::lerp(from, to, easeInOut(phase));
     };
-    return {resize(pillSizeFrom_.width, pillSizeTarget_.width) + extra,
+    return {resize(pillSizeFrom_.width, pillSizeTarget_.width),
             resize(pillSizeFrom_.height, pillSizeTarget_.height)};
 }
 
@@ -724,23 +723,17 @@ std::array<float, 3> Island::captureAmounts(Clock::time_point now) const {
     return amounts;
 }
 
-float Island::captureWidth(Clock::time_point now) const {
-    if (pillContent_ == PillMode::media || pillContent_ == PillMode::privacy) return 0;
-    const auto [screen, camera, mic] = captureAmounts(now);
-    return captureSlot * (screen + camera + mic);
-}
-
 D2D1_RECT_F Island::compactShape(Clock::time_point now, float amount) const {
     const float t = clamp01(amount);
     const auto size = pillSize(now);
     const float width = std::lerp(dotSize, size.width, t);
     const float height = std::lerp(dotSize, size.height, t);
-    return box((captureWidth(now) * t - width) / 2,
+    return box(-width / 2,
                std::lerp(pillCenterY - dotSize / 2, pillTop, t), width, height);
 }
 
-std::optional<D2D1_RECT_F> Island::mediaPrivacyShape(Clock::time_point now, D2D1_RECT_F anchor) const {
-    if (pillContent_ != PillMode::media) return std::nullopt;
+std::optional<D2D1_RECT_F> Island::companionPrivacyShape(Clock::time_point now, D2D1_RECT_F anchor) const {
+    if (pillContent_ == PillMode::privacy || pillMode_ == PillMode::dot) return std::nullopt;
     const auto [screen, camera, mic] = captureAmounts(now);
     const float presence = std::max({screen, camera, mic});
     if (presence <= .01f) return std::nullopt;
@@ -866,7 +859,7 @@ void Island::updatePillLayout(Clock::time_point now, float workWidth) {
     }
     const auto captureCount = std::ranges::count_if(captureIndicators_, &CaptureIndicator::shown);
     const float captureSlots = captureSlot * static_cast<float>(captureCount);
-    const float reserved = captureSlots + (captureCount ? privacyGap + 2 * privacyPadding : 0);
+    const float reserved = privacyGap + 2 * privacyPadding + captureSlot * static_cast<float>(captureIndicators_.size());
     const auto compactAt = pausedAt_ + std::chrono::seconds(preferences_.pauseSeconds());
     const bool showTitle = pillMode_ != PillMode::media || media_.playing || preferences_.compactPause == 3 || now < compactAt;
     D2D1_SIZE_F target{pillWidth, pillHeight};
@@ -937,7 +930,6 @@ void Island::updatePillLayout(Clock::time_point now, float workWidth) {
     }
     pillLyricMaxWidth_ = maxWidth;
     pillSizeFrom_ = pillSize(now);
-    pillSizeFrom_.width -= captureWidth(now);
     if (pillMode_ == PillMode::privacy && pillAmount(now) <= 0) pillSizeFrom_ = target;
     pillSizeTarget_ = target;
     pillLyric_ = std::move(next);
@@ -997,13 +989,19 @@ bool Island::setCaptureActivity(CaptureActivity const& activity, bool announce) 
     const auto now = Clock::now();
     const std::wstring_view apps[]{activity.screen, activity.camera, activity.microphone};
     const wchar_t* titles[]{activity.recording ? L"Recording" : L"Screen Sharing", L"Camera", L"Microphone"};
+    bool announceNext = announce && std::ranges::none_of(captureIndicators_, [](auto const& item) {
+        return !item.app.empty();
+    });
     bool changed = false;
     for (size_t i = 0; i < captureIndicators_.size(); ++i) {
         auto& item = captureIndicators_[i];
         if (item.app == apps[i]) continue;
         const bool started = item.app.empty() && !apps[i].empty();
         item.app = apps[i];
-        if (started && announce) notify({item.kind, titles[i], item.app, item.color, 2});
+        if (started && announceNext) {
+            notify({item.kind, titles[i], item.app, item.color, 2});
+            announceNext = false;
+        }
         if (item.app.empty() && queued_ && queued_->kind == item.kind) queued_.reset();
         changed = true;
     }
@@ -1014,9 +1012,13 @@ bool Island::setCaptureActivity(CaptureActivity const& activity, bool announce) 
 }
 
 void Island::updateCaptureIndicators(Clock::time_point now) {
+    const auto isCaptureAlert = [this](auto const& alert) {
+        return alert && std::ranges::find(captureIndicators_, alert->kind, &CaptureIndicator::kind) !=
+            captureIndicators_.end();
+    };
+    const bool starting = isCaptureAlert(alert_) || isCaptureAlert(queued_);
     for (auto& item : captureIndicators_) {
-        const bool pending = (alert_ && alert_->kind == item.kind) || (queued_ && queued_->kind == item.kind);
-        const bool shown = !item.app.empty() && !pending;
+        const bool shown = !item.app.empty() && (item.shown || !starting);
         if (shown == item.shown) continue;
         item.from = captureProgress(now, item);
         item.shown = shown;
@@ -1855,13 +1857,13 @@ void Island::drawButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool
     if (record) addTarget(rect, hit, index);
 }
 
-D2D1_RECT_F Island::pillArtRect(D2D1_RECT_F pill, float capture) const {
-    const float available = pill.right - pill.left - capture;
+D2D1_RECT_F Island::pillArtRect(D2D1_RECT_F pill) const {
+    const float available = pill.right - pill.left;
     const float width = std::min(available, std::max(pillWidth, pillTrackSize_.width));
     const float reveal = lin(dotSize, pausedPillWidth, width);
     const float full = lin(pausedPillWidth, pillWidth, width);
     const float size = std::lerp(8.0f, std::lerp(16.0f, 20.0f, full), reveal);
-    const float center = (pill.left + pill.right - capture) / 2;
+    const float center = (pill.left + pill.right) / 2;
     const float left = center - width / 2 + std::lerp(7.0f, 8.0f, full);
     return box(std::lerp(center - size / 2, left, reveal), (pill.top + pill.bottom - size) / 2, size, size);
 }
@@ -1903,14 +1905,13 @@ void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool h
         return;
     }
     const auto center = pt((shape.left + shape.right) / 2, (shape.top + shape.bottom) / 2);
-    const float extra = captureWidth(now);
     const float t = pillTransitionProgress(now);
     const float fadeOut = pillLyricOut(t);
     const float oldOpacity = previousPillAlpha_ * (1 - fadeOut);
     const float newOpacity = pillLyricIn(t);
     const auto drawLyric = [&](PillText const& lyric, float opacity, float offset) {
         if (!lyric.layout || opacity <= 0) return;
-        target_->DrawTextLayout(pt(center.x + (pillLyricIconSpace - lyric.textSize.width - extra) / 2,
+        target_->DrawTextLayout(pt(center.x + (pillLyricIconSpace - lyric.textSize.width) / 2,
                                    center.y - lyric.textSize.height / 2 + offset),
                                 lyric.layout.get(), ink(rgb(inkColor, opacity)));
     };
@@ -1926,15 +1927,12 @@ void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool h
         mediaOpacity = (previousPillLyric_.layout ? 0 : oldOpacity) + (pillLyric_.layout ? 0 : newOpacity);
     }
     if (mediaOpacity > 0) {
-        if (pillContent_ == PillMode::media && !hideArt) drawArt(pillArtRect(shape, extra), mediaOpacity);
-        target_->SetTransform(D2D1::Matrix3x2F::Translation(center.x - extra / 2, center.y - pillCenterY) * base_);
+        if (pillContent_ == PillMode::media && !hideArt) drawArt(pillArtRect(shape), mediaOpacity);
+        target_->SetTransform(D2D1::Matrix3x2F::Translation(center.x, center.y - pillCenterY) * base_);
         if (mediaOpacity < 1) pushLayer(nullptr, mediaOpacity);
-        drawPillContent(now, shape.right - shape.left - extra, hideTitle);
+        drawPillContent(now, shape.right - shape.left, hideTitle);
         if (mediaOpacity < 1) popLayer();
         target_->SetTransform(base_);
-    }
-    if (extra > 0) {
-        drawCaptureIndicators(pt(shape.right - 17, center.y), captureAmounts(now));
     }
 }
 
@@ -1959,7 +1957,7 @@ void Island::drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F sh
     drawCaptureIndicators(right, amounts);
 }
 
-void Island::drawMediaPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity) {
+void Island::drawCompanionPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity) {
     if (opacity <= 0) return;
     const auto [screen, camera, mic] = captureAmounts(now);
     const float radius = std::min(shape.right - shape.left, shape.bottom - shape.top) / 2;
@@ -2104,9 +2102,9 @@ void Island::drawIsland(Clock::time_point now, float value, float amount, bool m
     }
     if (sharedArt) {
         const auto panelArt = box(content.left + padX, content.top + mediaCoverTop, mediaCoverSize, mediaCoverSize);
-        drawArt(mixRect(pillArtRect(from, captureWidth(now)), panelArt, value), 1);
+        drawArt(mixRect(pillArtRect(from), panelArt, value), 1);
     }
-    if (morphTitle) drawSharedTitle(from, content, captureWidth(now), value);
+    if (morphTitle) drawSharedTitle(from, content, value);
     popLayer();
 }
 
@@ -2874,14 +2872,14 @@ void Island::drawNav(D2D1_RECT_F panel, bool record) {
     target_->DrawLine(pt(x, y + 2), pt(x, y + 7), ink(color), 1.4f, roundStroke_.get());
 }
 
-void Island::drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float capture, float value) {
+void Island::drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float value) {
     // The title is drawn at its panel size and scaled down to the pill's 12px at the start.
     constexpr float compactScale = 12.0f / mediaTitleSize;
     const float scale = std::lerp(compactScale, 1.0f, value);
     const float x = std::lerp(compact.left + pillTrackLeft, panel.left + mediaTitleLeft, value);
     const float y = std::lerp((compact.top + compact.bottom - mediaTitleHeight * compactScale) / 2,
                               panel.top + mediaTitleTop, value);
-    const float compactWidth = compact.right - compact.left - capture - pillTrackLeft - pillTrackRight;
+    const float compactWidth = compact.right - compact.left - pillTrackLeft - pillTrackRight;
     const float width = std::lerp(compactWidth / compactScale, mediaTitleWidth, value);
     target_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) * D2D1::Matrix3x2F::Translation(x, y) * base_);
     text(title(), mediaTitleFont_.get(), box(0, 0, width, mediaTitleHeight), rgb(inkColor));
@@ -3031,7 +3029,7 @@ float Island::measure(std::wstring_view value, IDWriteTextFormat* format) {
 
 Island::CaptureIndicator const* Island::captureHandoff() const {
     if (!animate_ || !bubbleShowing() || alertTo_ != 0 ||
-        (pillMode_ != PillMode::dot && pillMode_ != PillMode::media) ||
+        pillMode_ == PillMode::privacy ||
         std::ranges::any_of(captureIndicators_, &CaptureIndicator::shown)) return nullptr;
     const auto item = std::ranges::find(captureIndicators_, alert_->kind, &CaptureIndicator::kind);
     return item != captureIndicators_.end() && !item->app.empty() ? &*item : nullptr;
@@ -3042,11 +3040,11 @@ void Island::drawCaptureHandoff(Clock::time_point now, float amount) {
     const auto compact = compactShape(now, amount);
     const float centerY = (compact.top + compact.bottom) / 2;
     constexpr float width = 2 * privacyPadding + captureSlot;
-    const bool media = pillMode_ == PillMode::media && amount >= 1;
-    const auto destination = box(media ? compact.right + privacyGap : -width / 2,
+    const bool companion = pillMode_ != PillMode::dot && amount >= 1;
+    const auto destination = box(companion ? compact.right + privacyGap : -width / 2,
                                  centerY - privacyHeight / 2, width, privacyHeight);
     auto origin = box(-alertWidth_ / 2, pillTop, alertWidth_, pillHeight);
-    if (media) {
+    if (companion) {
         const float height = compact.bottom - compact.top;
         const float gap = releaseGap * height / pillHeight;
         const float alertWidth = std::max(height, alertWidth_);
@@ -3092,7 +3090,7 @@ void Island::drawSplit(Clock::time_point now, float amount) {
         const float d = (2 * capRadius + releaseGap) * travel;
         const float bubbleWidth = std::lerp(pillHeight, std::max(pillHeight, target / scale), widen);
         const float span = p < pinchAt ? width + d : width + releaseGap + bubbleWidth;
-        left = (captureWidth(now) / scale - span) / 2;
+        left = -span / 2;
         const float bx = left + width - capRadius;
         alertOpacity = lin(pinchAt - 0.1f, pinchAt + 0.12f, p);
         copyOpacity = lin(0.8f, 1, p);
@@ -3140,7 +3138,7 @@ void Island::drawSplit(Clock::time_point now, float amount) {
     }
     drawAlertContent(area, alertOpacity, copyOpacity);
     if (fromPill) {
-        if (const auto privacy = mediaPrivacyShape(now, area)) drawMediaPrivacy(now, *privacy, 1);
+        if (const auto privacy = companionPrivacyShape(now, area)) drawCompanionPrivacy(now, *privacy, 1);
     }
 }
 
@@ -3351,14 +3349,13 @@ void Island::draw(HWND window) {
         const float height = amount >= 1 ? size.height : pillHeight;
         const float bubble = std::max(alertWidth_, height);
         const float width = amount >= 1 ? size.width + releaseGap * height / pillHeight + bubble : bubble;
-        const float extra = amount >= 1 ? captureWidth(now) : 0;
-        privacyAnchor = box((extra - width) / 2, pillTop, width, height);
+        privacyAnchor = box(-width / 2, pillTop, width, height);
         bounds = unite(bounds, grow(privacyAnchor, 2, 2));
-        if (captureHandoff() && pillMode_ == PillMode::media)
+        if (captureHandoff() && pillMode_ != PillMode::dot)
             bounds.right = std::max(bounds.right, compact.right + privacyGap + 2 * privacyPadding + captureSlot + 2);
     }
     const float compactOpacity = lin(0.55f, 1, amount) * (1 - lin(0, 0.38f, value));
-    const auto privacy = compactOpacity > 0 ? mediaPrivacyShape(now, privacyAnchor) : std::nullopt;
+    const auto privacy = compactOpacity > 0 ? companionPrivacyShape(now, privacyAnchor) : std::nullopt;
     if (privacy) bounds = unite(bounds, grow(*privacy, 2, 2));
     bounds.top = std::max(bounds.top, 0.0f);
     origin_ = {static_cast<LONG>(std::floor(bounds.left * scale_)), static_cast<LONG>(std::floor(bounds.top * scale_))};
@@ -3385,7 +3382,7 @@ void Island::draw(HWND window) {
     if (splitVisible) {
         drawSplit(now, amount);
     } else {
-        if (privacy) drawMediaPrivacy(now, *privacy, compactOpacity);
+        if (privacy) drawCompanionPrivacy(now, *privacy, compactOpacity);
         drawIsland(now, value, amount, morphTitle);
     }
     const HRESULT result = target_->EndDraw();
