@@ -72,6 +72,9 @@ constexpr auto shapeTime = 500ms;
 constexpr auto screenFadeTime = 310ms;
 constexpr auto captureTime = 230ms;
 constexpr float captureSlot = 19;
+constexpr float privacyHeight = 30;
+constexpr float privacyPadding = 6;
+constexpr float privacyGap = 8;
 constexpr auto themeTime = 700ms;
 constexpr auto splitTime = 960ms;
 constexpr auto inlineAlertTime = 2000ms;
@@ -705,6 +708,7 @@ float Island::captureProgress(Clock::time_point now, float from, bool active) co
 }
 
 float Island::captureWidth(Clock::time_point now) const {
+    if (pillContent_ == PillMode::media || pillContent_ == PillMode::privacy) return 0;
     return captureSlot * (captureProgress(now, microphoneFrom_, microphoneColor_.has_value()) +
                           captureProgress(now, cameraFrom_, cameraColor_.has_value()));
 }
@@ -716,6 +720,17 @@ D2D1_RECT_F Island::compactShape(Clock::time_point now, float amount) const {
     const float height = std::lerp(dotSize, size.height, t);
     return box((captureWidth(now) * t - width) / 2,
                std::lerp(pillCenterY - dotSize / 2, pillTop, t), width, height);
+}
+
+std::optional<D2D1_RECT_F> Island::mediaPrivacyShape(Clock::time_point now, D2D1_RECT_F anchor) const {
+    if (pillContent_ != PillMode::media) return std::nullopt;
+    const float mic = captureProgress(now, microphoneFrom_, microphoneColor_.has_value());
+    const float camera = captureProgress(now, cameraFrom_, cameraColor_.has_value());
+    const float presence = std::max(mic, camera);
+    if (presence <= .01f) return std::nullopt;
+    const float width = 2 * privacyPadding * presence + captureSlot * (mic + camera);
+    const float centerY = (anchor.top + anchor.bottom) / 2;
+    return box(anchor.right + privacyGap, centerY - privacyHeight / 2, width, privacyHeight);
 }
 
 Island::MotionSample Island::panelMotion(Clock::time_point now) const {
@@ -805,10 +820,8 @@ void Island::updatePill(Clock::time_point now) {
             if (autoCycle_) pillTitle_ += L" " + std::to_wstring(focusRound_) + L"/" + std::to_wstring(focusRounds);
         }
         else if (mode == PillMode::timer) pillTitle_ = L"Timer";
-        else if (mode == PillMode::privacy) {
-            pillTitle_ = microphoneColor_ && cameraColor_ ? L"Mic & camera in use" :
-                microphoneColor_ ? L"Mic in use" : L"Camera in use";
-        } else pillTitle_ = screenLabel(screen_);
+        else if (mode == PillMode::privacy) pillTitle_.clear();
+        else pillTitle_ = screenLabel(screen_);
         pillPlaying_ = media_.playing;
     }
     if (bubbleShowing()) return;   // never reshape while a bubble is split off
@@ -834,12 +847,16 @@ void Island::updatePillLayout(Clock::time_point now, float workWidth) {
         if (next != lines.begin()) line = (next - 1)->text;
         if (line.find_first_not_of(L" \t\r\n") == std::wstring_view::npos || line.size() > 4096) line = {};
     }
-    const float reserved = captureSlot * (static_cast<int>(microphoneColor_.has_value()) +
-                                          static_cast<int>(cameraColor_.has_value()));
+    const auto captureCount = static_cast<unsigned>(microphoneColor_.has_value()) +
+                              static_cast<unsigned>(cameraColor_.has_value());
+    const float captureSlots = captureSlot * static_cast<float>(captureCount);
+    const float reserved = captureSlots + (captureCount ? privacyGap + 2 * privacyPadding : 0);
     const auto compactAt = pausedAt_ + std::chrono::seconds(preferences_.pauseSeconds());
     const bool showTitle = pillMode_ != PillMode::media || media_.playing || preferences_.compactPause == 3 || now < compactAt;
     D2D1_SIZE_F target{pillWidth, pillHeight};
-    if (pillMode_ == PillMode::media) {
+    if (pillMode_ == PillMode::privacy) {
+        target = D2D1::SizeF(2 * privacyPadding + captureSlots, privacyHeight);
+    } else if (pillMode_ == PillMode::media) {
         const float trackWidth = std::max(pillWidth, workWidth - maxBubble - 60 - reserved);
         const float minimum = preferences_.fixedPillMinimum ? pillWidth : 114;
         if (pillTrackTitle_.text != pillTitle_ || pillTrackMaxWidth_ != trackWidth || pillTrackMinimum_ != minimum) {
@@ -905,6 +922,7 @@ void Island::updatePillLayout(Clock::time_point now, float workWidth) {
     pillLyricMaxWidth_ = maxWidth;
     pillSizeFrom_ = pillSize(now);
     pillSizeFrom_.width -= captureWidth(now);
+    if (pillMode_ == PillMode::privacy && pillAmount(now) <= 0) pillSizeFrom_ = target;
     pillSizeTarget_ = target;
     pillLyric_ = std::move(next);
     pillTitleFrom_ = pillTitleOpacity(now);
@@ -1324,9 +1342,12 @@ bool Island::scroll(POINT client, int delta) {
         wheelRemainder_ = 0;
         return scrollLyrics(delta);
     }
-    if (scratchEditor_ && inside(*scratchEditor_, point)) {
+    if (!scratchEditing_ && scratchEditor_ && scratchScrollLimit_ > 0 && inside(*scratchEditor_, point)) {
         wheelRemainder_ = 0;
-        return false;
+        const auto offset = std::clamp(scratchScroll_ - 48.0f * static_cast<float>(delta) / WHEEL_DELTA, 0.0f, scratchScrollLimit_);
+        if (offset == scratchScroll_) return false;
+        scratchScroll_ = offset;
+        return true;
     }
 
     const auto target = targetAt(point);
@@ -1827,6 +1848,10 @@ static D2D1_RECT_F compactHit(D2D1_RECT_F shape, float amount) {
 }
 
 void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideTitle, bool hideArt) {
+    if (pillContent_ == PillMode::privacy) {
+        drawCenteredCaptureIndicators(now, shape);
+        return;
+    }
     const auto center = pt((shape.left + shape.right) / 2, (shape.top + shape.bottom) / 2);
     const float extra = captureWidth(now);
     const float t = pillTransitionProgress(now);
@@ -1858,9 +1883,11 @@ void Island::drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool h
         if (mediaOpacity < 1) popLayer();
         target_->SetTransform(base_);
     }
-    drawCaptureIndicators(pt(shape.right - 17, center.y),
-        captureProgress(now, microphoneFrom_, microphoneColor_.has_value()),
-        captureProgress(now, cameraFrom_, cameraColor_.has_value()));
+    if (extra > 0) {
+        drawCaptureIndicators(pt(shape.right - 17, center.y),
+            captureProgress(now, microphoneFrom_, microphoneColor_.has_value()),
+            captureProgress(now, cameraFrom_, cameraColor_.has_value()));
+    }
 }
 
 void Island::drawCaptureIndicators(D2D1_POINT_2F right, float mic, float camera) {
@@ -1875,6 +1902,26 @@ void Island::drawCaptureIndicators(D2D1_POINT_2F right, float mic, float camera)
     draw(IslandAlert::Kind::microphone, microphoneColor_, mic);
 }
 
+void Island::drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F shape) {
+    const float mic = captureProgress(now, microphoneFrom_, microphoneColor_.has_value());
+    const float camera = captureProgress(now, cameraFrom_, cameraColor_.has_value());
+    const auto right = pt((shape.left + shape.right + captureSlot * std::min(mic, camera)) / 2,
+                          (shape.top + shape.bottom) / 2);
+    drawCaptureIndicators(right, mic, camera);
+}
+
+void Island::drawMediaPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity) {
+    if (opacity <= 0) return;
+    const float mic = captureProgress(now, microphoneFrom_, microphoneColor_.has_value());
+    const float camera = captureProgress(now, cameraFrom_, cameraColor_.has_value());
+    const float radius = std::min(shape.right - shape.left, shape.bottom - shape.top) / 2;
+    pushLayer(nullptr, opacity * std::max(mic, camera));
+    fillShell(rounded(shape, radius));
+    target_->DrawRoundedRectangle(rounded(shape, radius), ink(white(0.13f)), 1);
+    drawCenteredCaptureIndicators(now, shape);
+    popLayer();
+}
+
 void Island::drawLyricsGlyph(D2D1_POINT_2F origin, D2D1_COLOR_F color) {
     const auto x = origin.x, y = origin.y;
     target_->FillEllipse(D2D1::Ellipse(pt(x + 3.5f, y + 12), 2.7f, 1.9f), ink(color));
@@ -1886,10 +1933,6 @@ void Island::drawLyricsGlyph(D2D1_POINT_2F origin, D2D1_COLOR_F color) {
 
 void Island::drawPillContent(Clock::time_point now, float width, bool hideTitle) {
     const float right = pillLeft + pillWidth - 12;
-    if (pillContent_ == PillMode::privacy) {
-        text(pillTitle_, pillTitleFont_.get(), box(pillLeft + 14, pillTop, right - pillLeft - 14, pillHeight), rgb(inkColor));
-        return;
-    }
     if (pillContent_ == PillMode::preview) {
         drawScreenGlyph(screen_, box(pillLeft + 8, pillTop, 26, pillHeight), accent_);
         text(pillTitle_, pillTitleFont_.get(), box(pillLeft + 39, pillTop, right - (pillLeft + 39), pillHeight),
@@ -2368,9 +2411,30 @@ void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
     target_->DrawRoundedRectangle(rounded(field, 6), ink(edge), 1);
     const auto editor = grow(field, -3, -3);
     if (!scratchEditing_) {
-        const bool empty = !scratchpad_ || scratchpad_->text.empty();
-        text(empty ? L"Write a quick note…" : std::wstring_view(scratchpad_->text), scratchFont_.get(),
-             grow(editor, -7, -4), rgb(empty ? mutedColor : inkColor));
+        const auto viewport = grow(editor, -7, -4);
+        if (!scratchpad_ || scratchpad_->text.empty()) {
+            scratchLayout_ = nullptr;
+            scratchLayoutText_.clear();
+            scratchScroll_ = scratchScrollLimit_ = 0;
+            text(L"Write a quick note…", scratchFont_.get(), viewport, rgb(mutedColor));
+        } else {
+            const float width = viewport.right - viewport.left;
+            if (!scratchLayout_ || scratchLayoutText_ != scratchpad_->text || std::abs(scratchLayout_->GetMaxWidth() - width) > .1f) {
+                scratchLayoutText_ = scratchpad_->text;
+                scratchLayout_ = nullptr;
+                winrt::check_hresult(fonts_->CreateTextLayout(scratchLayoutText_.data(),
+                    static_cast<UINT32>(scratchLayoutText_.size()), scratchFont_.get(), width, 1'000'000,
+                    scratchLayout_.put()));
+                DWRITE_TEXT_METRICS metrics{};
+                winrt::check_hresult(scratchLayout_->GetMetrics(&metrics));
+                scratchScrollLimit_ = std::max(0.0f, metrics.height - (viewport.bottom - viewport.top));
+                scratchScroll_ = std::min(scratchScroll_, scratchScrollLimit_);
+            }
+            target_->PushAxisAlignedClip(viewport, D2D1_ANTIALIAS_MODE_ALIASED);
+            target_->DrawTextLayout(pt(viewport.left, viewport.top - scratchScroll_), scratchLayout_.get(),
+                                    ink(rgb(inkColor)), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            target_->PopAxisAlignedClip();
+        }
     }
     if (record) {
         scratchEditor_ = editor;
@@ -2929,6 +2993,9 @@ void Island::drawSplit(Clock::time_point now, float amount) {
         popLayer();
     }
     drawAlertContent(area, alertOpacity, copyOpacity);
+    if (fromPill) {
+        if (const auto privacy = mediaPrivacyShape(now, area)) drawMediaPrivacy(now, *privacy, 1);
+    }
 }
 
 void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float copyOpacity) {
@@ -3126,14 +3193,20 @@ void Island::draw(HWND window) {
     const auto compact = compactShape(now, amount);
     auto bounds = unite(grow(compact, 2, 2), compactHit(compact, amount));
     if (panelVisible) bounds = unite(bounds, grow(panelRect(now), 2, 2));
-    if (bubbleShowing()) {
+    const bool splitVisible = !panelVisible && bubbleShowing();
+    auto privacyAnchor = compact;
+    if (splitVisible) {
         const auto size = pillSize(now);
         const float height = amount >= 1 ? size.height : pillHeight;
         const float bubble = std::max(alertWidth_, height);
         const float width = amount >= 1 ? size.width + releaseGap * height / pillHeight + bubble : bubble;
         const float extra = amount >= 1 ? captureWidth(now) : 0;
-        bounds = unite(bounds, grow(box((extra - width) / 2, pillTop, width, height), 2, 2));
+        privacyAnchor = box((extra - width) / 2, pillTop, width, height);
+        bounds = unite(bounds, grow(privacyAnchor, 2, 2));
     }
+    const float compactOpacity = lin(0.55f, 1, amount) * (1 - lin(0, 0.38f, value));
+    const auto privacy = compactOpacity > 0 ? mediaPrivacyShape(now, privacyAnchor) : std::nullopt;
+    if (privacy) bounds = unite(bounds, grow(*privacy, 2, 2));
     bounds.top = std::max(bounds.top, 0.0f);
     origin_ = {static_cast<LONG>(std::floor(bounds.left * scale_)), static_cast<LONG>(std::floor(bounds.top * scale_))};
     const int width = static_cast<int>(std::ceil(bounds.right * scale_)) - origin_.x;
@@ -3156,8 +3229,12 @@ void Island::draw(HWND window) {
     target_->BeginDraw();
     target_->SetTransform(base_);
     target_->Clear(D2D1::ColorF(0, 0));
-    if (!panelVisible && bubbleShowing()) drawSplit(now, amount);
-    else drawIsland(now, value, amount, morphTitle);
+    if (splitVisible) {
+        drawSplit(now, amount);
+    } else {
+        if (privacy) drawMediaPrivacy(now, *privacy, compactOpacity);
+        drawIsland(now, value, amount, morphTitle);
+    }
     const HRESULT result = target_->EndDraw();
     if (result == D2DERR_RECREATE_TARGET) {
         releaseDeviceResources();

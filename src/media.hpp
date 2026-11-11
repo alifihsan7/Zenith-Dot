@@ -40,6 +40,7 @@ struct MediaSource {
 struct MediaState {
     bool hasSession = false;
     bool playing = false;
+    bool sourceHeld = false;
     std::wstring appId;
     std::wstring sourceId;
     std::wstring title;

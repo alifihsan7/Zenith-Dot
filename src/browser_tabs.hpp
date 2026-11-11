@@ -14,7 +14,7 @@ public:
     bool receive(HWND sender, COPYDATASTRUCT const& message);
     bool prune();
     bool select(std::wstring const& id);
-    MediaState combine(MediaState const& native) const;
+    MediaState combine(MediaState const& native);
     void control(std::wstring const& source, MediaCommand command) const;
     void seek(std::wstring const& source, double seconds) const;
     void activate(std::wstring const& source) const;

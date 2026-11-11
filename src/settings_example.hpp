@@ -18,6 +18,7 @@ private:
     Island island_;
     MediaState media_;
     LyricsView lyrics_;
+    ScratchpadView scratch_;
     SettingsTest test_;
     Clock::time_point start_ = Clock::now();
     Clock::time_point end_;

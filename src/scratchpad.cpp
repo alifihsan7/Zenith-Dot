@@ -5,6 +5,7 @@
 #include <windowsx.h>
 #include <winrt/base.h>
 
+#include <algorithm>
 #include <fstream>
 #include <memory>
 
@@ -135,6 +136,38 @@ void Scratchpad::close(bool restoreFocus) {
     if (background_) DeleteObject(background_);
     font_ = nullptr;
     background_ = nullptr;
+    wheelRemainder_ = 0;
+}
+
+bool Scratchpad::scrollAt(POINT screen, int delta) {
+    RECT bounds{};
+    if (!edit_ || !GetWindowRect(edit_, &bounds) || !PtInRect(&bounds, screen)) {
+        wheelRemainder_ = 0;
+        return false;
+    }
+
+    RECT format{};
+    SendMessageW(edit_, EM_GETRECT, 0, reinterpret_cast<LPARAM>(&format));
+    TEXTMETRICW metrics{};
+    const auto dc = GetDC(edit_);
+    if (dc) {
+        const auto previous = font_ ? SelectObject(dc, font_) : nullptr;
+        GetTextMetricsW(dc, &metrics);
+        if (previous && previous != HGDI_ERROR) SelectObject(dc, previous);
+        ReleaseDC(edit_, dc);
+    }
+    const auto lines = SendMessageW(edit_, EM_GETLINECOUNT, 0, 0);
+    if (metrics.tmHeight <= 0 || lines <= std::max(1L, (format.bottom - format.top) / metrics.tmHeight)) {
+        wheelRemainder_ = 0;
+        return false;
+    }
+
+    if ((wheelRemainder_ > 0 && delta < 0) || (wheelRemainder_ < 0 && delta > 0)) wheelRemainder_ = 0;
+    wheelRemainder_ += delta;
+    const int steps = wheelRemainder_ / WHEEL_DELTA;
+    wheelRemainder_ %= WHEEL_DELTA;
+    if (steps) SendMessageW(edit_, EM_LINESCROLL, 0, -3 * steps);
+    return true;
 }
 
 LRESULT CALLBACK Scratchpad::dispatch(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -193,7 +226,10 @@ LRESULT CALLBACK Scratchpad::editInput(HWND edit, UINT message, WPARAM wparam, L
         return 0;
     }
     if (message == WM_MOUSEWHEEL) {
-        SendMessageW(edit, EM_LINESCROLL, 0, -3 * GET_WHEEL_DELTA_WPARAM(wparam) / WHEEL_DELTA);
+        const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        if (!self->scrollAt(point, GET_WHEEL_DELTA_WPARAM(wparam))) {
+            PostMessageW(self->owner_, WM_MOUSEWHEEL, wparam, lparam);
+        }
         return 0;
     }
     return DefSubclassProc(edit, message, wparam, lparam);

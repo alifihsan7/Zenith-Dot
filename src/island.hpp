@@ -159,6 +159,7 @@ private:
     float captureWidth(Clock::time_point now) const;
     float captureProgress(Clock::time_point now, float from, bool active) const;
     D2D1_RECT_F compactShape(Clock::time_point now, float amount) const;
+    std::optional<D2D1_RECT_F> mediaPrivacyShape(Clock::time_point now, D2D1_RECT_F anchor) const;
     float visibility(Clock::time_point now) const;
     float panelValue(Clock::time_point now) const;
     MotionSample panelMotion(Clock::time_point now) const;
@@ -214,6 +215,8 @@ private:
     void drawScratchpad(D2D1_RECT_F panel, bool record);
     void drawDropZone(D2D1_RECT_F panel, bool record);
     void drawCaptureIndicators(D2D1_POINT_2F right, float mic, float camera);
+    void drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F shape);
+    void drawMediaPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity);
     void drawSystem(D2D1_RECT_F panel, bool record);
     void drawPrayerSchedule(D2D1_RECT_F panel);
     void drawAppVolume(size_t index, D2D1_RECT_F row, bool record);
@@ -338,6 +341,10 @@ private:
     bool panelPinned_ = false;
     ScratchpadView const* scratchpad_ = nullptr;
     std::optional<D2D1_RECT_F> scratchEditor_;
+    winrt::com_ptr<IDWriteTextLayout> scratchLayout_;
+    std::wstring scratchLayoutText_;
+    float scratchScroll_ = 0;
+    float scratchScrollLimit_ = 0;
     LyricsView const* lyrics_ = nullptr;
     float lyricsWidth_ = 0;
     float lyricScrollFrom_ = 0;

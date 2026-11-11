@@ -155,33 +155,50 @@ void MediaMonitor::updateSessions() {
 }
 
 bool MediaMonitor::selectSession() {
-    const auto playing = std::ranges::find_if(sessions_, [](WatchedSession const& entry) {
-        return isPlaying(entry.session);
-    });
-    Session next{nullptr};
-    // Keep the user's selection while its session exists, even if another app is playing.
-    if (!preferred_.empty()) {
-        Session picked{nullptr};
+    const bool stillOpen = selected_ &&
+        std::ranges::find(sessions_, selected_, &WatchedSession::session) != sessions_.end();
+    const auto findApp = [&](std::wstring const& appId) {
+        Session match{nullptr};
+        if (appId.empty()) return match;
         for (const auto& entry : sessions_) {
-            if (appIdOf(entry.session) != preferred_) continue;
-            if (!picked || isPlaying(entry.session)) picked = entry.session;
+            if (appIdOf(entry.session) != appId) continue;
+            if (!match || isPlaying(entry.session)) match = entry.session;
         }
-        if (picked) {
-            next = picked;
-        } else {
-            preferred_.clear();
+        return match;
+    };
+    Session next{nullptr};
+    bool hold = false;
+    if (!preferred_.empty()) {
+        next = stillOpen && state_.appId == preferred_ ? selected_ : findApp(preferred_);
+        hold = static_cast<bool>(next);
+        if (!hold) preferred_.clear();
+    }
+    if (!next && (state_.sourceHeld || (stillOpen && isPlaying(selected_)))) {
+        next = stillOpen ? selected_ : findApp(state_.appId);
+        hold = static_cast<bool>(next);
+    }
+    if (!next && !sessions_.empty()) {
+        const auto current = manager_.GetCurrentSession();
+        const auto watched = std::ranges::find(sessions_, current, &WatchedSession::session);
+        next = watched != sessions_.end() ? watched->session : sessions_.front().session;
+        if (!isPlaying(next)) {
+            const auto playing = std::ranges::find_if(sessions_, [](WatchedSession const& entry) {
+                return isPlaying(entry.session);
+            });
+            if (playing != sessions_.end()) next = playing->session;
         }
+        hold = isPlaying(next);
     }
-    if (!next) {
-        next = manager_.GetCurrentSession();
-        if ((!next || !isPlaying(next)) && playing != sessions_.end()) next = playing->session;
+    if (selected_ == next) {
+        state_.sourceHeld = hold;
+        return false;
     }
-    if (selected_ == next) return false;
 
     metadataChanged_.revoke();
     timelineChanged_.revoke();
     selected_ = next;
     state_ = {};
+    state_.sourceHeld = hold;
     timelineUpdated_ = {};
     if (selected_) {
         try {
@@ -219,6 +236,7 @@ void MediaMonitor::updateState() {
             const auto info = selected_.GetPlaybackInfo();
             const auto properties = selected_.GetTimelineProperties();
             state_.playing = info && info.PlaybackStatus() == Status::Playing;
+            state_.sourceHeld = state_.sourceHeld || state_.playing;
             state_.canSeek = info && info.Controls().IsPlaybackPositionEnabled();
             const auto rate = info ? info.PlaybackRate() : nullptr;
             state_.rate = rate ? rate.Value() : 1.0;
@@ -365,7 +383,7 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::readMetadata() {
 
 void MediaMonitor::select(std::wstring const& appId) {
     preferred_ = appId;
-    PostMessageW(window_, notification, playback, 0);
+    refresh(playback);
 }
 
 winrt::Windows::Foundation::IAsyncAction MediaMonitor::seek(double seconds) {

@@ -211,21 +211,23 @@ bool BrowserTabs::select(std::wstring const& id) {
     return tab != nullptr;
 }
 
-MediaState BrowserTabs::combine(MediaState const& native) const {
+MediaState BrowserTabs::combine(MediaState const& native) {
     if (tabs_.empty()) return native;
     const auto browser = browserName(native.appId);
     const auto* tab = find(selected_);
     if (!tab) {
         for (const auto& entry : tabs_) {
-            if (native.hasSession && browser != entry.media.appId) continue;
-            if (!tab || (entry.media.playing && !tab->media.playing) ||
-                (entry.media.playing == tab->media.playing &&
-                 matchingTrack(native, entry.media) && !matchingTrack(native, tab->media))) {
+            const bool sameBrowser = browser == entry.media.appId;
+            if (native.hasSession && !sameBrowser && (native.sourceHeld || !entry.media.playing)) continue;
+            const bool matches = native.sourceHeld && sameBrowser && matchingTrack(native, entry.media);
+            const bool chosenMatches = native.sourceHeld && tab && browser == tab->media.appId && matchingTrack(native, tab->media);
+            if (!tab || matches > chosenMatches || (matches == chosenMatches && entry.media.playing && !tab->media.playing)) {
                 tab = &entry;
             }
         }
     }
 
+    if (tab && tab->media.playing) selected_ = tab->media.sourceId;
     MediaState shown = tab ? tab->media : native;
     if (tab && browser == shown.appId && matchingTrack(native, shown)) {
         shown.cover = native.cover;

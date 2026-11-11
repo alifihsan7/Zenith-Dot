@@ -876,8 +876,10 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_MOUSEWHEEL: {
         if (example_) return 0;
         POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
+        if (scratchpad_.scrollAt(point, delta)) return 0;
         ScreenToClient(window_, &point);
-        if (island_.scroll(point, GET_WHEEL_DELTA_WPARAM(wparam))) frame();
+        if (island_.scroll(point, delta)) frame();
         return 0;
     }
     case WM_LBUTTONDOWN: {

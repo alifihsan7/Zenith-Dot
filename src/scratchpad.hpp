@@ -25,6 +25,7 @@ public:
     bool open(HWND owner, RECT bounds);
     void place(RECT bounds);
     void close(bool restoreFocus = true);
+    bool scrollAt(POINT screen, int delta);
     HWND window() const { return window_; }
     ScratchpadView const& view() const { return view_; }
 
@@ -42,6 +43,7 @@ private:
     HFONT font_ = nullptr;
     HBRUSH background_ = nullptr;
     bool dirty_ = false;
+    int wheelRemainder_ = 0;
 };
 
 }

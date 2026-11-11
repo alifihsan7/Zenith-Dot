@@ -87,7 +87,10 @@ SettingsExample::SettingsExample(SettingsTest test, Feature feature, Settings co
     case SettingsTest::feature:
     case SettingsTest::order:
         if (feature == Feature::media) island_.setMedia(media_);
-        if (feature == Feature::scratch) island_.setScratchpad({L"Example note"});
+        if (feature == Feature::scratch) {
+            scratch_.text = L"Example note";
+            island_.setScratchpad(scratch_);
+        }
         if (feature == Feature::system) {
             island_.setSystem({12, 45});
             island_.setNetwork({NetworkAccess::internet, NetworkType::wifi, L"Home Wi-Fi"});
