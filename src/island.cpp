@@ -43,11 +43,12 @@ constexpr float appRowHeight = 30;
 constexpr size_t visibleAppRows = 3;
 constexpr float mediaPanelHeight = 239;
 constexpr float mediaIdleHeight = 88;
-constexpr float mediaCoverSize = 58;
+constexpr float mediaCoverSize = 80;
 constexpr float mediaCoverTop = 12;
-constexpr float mediaTitleLeft = 84;
-constexpr float mediaTitleTop = 23;
-constexpr float mediaControlsCenterY = 152;
+constexpr float mediaTitleSize = 19;
+constexpr float mediaTitleHeight = 26;
+constexpr float mediaTitleTop = 30;
+constexpr float mediaControlsCenterY = 159;
 constexpr float mediaActionHeight = 32;
 constexpr float mediaActionsTop = mediaControlsCenterY - mediaActionHeight / 2;
 constexpr size_t sourceColumns = 8;
@@ -56,6 +57,7 @@ constexpr float maxLyricsWidth = 338;
 constexpr float panelRadius = 22;
 constexpr float padTop = 13;
 constexpr float padX = 14;
+constexpr float mediaTitleLeft = padX + mediaCoverSize + 12;
 constexpr float mediaTitleWidth = mediaPanelWidth - mediaTitleLeft - padX;
 constexpr float padBottom = 8;
 constexpr float innerWidth = panelWidth - 2 * padX;
@@ -1664,6 +1666,7 @@ void Island::prepareText() {
     create(pillTitleFont_, L"Segoe UI", 12, strong, start);
     create(timerFont_, L"Segoe UI", 12, strong, end);
     create(titleFont_, L"Segoe UI", 16, strong, start);
+    create(mediaTitleFont_, L"Segoe UI", mediaTitleSize, strong, start);
     create(headingCenterFont_, L"Segoe UI", 16, strong, center);
     create(bodyFont_, L"Segoe UI", 12, normal, start);
     winrt::com_ptr<IDWriteFontCollection> systemFonts;
@@ -2113,9 +2116,10 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
         if (record) addTarget(cover, Hit::cover);
     }
     if (!hideTitle)
-        text(title(), titleFont_.get(), box(x + mediaTitleLeft, y + mediaTitleTop, mediaTitleWidth, 22.4f), rgb(inkColor));
+        text(title(), mediaTitleFont_.get(), box(x + mediaTitleLeft, y + mediaTitleTop, mediaTitleWidth, mediaTitleHeight),
+             rgb(inkColor));
     const auto& detail = media_.artist.empty() ? media_.album : media_.artist;
-    text(detail, bodyFont_.get(), box(x + mediaTitleLeft, y + mediaTitleTop + 22.4f, mediaTitleWidth, 16.8f),
+    text(detail, bodyFont_.get(), box(x + mediaTitleLeft, y + mediaTitleTop + mediaTitleHeight, mediaTitleWidth, 16.8f),
          rgb(mutedColor));
 
     if (!media_.sources.empty()) {
@@ -2142,7 +2146,7 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
     drawLyricsGlyph(pt(lyricButton.left + 9, lyricButton.top + 8), lyricsOpen_ ? rgb(readoutColor) : rgb(inkColor));
 
     // Timeline.
-    const auto rail = box(x + padX, y + 78, mediaInnerWidth, 15);
+    const auto rail = box(x + padX, cover.bottom + 9, mediaInnerWidth, 15);
     timelineRect_ = rail;
     const float middle = rail.top + 7.5f;
     const bool timed = media_.duration > 0;
@@ -2828,13 +2832,15 @@ void Island::drawNav(D2D1_RECT_F panel, bool record) {
 
 void Island::drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float capture, float value) {
     // The title is drawn at its panel size and scaled down to the pill's 12px at the start.
-    const float scale = std::lerp(12.0f / 16.0f, 1.0f, value);
+    constexpr float compactScale = 12.0f / mediaTitleSize;
+    const float scale = std::lerp(compactScale, 1.0f, value);
     const float x = std::lerp(compact.left + pillTrackLeft, panel.left + mediaTitleLeft, value);
-    const float y = std::lerp((compact.top + compact.bottom - 22.4f * 0.75f) / 2, panel.top + mediaTitleTop, value);
+    const float y = std::lerp((compact.top + compact.bottom - mediaTitleHeight * compactScale) / 2,
+                              panel.top + mediaTitleTop, value);
     const float compactWidth = compact.right - compact.left - capture - pillTrackLeft - pillTrackRight;
-    const float width = std::lerp(compactWidth / 0.75f, mediaTitleWidth, value);
+    const float width = std::lerp(compactWidth / compactScale, mediaTitleWidth, value);
     target_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) * D2D1::Matrix3x2F::Translation(x, y) * base_);
-    text(title(), titleFont_.get(), box(0, 0, width, 22.4f), rgb(inkColor));
+    text(title(), mediaTitleFont_.get(), box(0, 0, width, mediaTitleHeight), rgb(inkColor));
     target_->SetTransform(base_);
 }
 

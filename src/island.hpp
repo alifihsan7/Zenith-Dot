@@ -424,6 +424,7 @@ private:
     winrt::com_ptr<IDWriteTextFormat> pillTitleFont_;
     winrt::com_ptr<IDWriteTextFormat> timerFont_;
     winrt::com_ptr<IDWriteTextFormat> titleFont_;
+    winrt::com_ptr<IDWriteTextFormat> mediaTitleFont_;
     winrt::com_ptr<IDWriteTextFormat> headingCenterFont_;
     winrt::com_ptr<IDWriteTextFormat> bodyFont_;
     winrt::com_ptr<IDWriteTextFormat> lyricFont_;
