@@ -32,4 +32,12 @@ foreach ($folder in $shortcutFolders) {
     $shortcut.Save()
 }
 
-Write-Output 'Zenith Dot is installed in your Start menu. Use Settings in the tray to manage startup.'
+$settingsShortcut = $shell.CreateShortcut((Join-Path $programs 'Zenith Dot Settings.lnk'))
+$settingsShortcut.TargetPath = $installedExe
+$settingsShortcut.Arguments = '--settings'
+$settingsShortcut.IconLocation = "$installedExe,0"
+$settingsShortcut.WorkingDirectory = $installDir
+$settingsShortcut.Description = 'Zenith Dot Settings'
+$settingsShortcut.Save()
+
+Write-Output 'Zenith Dot and Zenith Dot Settings are installed in your Start menu.'

@@ -23,9 +23,13 @@ if (Test-Path -LiteralPath $manifestPath) {
 foreach ($location in @('Programs', 'Startup')) {
     $folder = [Environment]::GetFolderPath($location)
     if ($folder) {
-        $shortcut = Join-Path $folder 'Zenith Dot.lnk'
-        if (Test-Path -LiteralPath $shortcut) {
-            Remove-Item -LiteralPath $shortcut
+        $shortcuts = @('Zenith Dot.lnk')
+        if ($location -eq 'Programs') { $shortcuts += 'Zenith Dot Settings.lnk' }
+        foreach ($name in $shortcuts) {
+            $shortcut = Join-Path $folder $name
+            if (Test-Path -LiteralPath $shortcut) {
+                Remove-Item -LiteralPath $shortcut
+            }
         }
     }
 }

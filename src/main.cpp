@@ -31,8 +31,7 @@ constexpr unsigned clipboardRetryLimit = 25;
 constexpr unsigned microphoneColor = 0xff9f0a;
 constexpr unsigned cameraColor = 0x30d158;
 
-enum Menu { previousTrack = 1, togglePlayback, nextTrack, toggleVisibility, openDropZone, exitApp,
-            toggleCopiedText, toggleScreenshots, toggleClipboardPreviews, toggleStartup };
+enum Menu { previousTrack = 1, togglePlayback, nextTrack, toggleVisibility, openDropZone, openSettings, exitApp };
 constexpr MediaCommand controls[] = {MediaCommand::previous, MediaCommand::toggle, MediaCommand::next};
 
 struct LockKey {
@@ -254,7 +253,7 @@ void App::run(IslandCommand const& command) {
     case IslandCommand::Kind::autoCycle: {
         auto updated = settings_;
         updated.autoCycle = command.seconds != 0;
-        if (updated.save()) settings_ = updated;
+        if (updated.saveTimer()) settings_ = updated;
         break;
     }
     case IslandCommand::Kind::appMute:
@@ -393,19 +392,7 @@ void App::showMenu(POINT point) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, toggleVisibility, hidden_ ? L"&Show Zenith Dot" : L"&Hide Zenith Dot");
     AppendMenuW(menu, MF_STRING | (suppressed() ? MF_GRAYED : MF_ENABLED), openDropZone, L"&Drop Zone");
-    const auto startup = startupShortcut();
-    const bool startsWithWindows = startupEnabled(startup);
-    if (const auto settings = CreatePopupMenu()) {
-        const auto addToggle = [settings](UINT id, wchar_t const* label, bool checked, bool available = true) {
-            AppendMenuW(settings, MF_STRING | (checked ? MF_CHECKED : MF_UNCHECKED) |
-                (available ? MF_ENABLED : MF_GRAYED), id, label);
-        };
-        addToggle(toggleCopiedText, L"Add copied text to Drop Zone", settings_.autoAddText);
-        addToggle(toggleScreenshots, L"Auto-add screenshots", settings_.autoAddScreenshots);
-        addToggle(toggleClipboardPreviews, L"Show clipboard previews", settings_.showClipboardPreviews);
-        addToggle(toggleStartup, L"Start with Windows", startsWithWindows, !startup.empty());
-        if (!AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(settings), L"&Settings")) DestroyMenu(settings);
-    }
+    AppendMenuW(menu, MF_STRING, openSettings, L"&Settings…");
     AppendMenuW(menu, MF_STRING, exitApp, L"E&xit Zenith Dot");
     // TrackPopupMenu needs the owner in the foreground to dismiss correctly. Hand focus back afterwards.
     const auto previous = GetForegroundWindow();
@@ -424,17 +411,14 @@ void App::showMenu(POINT point) {
     } else if (selected == openDropZone) {
         island_.showDropZone();
         frame();
-    } else if (selected == toggleStartup) {
-        if (!setStartupEnabled(startup, !startsWithWindows)) {
-            MessageBoxW(window_, L"Couldn’t update the Windows startup shortcut.", appName, MB_OK | MB_ICONWARNING);
+    } else if (selected == openSettings) {
+        std::wstring executable(32768, L'\0');
+        const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+        if (!length || length >= executable.size() ||
+            reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", executable.c_str(), L"--settings",
+                                                   nullptr, SW_SHOWNORMAL)) <= 32) {
+            MessageBoxW(window_, L"Couldn’t open Zenith Dot Settings.", appName, MB_OK | MB_ICONWARNING);
         }
-    } else if (selected >= toggleCopiedText && selected <= toggleClipboardPreviews) {
-        auto updated = settings_;
-        if (selected == toggleCopiedText) updated.autoAddText = !updated.autoAddText;
-        else if (selected == toggleScreenshots) updated.autoAddScreenshots = !updated.autoAddScreenshots;
-        else updated.showClipboardPreviews = !updated.showClipboardPreviews;
-        if (updated.save()) settings_ = updated;
-        else MessageBoxW(window_, L"Couldn’t save clipboard settings.", appName, MB_OK | MB_ICONWARNING);
     } else if (selected >= previousTrack && selected <= nextTrack && monitor_) {
         control(controls[selected - previousTrack]);
     }
@@ -809,6 +793,9 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         showMenu(point);
         return 0;
     }
+    case settingsChangedMessage:
+        settings_ = Settings::load();
+        return 0;
     case trayMessage:
         if (LOWORD(lparam) == WM_CONTEXTMENU || LOWORD(lparam) == NIN_KEYSELECT ||
             LOWORD(lparam) == NIN_SELECT) {
@@ -839,14 +826,16 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
 }
 }
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     if (zenith::browserHostRequested()) return zenith::runBrowserHost(instance);
-    const auto singleInstance = CreateMutexW(nullptr, FALSE, L"Local\\ZenithDot.Overlay.0A54ED53");
-    const auto error = GetLastError();
-    if (!singleInstance) return 1;
-    if (error == ERROR_ALREADY_EXISTS) {
-        CloseHandle(singleInstance);
-        return 0;
+    const bool settingsRequested = std::wstring_view(commandLine) == L"--settings";
+    winrt::handle singleInstance;
+    if (!settingsRequested) {
+        const auto mutex = CreateMutexW(nullptr, FALSE, L"Local\\ZenithDot.Overlay.0A54ED53");
+        const auto error = GetLastError();
+        if (!mutex) return 1;
+        singleInstance.attach(mutex);
+        if (error == ERROR_ALREADY_EXISTS) return 0;
     }
     int result = 1;
     try {
@@ -855,10 +844,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             HRESULT status = OleInitialize(nullptr);
             ~Ole() { if (SUCCEEDED(status)) OleUninitialize(); }
         } ole;
-        result = zenith::App{}.run(instance);
+        result = settingsRequested ? zenith::runSettingsWindow(instance) : zenith::App{}.run(instance);
     } catch (winrt::hresult_error const& failure) {
         MessageBoxW(nullptr, failure.message().c_str(), L"Zenith Dot could not start", MB_OK | MB_ICONERROR);
     }
-    CloseHandle(singleInstance);
     return result;
 }

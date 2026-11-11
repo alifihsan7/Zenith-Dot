@@ -1,8 +1,13 @@
 #pragma once
 
 #include <string>
+#include <windows.h>
 
 namespace zenith {
+
+inline constexpr UINT settingsChangedMessage = WM_APP + 13;
+
+int runSettingsWindow(HINSTANCE instance);
 
 struct Settings {
     bool autoAddText = false;
@@ -11,7 +16,8 @@ struct Settings {
     bool autoCycle = false;   // Focus and Break follow each other automatically
 
     static Settings load();
-    bool save() const;
+    bool saveClipboard() const;
+    bool saveTimer() const;
 };
 
 std::wstring startupShortcut();
