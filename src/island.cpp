@@ -63,11 +63,9 @@ constexpr float maxBubble = 259;
 
 constexpr auto openDelay = 50ms;
 constexpr auto closeDelay = 185ms;
-constexpr auto parkDelay = 5s;
 constexpr auto featurePreviewTime = 850ms;
 constexpr auto shapeTime = 500ms;
 constexpr auto screenFadeTime = 310ms;
-constexpr auto idlePillHold = 240ms;
 constexpr auto captureTime = 230ms;
 constexpr float captureSlot = 19;
 constexpr auto themeTime = 700ms;
@@ -482,7 +480,6 @@ void Island::setMedia(MediaState const& media) {
         cover_ = {};
         if (coverSource_) cover_ = {coverSource_->size, coverSource_->size, coverSource_->pixels, nullptr};
     }
-    if (media_.playing || media.playing) lastActive_ = now;
     media_ = media;
     updatePill(now);
 }
@@ -584,7 +581,7 @@ bool Island::wantsLyrics() const {
 }
 
 bool Island::wantsLyricPill() const {
-    return !suppressed_ && lyricsOpen_ && pillMode_ == PillMode::media;
+    return !suppressed_ && lyricsOpen_ && pillMode_ == PillMode::media && media_.playing;
 }
 
 Island::MotionSample Island::sampleSpring(Clock::time_point start, Clock::duration duration, Clock::time_point now,
@@ -721,7 +718,6 @@ std::wstring Island::title() const {
 
 void Island::updatePill(Clock::time_point now) {
     auto mode = PillMode::dot;
-    const bool mediaActive = media_.hasSession && (media_.playing || open_ || now - lastActive_ < parkDelay);
     const bool focusActive = focus_.running() || focus_.paused() ||
         (alert_ && (alert_->kind == IslandAlert::Kind::focusDone || alert_->kind == IslandAlert::Kind::breakDone));
     const bool timerActive = quick_.running() || quick_.paused() || (alert_ && alert_->kind == IslandAlert::Kind::timerDone);
@@ -731,7 +727,7 @@ void Island::updatePill(Clock::time_point now) {
         mode = PillMode::focus;
     } else if (timerActive && preferredPill_ == PillMode::timer) {
         mode = PillMode::timer;
-    } else if (mediaActive) {
+    } else if (media_.hasSession) {
         mode = PillMode::media;
     } else if (focusActive) {
         mode = PillMode::focus;
@@ -739,8 +735,6 @@ void Island::updatePill(Clock::time_point now) {
         mode = PillMode::timer;
     } else if (microphoneColor_ || cameraColor_) {
         mode = PillMode::privacy;
-    } else if (now < idlePillUntil_) {
-        mode = PillMode::idle;
     }
     pillMode_ = mode;
     if (mode != PillMode::dot) {
@@ -754,8 +748,7 @@ void Island::updatePill(Clock::time_point now) {
         else if (mode == PillMode::privacy) {
             pillTitle_ = microphoneColor_ && cameraColor_ ? L"Mic & camera in use" :
                 microphoneColor_ ? L"Mic in use" : L"Camera in use";
-        } else if (mode == PillMode::idle) pillTitle_ = L"Zenith Dot";
-        else pillTitle_ = screenLabel(screen_);
+        } else pillTitle_ = screenLabel(screen_);
         pillPlaying_ = media_.playing;
     }
     if (bubbleShowing()) return;   // never reshape while a bubble is split off
@@ -866,7 +859,6 @@ void Island::setSuppressed(bool suppressed) {
     suppressed_ = suppressed;
     if (!suppressed_) return;
     previewUntil_ = {};
-    idlePillUntil_ = {};
     clearAlerts();
     setOpen(false, now);
     hovered_ = Hit::none;
@@ -893,7 +885,6 @@ void Island::setOpen(bool open, Clock::time_point now) {
     const float shown = motion.value;
     if (open) {
         previewUntil_ = {};
-        idlePillUntil_ = {};
         if (shown <= 0) {
             widthStart_ = {};
             screenFrom_ = screen_;
@@ -906,7 +897,6 @@ void Island::setOpen(bool open, Clock::time_point now) {
                   !pillLyric_.layout && !previousPillLyric_.layout;
     open_ = open;
     sourcePickerOpen_ = false;
-    if (!open && !suppressed_) idlePillUntil_ = now + idlePillHold + (animate_ ? shapeTime : 0ms);
     updateLyricVisibility(lyricsVisible, now);
     if (!open) panelPinned_ = false;
     keepHeight_ = 0;
@@ -1062,7 +1052,6 @@ void Island::tick() {
             finishAlert(now);
         }
     }
-    if (media_.playing) lastActive_ = now;
     updatePill(now);
     updateTheme(now);
 }
@@ -1078,13 +1067,11 @@ unsigned Island::frameInterval() const {
         return screen_ == Screen::system || scratchEditing_ || timerRunning ? 1000 : 0;
     }
     if (open_ || alert_) return 50;
-    if (now < idlePillUntil_) return 16;
     if (pillMode_ == PillMode::preview) return 50;
-    if (wantsLyricPill() && media_.playing) return 50;
-    if (pillMode_ == PillMode::media && media_.playing && animate_) return 33;
+    if (wantsLyricPill()) return 50;
+    if (pillMode_ == PillMode::media) return media_.playing && animate_ ? 33 : 0;
     if (pillMode_ == PillMode::focus || pillMode_ == PillMode::timer) return timerRunning ? 1000 : 0;
     if (pillMode_ == PillMode::privacy) return 0;
-    if (pillMode_ != PillMode::dot) return 250;
     return 0;
 }
 
@@ -1781,7 +1768,7 @@ void Island::drawLyricsGlyph(D2D1_POINT_2F origin, D2D1_COLOR_F color) {
 void Island::drawPillContent(Clock::time_point now, bool hideTitle) {
     const float edge = pillLeft + pillWidth - 12;
     const float right = edge;
-    if (pillContent_ == PillMode::privacy || pillContent_ == PillMode::idle) {
+    if (pillContent_ == PillMode::privacy) {
         text(pillTitle_, pillTitleFont_.get(), box(pillLeft + 14, pillTop, right - pillLeft - 14, pillHeight), rgb(inkColor));
         return;
     }

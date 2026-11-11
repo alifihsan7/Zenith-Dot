@@ -88,7 +88,7 @@ public:
     bool wantsLyricPill() const;
     void notify(IslandAlert alert);
 
-    // Runs time-based behavior: hover delays, closing, the focus timer, and parking the pill. Call before draw.
+    // Runs time-based behavior: hover delays, closing, and timers. Call before draw.
     void tick();
     void draw(HWND window);
     // Milliseconds until the next frame is needed, or 0 while nothing moves.
@@ -113,7 +113,7 @@ private:
                      appVolume, appMute, autoCycle };
     enum class Screen { media, timers, scratch, drop, system };
     static constexpr Screen screens[]{Screen::media, Screen::timers, Screen::scratch, Screen::drop, Screen::system};
-    enum class PillMode { dot, media, focus, timer, preview, privacy, idle };
+    enum class PillMode { dot, media, focus, timer, preview, privacy };
     struct Target {
         D2D1_RECT_F rect;
         Hit hit;
@@ -276,9 +276,7 @@ private:
     float pillVelocity_ = 0;
     float pillTarget_ = 0;
     Clock::time_point pillStart_{};
-    Clock::time_point lastActive_{};
     Clock::time_point previewUntil_{};
-    Clock::time_point idlePillUntil_{};
     PillLyric pillLyric_;
     PillLyric previousPillLyric_;
     float previousPillAlpha_ = 1;
