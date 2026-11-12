@@ -92,26 +92,52 @@ struct BluetoothMonitor::State {
     int enumerating = 0;
     std::map<std::wstring, Endpoint> endpoints;          // by endpoint id
     std::map<std::wstring, bool> containers;             // last reported state per physical device
+    struct BatterySample {
+        std::chrono::steady_clock::time_point requested;
+        std::optional<unsigned> value;
+        bool pending = false;
+    };
+    std::map<std::wstring, BatterySample> batteries;
     std::vector<BluetoothEvent> events;
     std::vector<DeviceWatcher> watchers;
 };
 
 namespace {
 
+winrt::Windows::Foundation::IAsyncOperation<int> readBattery(std::wstring container) {
+    try {
+        const auto query = L"System.Devices.ContainerId:=\"" + container + L"\"";
+        const auto nodes = co_await DeviceInformation::FindAllAsync(
+            query, std::vector<winrt::hstring>{batteryKey}, DeviceInformationKind::Device);
+        for (const auto& node : nodes) {
+            if (const auto level = readNumber(lookup(node.Properties(), batteryKey)); level && *level <= 100)
+                co_return static_cast<int>(*level);
+        }
+    } catch (winrt::hresult_error const&) {
+    }
+    co_return -1;
+}
+
+winrt::fire_and_forget refreshBattery(std::weak_ptr<BluetoothMonitor::State> weak, std::wstring container,
+                                   std::chrono::steady_clock::time_point requested) {
+    const auto level = co_await readBattery(container);
+    if (const auto state = weak.lock()) {
+        std::lock_guard guard(state->lock);
+        const auto sample = state->batteries.find(container);
+        if (state->stopped || sample == state->batteries.end() ||
+            sample->second.requested != requested) co_return;
+        sample->second.pending = false;
+        if (level >= 0) sample->second.value = static_cast<unsigned>(level);
+    }
+}
+
 winrt::fire_and_forget announce(std::weak_ptr<BluetoothMonitor::State> weak, std::wstring container,
                                 BluetoothEvent event) {
     try {
         if (event.connected) {
             co_await winrt::resume_after(batteryDelay);
-            const auto query = L"System.Devices.ContainerId:=\"" + container + L"\"";
-            const auto nodes = co_await DeviceInformation::FindAllAsync(
-                query, std::vector<winrt::hstring>{batteryKey}, DeviceInformationKind::Device);
-            for (const auto& node : nodes) {
-                if (const auto level = readNumber(lookup(node.Properties(), batteryKey)); level && *level <= 100) {
-                    event.battery = level;
-                    break;
-                }
-            }
+            const auto level = co_await readBattery(container);
+            if (level >= 0) event.battery = static_cast<unsigned>(level);
         }
     } catch (winrt::hresult_error const&) {
         // Announce without a battery level.
@@ -122,6 +148,11 @@ winrt::fire_and_forget announce(std::weak_ptr<BluetoothMonitor::State> weak, std
     // A device that dropped again during the battery delay has a newer event queued instead.
     const auto current = state->containers.find(container);
     if (state->stopped || current == state->containers.end() || current->second != event.connected) co_return;
+    if (event.battery) {
+        auto& battery = state->batteries[container];
+        if (!battery.pending) battery.requested = std::chrono::steady_clock::now();
+        battery.value = event.battery;
+    }
     state->events.push_back(std::move(event));
     PostMessageW(state->window, BluetoothMonitor::changed, 0, 0);
 }
@@ -153,6 +184,7 @@ std::optional<std::pair<std::wstring, BluetoothEvent>> record(BluetoothMonitor::
         audio = audio || other.audio;
         if (name.empty()) name = other.name;
     }
+    if (!connected) state.batteries.erase(container);
     const auto known = state.containers.find(container);
     if (!any) {
         if (known != state.containers.end()) state.containers.erase(known);
@@ -248,14 +280,24 @@ std::vector<BluetoothEvent> BluetoothMonitor::take() {
 }
 
 std::vector<ConnectedBluetoothDevice> BluetoothMonitor::connectedDevices() const {
-    std::lock_guard guard(state_->lock);
+    std::unique_lock guard(state_->lock);
     std::map<std::wstring_view, ConnectedBluetoothDevice> devices;
+    std::vector<std::wstring> refresh;
+    const auto now = std::chrono::steady_clock::now();
     for (const auto& [id, endpoint] : state_->endpoints) {
         if (!endpoint.connected) continue;
         const auto container = std::wstring_view(endpoint.container.empty() ? id : endpoint.container);
         auto& device = devices[container];
         if (device.name.empty()) device.name = endpoint.name;
         device.audio = device.audio || endpoint.audio;
+        if (endpoint.container.empty()) continue;
+        auto& battery = state_->batteries[endpoint.container];
+        device.battery = battery.value;
+        if (!battery.pending && now - battery.requested >= std::chrono::seconds(30)) {
+            battery.requested = now;
+            battery.pending = true;
+            refresh.push_back(endpoint.container);
+        }
     }
     std::vector<ConnectedBluetoothDevice> result;
     result.reserve(devices.size());
@@ -264,6 +306,8 @@ std::vector<ConnectedBluetoothDevice> BluetoothMonitor::connectedDevices() const
         if (device.name.empty()) device.name = L"Bluetooth device";
         result.push_back(std::move(device));
     }
+    guard.unlock();
+    for (auto& container : refresh) refreshBattery(state_, std::move(container), now);
     std::ranges::stable_sort(result, {}, &ConnectedBluetoothDevice::name);
     return result;
 }

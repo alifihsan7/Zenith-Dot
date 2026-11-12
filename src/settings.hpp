@@ -20,9 +20,9 @@ constexpr bool validSettingsTest(unsigned test) {
 
 int runSettingsWindow(HINSTANCE instance);
 
-enum class Feature : unsigned { media, timers, scratch, drop, system, connection, prayer };
+enum class Feature : unsigned { media, timers, scratch, drop, system, prayer };
 inline constexpr std::array featureOrder{Feature::media, Feature::timers, Feature::scratch, Feature::drop,
-                                         Feature::system, Feature::connection};
+                                         Feature::system};
 inline constexpr unsigned featureMask = (1u << featureOrder.size()) - 1;
 
 enum class QuietMode : unsigned { off, followWindows, on };

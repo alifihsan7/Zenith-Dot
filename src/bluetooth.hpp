@@ -19,6 +19,7 @@ struct BluetoothEvent {
 struct ConnectedBluetoothDevice {
     std::wstring name;
     bool audio = false;
+    std::optional<unsigned> battery;
     bool operator==(ConnectedBluetoothDevice const&) const = default;
 };
 

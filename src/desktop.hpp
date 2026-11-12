@@ -20,6 +20,7 @@ struct AudioOutput {
     std::wstring id;
     std::wstring name;
     bool active = false;
+    bool headphones = false;
 };
 
 // One app's audio on the default output, merged across its sessions (as in the Windows volume mixer).
@@ -29,6 +30,7 @@ struct AppVolume {
     float volume = 1;    // 0..1
     bool muted = false;
     bool active = false; // currently playing
+    std::wstring iconId;
     bool operator==(AppVolume const&) const = default;
 };
 

@@ -105,7 +105,6 @@ private:
     unsigned announcedPrayers_ = 0;
     std::optional<PrayerSchedule> prayers_;
     std::chrono::steady_clock::time_point systemSampled_{};
-    std::chrono::steady_clock::time_point connectionSampled_{};
     Island island_;
     std::optional<SettingsExample> example_;
     bool tracking_ = false;
@@ -142,7 +141,7 @@ int App::run(HINSTANCE instance, std::optional<SettingsTest> test, Feature featu
     refreshMotion();
     power_ = readPower();
     island_.setPower(power_);
-    island_.setSystem(system_.sample());
+    island_.setSystem(system_.sample(false));
     island_.setPreferences(settings_);
     dropZone_.setEnabled(settings_.enabled(Feature::drop));
     powerNotification_ = RegisterPowerSettingNotification(window_, &GUID_ACDC_POWER_SOURCE,
@@ -229,11 +228,11 @@ void App::frame() {
         island_.setSystem(system_.sample());
         island_.setAppVolumes(desktop_.appVolumes());
         island_.setAudioOutputs(desktop_.audioOutputs());
-        systemSampled_ = now;
-    }
-    if (island_.wantsConnectionStatus() && now - connectionSampled_ >= 1s) {
         island_.setBluetoothDevices(bluetooth_.connectedDevices());
-        connectionSampled_ = now;
+        systemSampled_ = now;
+    } else if (!island_.wantsSystemStats() && systemSampled_ != std::chrono::steady_clock::time_point{}) {
+        system_.stopExtended();
+        systemSampled_ = {};
     }
     const bool shown = IsWindowVisible(window_) != FALSE;
     const bool visible = island_.visible() && (shown || !suppressed());
@@ -408,7 +407,7 @@ void App::applyNetwork(NetworkStatus status) {
         island_.notify({IslandAlert::Kind::connection, *online ? L"Back online" : L"Connection lost",
                         L"", *online ? 0x91caffu : 0xff9f0au, 2});
         frame();
-    } else if (island_.wantsConnectionStatus()) {
+    } else if (island_.wantsSystemStats()) {
         frame();
     }
 }

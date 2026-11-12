@@ -6,13 +6,13 @@
 #include <endpointvolume.h>
 #include <mfapi.h>
 #include <mfidl.h>
+#include <initguid.h>
 #include <mmdeviceapi.h>
 #include <oleauto.h>
 #include <shellapi.h>
 #include <shobjidl.h>
 #include <mmreg.h>
 #include <winver.h>
-#include <initguid.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <propkey.h>
 #include <winrt/Windows.Foundation.h>
@@ -142,12 +142,17 @@ std::wstring processLabel(DWORD pid, wchar_t const* fallback) {
     return captureName({path, length}, true);
 }
 
-std::wstring processPath(DWORD pid) {
+std::wstring processPath(DWORD pid, std::wstring* appId = nullptr) {
     const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!process) return {};
     wchar_t path[MAX_PATH * 2]{};
     DWORD length = static_cast<DWORD>(std::size(path));
     const BOOL found = QueryFullProcessImageNameW(process, 0, path, &length);
+    if (appId) {
+        wchar_t identity[APPLICATION_USER_MODEL_ID_MAX_LENGTH + 1]{};
+        UINT32 size = static_cast<UINT32>(std::size(identity));
+        if (GetApplicationUserModelId(process, &size, identity) == ERROR_SUCCESS) *appId = identity;
+    }
     CloseHandle(process);
     return found ? std::wstring(path, length) : std::wstring{};
 }
@@ -285,9 +290,9 @@ std::wstring appDescription(std::wstring const& path) {
     return captureName(path, true);
 }
 
-// Calls visit(path or "system", session) for each live session on the default output.
+// Sessions stay keyed by executable path for volume changes.
 template <typename Visit>
-void forEachAppSession(IMMDeviceEnumerator& devices, Visit&& visit) {
+void forEachAppSession(IMMDeviceEnumerator& devices, bool readIcon, Visit&& visit) {
     winrt::com_ptr<IMMDevice> output;
     winrt::com_ptr<IAudioSessionManager2> manager;
     winrt::com_ptr<IAudioSessionEnumerator> sessions;
@@ -302,17 +307,17 @@ void forEachAppSession(IMMDeviceEnumerator& devices, Visit&& visit) {
             state == AudioSessionStateExpired) continue;
         const auto details = session.try_as<IAudioSessionControl2>();
         if (!details) continue;
-        std::wstring id;
+        std::wstring id, iconId;
         if (details->IsSystemSoundsSession() == S_OK) {
             id = L"system";
         } else {
             DWORD pid = 0;
             if (FAILED(details->GetProcessId(&pid)) || !pid || pid == GetCurrentProcessId()) continue;
-            id = processPath(pid);
+            id = processPath(pid, readIcon ? &iconId : nullptr);
             if (id.empty()) continue;
         }
         const auto volume = session.try_as<ISimpleAudioVolume>();
-        if (volume) visit(id, state == AudioSessionStateActive, *volume);
+        if (volume) visit(id, state == AudioSessionStateActive, *volume, iconId);
     }
 }
 
@@ -652,7 +657,16 @@ std::vector<AudioOutput> DesktopMonitor::audioOutputs() const {
         if (id.empty()) continue;
         auto name = deviceName(*device);
         const bool selected = id == active;
-        outputs.push_back({std::move(id), name.empty() ? L"Audio device " + std::to_wstring(i + 1) : std::move(name), selected});
+        bool headphones = false;
+        winrt::com_ptr<IPropertyStore> properties;
+        if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, properties.put()))) {
+            PROPVARIANT factor{};
+            if (SUCCEEDED(properties->GetValue(PKEY_AudioEndpoint_FormFactor, &factor)) && factor.vt == VT_UI4)
+                headphones = factor.ulVal == Headphones || factor.ulVal == Headset;
+            PropVariantClear(&factor);
+        }
+        outputs.push_back({std::move(id), name.empty() ? L"Audio device " + std::to_wstring(i + 1) : std::move(name),
+                           selected, headphones});
     }
     return outputs;
 }
@@ -680,7 +694,8 @@ bool DesktopMonitor::selectAudioOutput(std::wstring const& id) {
 std::vector<AppVolume> DesktopMonitor::appVolumes() const {
     if (!state_->enumerator) return {};
     std::vector<AppVolume> apps;
-    forEachAppSession(*state_->enumerator, [&](std::wstring const& id, bool active, ISimpleAudioVolume& session) {
+    forEachAppSession(*state_->enumerator, true, [&](std::wstring const& id, bool active, ISimpleAudioVolume& session,
+                                                      std::wstring const& iconId) {
         float level = 1;
         BOOL mute = FALSE;
         if (FAILED(session.GetMasterVolume(&level)) || FAILED(session.GetMute(&mute))) return;
@@ -688,13 +703,14 @@ std::vector<AppVolume> DesktopMonitor::appVolumes() const {
         if (app == apps.end()) {
             auto& name = state_->appNames[id];
             if (name.empty()) name = id == L"system" ? L"System sounds" : appDescription(id);
-            apps.push_back({id, name, level, mute != FALSE, active});
+            apps.push_back({id, name, level, mute != FALSE, active, iconId});
             return;
         }
         // An app with several sessions is muted only if all of them are, and shows its loudest one.
         app->volume = std::max(app->volume, level);
         app->muted = app->muted && mute;
         app->active = app->active || active;
+        if (app->iconId.empty()) app->iconId = iconId;
     });
     // Playing apps first, system sounds last, otherwise alphabetical so rows don't jump around.
     std::ranges::stable_sort(apps, [](AppVolume const& a, AppVolume const& b) {
@@ -709,7 +725,8 @@ std::vector<AppVolume> DesktopMonitor::appVolumes() const {
 bool DesktopMonitor::setAppVolume(std::wstring const& id, std::optional<float> volume, std::optional<bool> muted) {
     if (!state_->enumerator) return false;
     bool changed = false;
-    forEachAppSession(*state_->enumerator, [&](std::wstring const& session, bool, ISimpleAudioVolume& control) {
+    forEachAppSession(*state_->enumerator, false, [&](std::wstring const& session, bool, ISimpleAudioVolume& control,
+                                                       std::wstring const&) {
         if (_wcsicmp(session.c_str(), id.c_str()) != 0) return;
         if (volume && SUCCEEDED(control.SetMasterVolume(std::clamp(*volume, 0.0f, 1.0f), nullptr))) changed = true;
         if (muted && SUCCEEDED(control.SetMute(*muted, nullptr))) changed = true;

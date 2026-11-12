@@ -30,18 +30,26 @@ constexpr float pillLeft = -pillWidth / 2;
 constexpr float dotSize = 12;
 constexpr float panelWidth = 369;
 constexpr float mediaPanelWidth = 344;
-// System: system info on the left, sound on the right.
 constexpr float systemPanelWidth = 530;
-constexpr float systemHeight = 228;
+constexpr size_t systemMetricColumns = 6;
+constexpr float systemMetricPitch = 43;
+constexpr float systemRightGap = 19;
+constexpr float systemColumnWidth = (systemPanelWidth - 28 - systemRightGap) / 2;
+constexpr float systemAudioTop = 68;
+constexpr float systemAudioHeight = 29;
+constexpr float systemAudioMenuTop = systemAudioTop + systemAudioHeight + 4;
+constexpr float pickerRowHeight = 25;
+constexpr float pickerInset = 4;
+constexpr float prayerPickerTop = 95;
+constexpr float prayerPickerHeight = 24;
+constexpr float prayerMenuTop = prayerPickerTop + prayerPickerHeight + 4;
 constexpr float prayerPanelHeight = 176;
 constexpr float prayerPanelWidth = 570;
 constexpr float prayerInfoWidth = 176;
-constexpr float systemLeftWidth = 196;
-constexpr float systemRightGap = 29;      // gap, divider, gap
-constexpr float systemRightWidth = systemPanelWidth - 28 - systemLeftWidth - systemRightGap;
-constexpr float systemContentBottom = 179;
-constexpr float appRowsTop = 89;
-constexpr float appRowHeight = 30;
+constexpr float appRowsTop = 121;
+constexpr float appRowHeight = 28;
+constexpr float bluetoothRowsTop = 73;
+constexpr float bluetoothRowHeight = 33;
 constexpr size_t visibleAppRows = 3;
 constexpr size_t visibleAudioOutputs = 3;
 constexpr size_t visibleBluetoothRows = 3;
@@ -56,8 +64,21 @@ constexpr float mediaArtistHeight = 16.8f;
 constexpr float mediaControlsCenterY = 159;
 constexpr float mediaActionHeight = 32;
 constexpr float mediaActionsTop = mediaControlsCenterY - mediaActionHeight / 2;
+constexpr float sourceMenuTop = mediaActionsTop + mediaActionHeight + 4;
 constexpr size_t sourceColumns = 8;
 constexpr size_t visibleSources = 2 * sourceColumns;
+constexpr float sourceMenuStep = 34;
+
+float systemSectionTop(SystemStats const& system) {
+    const auto rows = (system.disks.size() + 3 + systemMetricColumns - 1) / systemMetricColumns;
+    return 32 + static_cast<float>(rows) * systemMetricPitch;
+}
+
+float pickerHeight(size_t rows) { return 2 * pickerInset + pickerRowHeight * static_cast<float>(rows); }
+
+float sourcePickerHeight(size_t count) {
+    return 2 * pickerInset + sourceMenuStep * static_cast<float>((count + sourceColumns - 1) / sourceColumns);
+}
 constexpr float maxLyricsWidth = 338;
 constexpr float panelRadius = 22;
 constexpr float padTop = 13;
@@ -779,14 +800,26 @@ float Island::panelValue(Clock::time_point now) const {
 float Island::screenHeight(Screen screen) const {
     if (screens_.empty()) return mediaIdleHeight;
     switch (screen) {
-    case Screen::media: return media_.hasSession ? mediaPanelHeight : mediaIdleHeight;
+    case Screen::media:
+        if (sourcePickerOpen_) return std::max(mediaPanelHeight,
+            navHeight + sourceMenuTop + sourcePickerHeight(std::min(media_.sources.size(), visibleSources)) + padBottom);
+        return media_.hasSession ? mediaPanelHeight : mediaIdleHeight;
     case Screen::timers: return 238;
     case Screen::scratch: return 216.0f;
     case Screen::drop: return dropItems_.empty() ? dropEmptyHeight :
         dropFilledBaseHeight + dropRowHeight * static_cast<float>(std::min(dropItems_.size(), visibleDropRows));
-    case Screen::system: return systemHeight;
-    case Screen::prayer: return prayerPanelHeight;
-    case Screen::connection: return 216;
+    case Screen::system: {
+        const auto appRows = std::clamp<size_t>(appVolumes_.size(), 1, visibleAppRows);
+        const auto devices = std::clamp<size_t>(bluetoothDevices_.size(), 1, visibleBluetoothRows);
+        const float mixer = appRowsTop + static_cast<float>(appRows) * appRowHeight;
+        const float connection = bluetoothRowsTop + static_cast<float>(devices) * bluetoothRowHeight + 29;
+        const auto outputs = std::clamp<size_t>(audioOutputs_.size(), 1, visibleAudioOutputs);
+        const float menu = audioPickerOpen_ ? systemAudioMenuTop + pickerHeight(outputs + 1) : 0;
+        return navHeight + systemSectionTop(system_) + std::max({mixer, connection, menu}) + padBottom;
+    }
+    case Screen::prayer:
+        return prayerPickerOpen_ ? std::max(prayerPanelHeight,
+            navHeight + prayerMenuTop + pickerHeight(prayerLocations.size()) + padBottom) : prayerPanelHeight;
     }
     return 146.0f;
 }
@@ -1252,7 +1285,7 @@ unsigned Island::frameInterval() const {
     if (panelPinned() && !alert_) {
         if (screen_ == Screen::media && (media_.playing || (wantsLyrics() && now < lyricFollowAt_) ||
             (animate_ && preferences_.showWaveform && now - pausedAt_ < 350ms))) return 50;
-        return screen_ == Screen::system || screen_ == Screen::connection || scratchEditing_ || timerRunning ? 1000 : 0;
+        return screen_ == Screen::system || scratchEditing_ || timerRunning ? 1000 : 0;
     }
     if (open_ || alert_) return 50;
     if (pillMode_ == PillMode::preview) return 50;
@@ -1275,10 +1308,6 @@ bool Island::wantsPrayerClock() const {
 
 bool Island::wantsSystemStats() const {
     return open_ && screen_ == Screen::system && preferences_.enabled(Screen::system);
-}
-
-bool Island::wantsConnectionStatus() const {
-    return open_ && screen_ == Screen::connection && preferences_.enabled(Screen::connection);
 }
 
 // ---- Input ---------------------------------------------------------------------------------------
@@ -1398,6 +1427,10 @@ bool Island::scroll(POINT client, int delta) {
         return true;
     }
     audioOutputWheelRemainder_ = 0;
+    if (prayerPickerOpen_) {
+        const auto target = targetAt(point);
+        if (target && (target->hit == Hit::prayerLocation || target->hit == Hit::prayerLocationMenu)) return true;
+    }
     if (sourcePickerOpen_ && inside(sourceMenuRect_, point)) {
         const size_t rows = (media_.sources.size() + sourceColumns - 1) / sourceColumns;
         const int limit = static_cast<int>(rows > 2 ? rows - 2 : 0);
@@ -1406,7 +1439,7 @@ bool Island::scroll(POINT client, int delta) {
         sourceWheelRemainder_ %= WHEEL_DELTA;
         const int row = static_cast<int>(sourceOffset_ / sourceColumns);
         sourceOffset_ = static_cast<size_t>(std::clamp(row - steps, 0, limit)) * sourceColumns;
-        return steps != 0;
+        return true;
     }
     if (open_ && screen_ == Screen::system && appVolumes_.size() > visibleAppRows && inside(appViewport_, point)) {
         wheelRemainder_ = 0;
@@ -1418,7 +1451,7 @@ bool Island::scroll(POINT client, int delta) {
         return steps != 0;
     }
     appWheelRemainder_ = 0;
-    if (wantsConnectionStatus() && bluetoothDevices_.size() > visibleBluetoothRows && inside(bluetoothViewport_, point)) {
+    if (wantsSystemStats() && bluetoothDevices_.size() > visibleBluetoothRows && inside(bluetoothViewport_, point)) {
         wheelRemainder_ = 0;
         bluetoothWheelRemainder_ += delta;
         const int steps = bluetoothWheelRemainder_ / WHEEL_DELTA;
@@ -1583,7 +1616,6 @@ IslandCommand Island::pointerUp(POINT client) {
     case Hit::navDrop: showScreen(Screen::drop, now); break;
     case Hit::navSystem: showScreen(Screen::system, now); break;
     case Hit::navPrayer: showScreen(Screen::prayer, now); break;
-    case Hit::navConnection: showScreen(Screen::connection, now); break;
     case Hit::lyrics: {
         const bool lyricsVisible = wantsLyrics();
         widthFrom_ = panelWidthAt(now);
@@ -2214,7 +2246,6 @@ void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now,
     case Screen::scratch: drawScratchpad(panel, record); break;
     case Screen::drop: drawDropZone(panel, record); break;
     case Screen::system: drawSystem(panel, record); break;
-    case Screen::connection: drawConnection(panel, record); break;
     case Screen::prayer: drawPrayerSchedule(panel, record); break;
     }
 }
@@ -2267,8 +2298,9 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
         if (multiple) {
             drawButton(picker, L"", Hit::sourcePicker, record, 0, sourcePickerOpen_);
             const auto color = ink(rgb(mutedColor));
-            target_->DrawLine(pt(picker.right - 12, middle - 2), pt(picker.right - 8, middle + 2), color, 1);
-            target_->DrawLine(pt(picker.right - 8, middle + 2), pt(picker.right - 4, middle - 2), color, 1);
+            const float direction = sourcePickerOpen_ ? -1.0f : 1.0f;
+            target_->DrawLine(pt(picker.right - 12, middle - 2 * direction), pt(picker.right - 8, middle + 2 * direction), color, 1);
+            target_->DrawLine(pt(picker.right - 8, middle + 2 * direction), pt(picker.right - 4, middle - 2 * direction), color, 1);
         }
         drawSourceIcon(source, pt(picker.left + (multiple ? 11 : 19), middle));
     }
@@ -2364,23 +2396,19 @@ void Island::drawSourceMenu(D2D1_RECT_F panel) {
     const size_t rows = (total + sourceColumns - 1) / sourceColumns;
     sourceOffset_ = std::min(sourceOffset_, rows > 2 ? (rows - 2) * sourceColumns : 0);
     const size_t count = std::min(visibleSources, total - sourceOffset_);
-    const float width = 12 + 34 * static_cast<float>(std::min(count, sourceColumns));
-    const float height = 12 + 34 * static_cast<float>((count + sourceColumns - 1) / sourceColumns);
-    sourceMenuRect_ = box(panel.left + padX, panel.top + mediaActionsTop - 6 - height, width, height);
+    const float width = 2 * pickerInset + sourceMenuStep * static_cast<float>(std::min(count, sourceColumns));
+    sourceMenuRect_ = box(panel.left + padX, panel.top + sourceMenuTop, width, sourcePickerHeight(count));
     drawPickerSurface(sourceMenuRect_, Hit::sourceMenu);
     for (size_t slot = 0; slot < count; ++slot) {
         const size_t i = sourceOffset_ + slot;
         const auto& source = media_.sources[i];
-        const auto rect = box(sourceMenuRect_.left + 8 + static_cast<float>(slot % sourceColumns) * 34,
-                              sourceMenuRect_.top + 8 + static_cast<float>(slot / sourceColumns) * 34, 30, 30);
-        const D2D1_POINT_2F c{rect.left + 15, rect.top + 15};
-        if (pressed(Hit::source, i)) target_->FillEllipse(D2D1::Ellipse(c, 15, 15), ink(white(0.14f)));
-        else if (hovered(Hit::source, i)) target_->FillEllipse(D2D1::Ellipse(c, 15, 15), ink(white(0.08f)));
+        const auto rect = box(sourceMenuRect_.left + pickerInset + static_cast<float>(slot % sourceColumns) * sourceMenuStep,
+                              sourceMenuRect_.top + pickerInset + static_cast<float>(slot / sourceColumns) * sourceMenuStep, 33, 33);
+        const D2D1_POINT_2F c{rect.left + 16, rect.top + 16};
         const bool selected = source.id.empty() ? media_.sourceId.empty() && source.appId == media_.appId :
                                                  source.id == media_.sourceId;
-        if (selected) target_->DrawEllipse(D2D1::Ellipse(c, 14.5f, 14.5f), ink(accent_), 1);
-        drawSourceIcon(source, c);
-        addTarget(rect, Hit::source, i);
+        drawPickerRow(rect, L"", Hit::source, i, selected);
+        drawSourceIcon(source, selected ? pt(c.x - 4, c.y) : c);
     }
 }
 
@@ -2691,28 +2719,49 @@ void Island::drawDropZone(D2D1_RECT_F panel, bool record) {
 }
 
 void Island::drawSystem(D2D1_RECT_F panel, bool record) {
-    const float x = panel.left + padX;
+    const float x = (panel.left + panel.right - systemPanelWidth) / 2 + padX;
     const float y = panel.top;
-    constexpr float left = systemLeftWidth;
-    text(L"System", titleFont_.get(), box(x, y + padTop, left, 22.4f), rgb(inkColor));
-    const std::pair<wchar_t const*, unsigned> stats[]{{L"CPU", system_.cpu}, {L"RAM", system_.memory}};
-    float top = y + 44.4f;
-    for (const auto& [label, value] : stats) {
-        text(label, bodyFont_.get(), box(x, top, 37, 17), rgb(inkColor));
-        constexpr float barWidth = left - 45 - 46;
-        const auto bar = box(x + 45, top + 5.5f, barWidth, 6);
-        target_->FillRoundedRectangle(rounded(bar, 3), ink(white(0.12f)));
-        target_->FillRoundedRectangle(rounded(D2D1::RectF(bar.left, bar.top,
-            bar.left + barWidth * std::min(value, 100u) / 100.0f, bar.bottom), 3), ink(accent_));
-        text(std::to_wstring(value) + L"%", bodyEndFont_.get(), box(x + left - 40, top, 40, 17), rgb(inkColor));
-        top += 26;
+    constexpr float width = systemColumnWidth;
+    constexpr float fullWidth = width * 2 + systemRightGap;
+    text(L"System", titleFont_.get(), box(x, y + 3, fullWidth, 23), rgb(inkColor));
+
+    const auto metrics = system_.disks.size() + 3;
+    const auto columns = std::min(metrics, systemMetricColumns);
+    constexpr float gap = 6;
+    const float metricWidth = (fullWidth + gap) / static_cast<float>(columns) - gap;
+    const auto metric = [&](size_t index, std::wstring_view label, std::optional<unsigned> usage) {
+        const float left = x + static_cast<float>(index % columns) * (metricWidth + gap);
+        const float top = y + 30 + static_cast<float>(index / columns) * systemMetricPitch;
+        const auto rect = box(left, top, metricWidth, 37);
+        target_->FillRoundedRectangle(rounded(rect, 7), ink(white(0.055f)));
+        text(label, bodyFont_.get(), box(left + 6, top + 3, metricWidth - 30, 17), rgb(inkColor));
+        text(usage ? std::to_wstring(*usage) + L"%" : L"—", bodyEndFont_.get(),
+             box(left + 6, top + 3, metricWidth - 12, 17), rgb(usage ? inkColor : mutedColor));
+        const auto bar = box(left + 7, top + 25, metricWidth - 14, 4);
+        target_->FillRoundedRectangle(rounded(bar, 2), ink(white(0.12f)));
+        if (usage && *usage) {
+            auto fill = bar;
+            fill.right = std::lerp(bar.left, bar.right, *usage / 100.0f);
+            target_->FillRoundedRectangle(rounded(fill, 2), ink(accent_));
+        }
+    };
+    metric(0, L"CPU", system_.cpu);
+    metric(1, L"RAM", system_.memory);
+    metric(2, L"GPU", system_.gpu);
+    for (size_t i = 0; i < system_.disks.size(); ++i) {
+        const auto& disk = system_.disks[i];
+        metric(i + 3, std::wstring(L"Disk ") + disk.letter + L":", disk.usage);
     }
+
+    const float top = y + systemSectionTop(system_);
+    const auto battery = box(x, top, width, 41);
+    target_->FillRoundedRectangle(rounded(battery, 8), ink(white(0.055f)));
+    text(L"Battery", bodyFont_.get(), box(x + 8, top + 3, 100, 18), rgb(inkColor));
     std::wstring status = L"Power status unavailable";
-    if (power_.available && !power_.hasBattery) {
-        status = L"No battery";
-    } else if (power_.available) {
-        status = power_.pluggedIn == true ? (power_.charging ? L"Charging" : L"Plugged in") :
-                 power_.pluggedIn == false ? L"On Battery" : L"Battery";
+    if (power_.available) {
+        status = !power_.hasBattery ? L"No battery" :
+                 power_.charging ? L"Charging" : power_.pluggedIn == true ? L"Plugged in" :
+                 power_.pluggedIn == false ? L"On battery" : L"Status unavailable";
     }
     if (power_.remaining) {
         const auto minutes = std::chrono::ceil<std::chrono::minutes>(*power_.remaining).count();
@@ -2720,86 +2769,135 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
         if (minutes >= 60) status += std::to_wstring(minutes / 60) + L"h ";
         status += std::to_wstring(minutes % 60) + L"m left";
     }
-    const auto level = power_.percent ? std::to_wstring(*power_.percent) + L"%" : std::wstring{};
-    text(status, bodyFont_.get(), box(x, y + 96.4f, left - 42, 17), rgb(readoutColor));
-    text(level, strongEndFont_.get(), box(x + left - 40, y + 96.4f, 40, 17), rgb(readoutColor));
+    text(status, bodyFont_.get(), box(x + 8, top + 20, width - 81, 16), rgb(mutedColor));
+    if (power_.percent) {
+        const auto level = std::to_wstring(*power_.percent) + L"%";
+        const float levelWidth = std::ceil(measure(level, strongEndFont_.get())) + 2;
+        const float levelX = battery.right - 8 - levelWidth;
+        drawBatteryCell(levelX - 26, top + 20, *power_.percent, accent_);
+        if (power_.charging) drawAlertIcon(IslandAlert::Kind::charging, pt(levelX - 42, top + 12), accent_);
+        text(level, strongEndFont_.get(), box(levelX, top, levelWidth, 41), accent_);
+    }
 
-    const auto notificationLabel = !windowsNotificationsQuiet_ ? L"Notification status unavailable" :
-        *windowsNotificationsQuiet_ ? L"Do Not Disturb on" : L"Do Not Disturb off";
-    drawButton(box(x, y + 126, left, 25), notificationLabel, Hit::notificationSettings, record);
+    text(L"Audio Output", bodyFont_.get(), box(x, top + 48, width, 18), rgb(inkColor));
+    const auto output = std::ranges::find(audioOutputs_, true, &AudioOutput::active);
+    const auto outputName = output == audioOutputs_.end() ? std::wstring_view(audioOutput_) :
+                                                           std::wstring_view(output->name);
+    drawPickerButton(box(x, top + systemAudioTop, width, systemAudioHeight),
+                     outputName.empty() ? L"Choose output" : outputName, Hit::audioPicker, record,
+                     audioPickerOpen_, output != audioOutputs_.end() && output->headphones);
 
-    const float divider = x + left + systemRightGap / 2;
-    target_->FillRectangle(box(divider, y + 16, 1, systemContentBottom - 16), ink(white(0.08f)));
-
-    const float right = x + left + systemRightGap;
-    constexpr float width = systemRightWidth;
-    text(L"Audio Output", bodyFont_.get(), box(right, y + 15, width, 17), rgb(inkColor));
-    drawPickerButton(box(right, y + 34, width, 28),
-                     audioOutput_.empty() ? L"Choose output" : std::wstring_view(audioOutput_),
-                     Hit::audioPicker, record, audioPickerOpen_);
-    text(L"App Volume", bodyFont_.get(), box(right, y + 70, width, 17), rgb(inkColor));
+    text(L"App Volume", bodyFont_.get(), box(x, top + 101, width, 18), rgb(inkColor));
     const auto count = appVolumes_.size();
     const auto end = std::min(count, appOffset_ + visibleAppRows);
     if (count > visibleAppRows) {
         text(std::to_wstring(appOffset_ + 1) + L"–" + std::to_wstring(end) + L" of " + std::to_wstring(count),
-             bodyEndFont_.get(), box(right, y + 70, width, 17), rgb(mutedColor));
+             bodyEndFont_.get(), box(x, top + 101, width, 18), rgb(mutedColor));
     }
-    const auto rows = box(right, y + appRowsTop, width, appRowHeight * visibleAppRows);
+    const auto rows = box(x, top + appRowsTop, width, appRowHeight * visibleAppRows);
     if (record) appViewport_ = rows;
     if (appVolumes_.empty()) {
-        text(L"No apps are playing audio", bodyFont_.get(), box(right, rows.top, width, appRowHeight), rgb(mutedColor));
-        return;
+        text(L"No apps are playing audio", bodyFont_.get(), box(x, rows.top, width, appRowHeight), rgb(mutedColor));
     }
     for (size_t index = appOffset_; index < end; ++index) {
-        drawAppVolume(index, box(right, rows.top + appRowHeight * static_cast<float>(index - appOffset_),
+        drawAppVolume(index, box(x, rows.top + appRowHeight * static_cast<float>(index - appOffset_),
                                  width, appRowHeight), record);
     }
+
+    const float divider = x + width + systemRightGap / 2;
+    const float right = x + width + systemRightGap;
+    const auto devices = std::clamp<size_t>(bluetoothDevices_.size(), 1, visibleBluetoothRows);
+    const auto appRows = std::clamp<size_t>(count, 1, visibleAppRows);
+    const float height = std::max(appRowsTop + static_cast<float>(appRows) * appRowHeight,
+                                  bluetoothRowsTop + static_cast<float>(devices) * bluetoothRowHeight + 29);
+    target_->FillRectangle(box(divider, top + 1, 1, height - 2), ink(white(0.08f)));
+    drawConnection(box(right, top, width, height), record);
+}
+
+void Island::drawAudioGlyph(D2D1_POINT_2F center, bool headphones, D2D1_COLOR_F color) {
+    if (headphones) {
+        drawAlertIcon(IslandAlert::Kind::bluetoothAudio, pt(center.x - 8, center.y - 8), color);
+        return;
+    }
+    const float x = center.x - 8, y = center.y - 8;
+    fillPolygon({pt(x + 1.5f, y + 6), pt(x + 4, y + 6), pt(x + 7.5f, y + 3), pt(x + 7.5f, y + 13),
+                 pt(x + 4, y + 10), pt(x + 1.5f, y + 10)}, color);
+    PathBuilder waves(graphics_.get());
+    waves.move(pt(x + 10, y + 5.5f), false).arc(pt(x + 10, y + 10.5f), 3.5f, false, true);
+    target_->DrawGeometry(waves.finish().get(), ink(color), 1.5f, roundStroke_.get());
 }
 
 void Island::drawPickerSurface(D2D1_RECT_F rect, Hit hit) {
-    target_->FillRoundedRectangle(rounded(rect, 8), ink(mixColor(rgb(0x17191c), accent_, 0.07f)));
-    target_->DrawRoundedRectangle(rounded(rect, 8), ink(withAlpha(accent_, 0.28f)), 1);
+    target_->FillRoundedRectangle(rounded(rect, 9), ink(mixColor(rgb(0x17191c), accent_, 0.075f)));
+    target_->DrawRoundedRectangle(rounded(rect, 9), ink(white(0.15f)), 1);
     addTarget(rect, hit);
 }
 
-void Island::drawPickerButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record, bool expanded) {
+void Island::drawPickerCheck(D2D1_POINT_2F center) {
+    PathBuilder check(graphics_.get());
+    check.move(pt(center.x - 4, center.y), false).line(pt(center.x - 1, center.y + 3))
+         .line(pt(center.x + 4, center.y - 3));
+    target_->DrawGeometry(check.finish().get(), ink(accent_), 1.4f, roundStroke_.get());
+}
+
+void Island::drawPickerRow(D2D1_RECT_F row, std::wstring_view label, Hit hit, size_t index,
+                           bool selected, std::optional<bool> headphones) {
+    if (selected || hovered(hit, index) || pressed(hit, index)) {
+        const auto fill = selected ? withAlpha(accent_, hovered(hit, index) ? 0.22f : 0.14f) :
+                                     white(pressed(hit, index) ? 0.15f : 0.08f);
+        target_->FillRoundedRectangle(rounded(row, 6), ink(fill));
+    }
+    const float middle = (row.top + row.bottom) / 2;
+    if (headphones) drawAudioGlyph(pt(row.left + 14, middle), *headphones, selected ? accent_ : rgb(inkColor));
+    if (!label.empty()) {
+        text(label, bodyFont_.get(), D2D1::RectF(row.left + (headphones ? 27 : 8), row.top,
+             row.right - (selected ? 24 : 7), row.bottom), rgb(inkColor));
+    }
+    if (selected) drawPickerCheck(pt(row.right - (label.empty() ? 7 : 13), middle));
+    addTarget(row, hit, index);
+}
+
+void Island::drawPickerButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record, bool expanded,
+                              std::optional<bool> headphones) {
     drawButton(rect, L"", hit, record, 0, expanded);
     const auto color = expanded ? accent_ : rgb(inkColor);
-    text(label, bodyFont_.get(), D2D1::RectF(rect.left + 9, rect.top, rect.right - 21, rect.bottom), color);
     const float x = rect.right - 12;
     const float y = (rect.top + rect.bottom) / 2;
+    if (headphones) drawAudioGlyph(pt(rect.left + 14, y), *headphones, color);
+    text(label, bodyFont_.get(), D2D1::RectF(rect.left + (headphones ? 27 : 9), rect.top,
+                                           rect.right - 21, rect.bottom), color);
     const float direction = expanded ? -1.0f : 1.0f;
     target_->DrawLine(pt(x - 3, y - 1.5f * direction), pt(x, y + 1.5f * direction), ink(color), 1.2f);
     target_->DrawLine(pt(x, y + 1.5f * direction), pt(x + 3, y - 1.5f * direction), ink(color), 1.2f);
 }
 
 void Island::drawAudioOutputMenu(D2D1_RECT_F panel) {
-    constexpr float rowHeight = 24;
-    const float x = panel.left + padX + systemLeftWidth + systemRightGap;
-    const float y = panel.top + 66;
+    const float x = (panel.left + panel.right - systemPanelWidth) / 2 + padX;
+    const float y = panel.top + systemSectionTop(system_) + systemAudioMenuTop;
     const auto count = std::min(audioOutputs_.size(), visibleAudioOutputs);
     const auto rows = std::max<size_t>(1, count);
-    audioOutputMenuRect_ = box(x, y, systemRightWidth, 8 + rowHeight * static_cast<float>(rows + 1));
+    audioOutputMenuRect_ = box(x, y, systemColumnWidth, pickerHeight(rows + 1));
     drawPickerSurface(audioOutputMenuRect_, Hit::audioOutputMenu);
-    const float width = systemRightWidth - 8;
+    const auto row = [&](size_t index) {
+        return box(x + pickerInset, y + pickerInset + pickerRowHeight * static_cast<float>(index),
+                   systemColumnWidth - 2 * pickerInset, pickerRowHeight - 1);
+    };
     for (size_t i = 0; i < count; ++i) {
         const size_t index = audioOutputOffset_ + i;
         const auto& output = audioOutputs_[index];
-        const auto row = box(x + 4, y + 4 + rowHeight * static_cast<float>(i), width, rowHeight - 1);
-        drawButton(row, output.name, Hit::audioOutputChoice, true, index, output.active);
+        drawPickerRow(row(i), output.name, Hit::audioOutputChoice, index, output.active, output.headphones);
     }
-    if (!count) text(L"No outputs available", buttonFont_.get(), box(x + 4, y + 4, width, rowHeight), rgb(mutedColor));
-    drawButton(box(x + 4, y + 4 + rowHeight * static_cast<float>(rows), width, rowHeight - 1),
-               L"Sound settings…", Hit::soundSettings, true);
+    if (!count) text(L"No outputs available", bodyFont_.get(), grow(row(0), -8, 0), rgb(mutedColor));
+    drawPickerRow(row(rows), L"Sound settings…", Hit::soundSettings, 0, false);
 }
 
-void Island::drawConnection(D2D1_RECT_F panel, bool record) {
-    const float x = (panel.left + panel.right - panelWidth) / 2 + padX;
-    const float y = panel.top;
-    text(L"Connection", titleFont_.get(), box(x, y + 9, innerWidth, 24), rgb(inkColor));
-    const auto networkCard = box(x, y + 40, innerWidth, 45);
-    target_->FillRoundedRectangle(rounded(networkCard, 8), ink(white(0.06f)));
-    drawAlertIcon(IslandAlert::Kind::connection, pt(x + 10, y + 55), accent_);
+void Island::drawConnection(D2D1_RECT_F column, bool record) {
+    const float x = column.left;
+    const float y = column.top;
+    const float width = column.right - x;
+    const auto card = box(x, y, width, 47);
+    target_->FillRoundedRectangle(rounded(card, 8), ink(white(0.055f)));
+    drawAlertIcon(IslandAlert::Kind::connection, pt(x + 8, y + 9), accent_);
     std::wstring_view type = L"Network";
     switch (network_.type) {
     case NetworkType::wifi: type = L"Wi-Fi"; break;
@@ -2809,46 +2907,66 @@ void Island::drawConnection(D2D1_RECT_F panel, bool record) {
     }
     std::wstring_view access;
     switch (network_.access) {
-    case NetworkAccess::unknown: access = L"Status unavailable"; break;
+    case NetworkAccess::unknown: access = L"Unavailable"; break;
     case NetworkAccess::disconnected: access = L"Disconnected"; break;
     case NetworkAccess::local: access = L"No internet"; break;
     case NetworkAccess::limited: access = L"Limited internet"; break;
     case NetworkAccess::internet: access = L"Online"; break;
     }
     const auto name = network_.name.empty() ? type : std::wstring_view(network_.name);
-    text(name, bodyFont_.get(), box(x + 34, y + (name == type ? 54 : 45), innerWidth - 162, 16), rgb(inkColor));
-    if (name != type) text(type, bodyFont_.get(), box(x + 34, y + 61, innerWidth - 162, 16), rgb(mutedColor));
-    text(access, bodyEndFont_.get(), box(networkCard.right - 120, y + 52, 110, 22),
+    text(name, bodyFont_.get(), box(x + 30, y + 4, width - 69, 18), rgb(inkColor));
+    text(type, bodyFont_.get(), box(x + 30, y + 24, 72, 17), rgb(mutedColor));
+    text(access, bodyEndFont_.get(), box(card.right - 122, y + 24, 114, 17),
          network_.access == NetworkAccess::internet ? accent_ : rgb(mutedColor));
+    if (network_.signalBars) {
+        for (unsigned i = 0; i < 5; ++i) {
+            const float height = 3.0f + 2.0f * i;
+            target_->FillRoundedRectangle(rounded(box(card.right - 26 + 4.0f * i, y + 19 - height, 2.5f, height), 1),
+                                          ink(i < *network_.signalBars ? accent_ : white(0.15f)));
+        }
+    }
 
-    text(L"Bluetooth", bodyFont_.get(), box(x, y + 92, innerWidth, 19), rgb(inkColor));
+    text(L"Bluetooth", bodyFont_.get(), box(x, y + 52, width, 20), rgb(inkColor));
     const auto count = bluetoothDevices_.size();
     const auto end = std::min(count, bluetoothOffset_ + visibleBluetoothRows);
-    const std::wstring summary = count > visibleBluetoothRows
-        ? std::to_wstring(bluetoothOffset_ + 1) + L"–" + std::to_wstring(end) + L" of " + std::to_wstring(count)
-        : count ? std::to_wstring(count) + L" connected" : L"";
-    text(summary, bodyEndFont_.get(), box(x, y + 92, innerWidth, 19), rgb(mutedColor));
-    constexpr float rowHeight = 22;
-    const auto viewport = box(x, y + 111, innerWidth, rowHeight * visibleBluetoothRows);
+    const auto summary = count > visibleBluetoothRows ?
+        std::to_wstring(bluetoothOffset_ + 1) + L"–" + std::to_wstring(end) + L" of " + std::to_wstring(count) :
+        count ? std::to_wstring(count) + L" connected" : std::wstring{};
+    text(summary, bodyEndFont_.get(), box(x, y + 52, width, 20), rgb(mutedColor));
+    const auto viewport = box(x, y + bluetoothRowsTop, width, bluetoothRowHeight * visibleBluetoothRows);
     if (record) bluetoothViewport_ = viewport;
     if (bluetoothDevices_.empty()) {
-        text(L"No Bluetooth devices connected", bodyFont_.get(), box(x, viewport.top, innerWidth, rowHeight), rgb(mutedColor));
-        return;
+        text(L"No Bluetooth devices connected", bodyFont_.get(), box(x, viewport.top, width, bluetoothRowHeight), rgb(mutedColor));
     }
+    const auto output = audioOutput_.find(L'(');
+    const auto outputName = output != std::wstring::npos && audioOutput_.ends_with(L')')
+        ? audioOutput_.substr(output + 1, audioOutput_.size() - output - 2) : audioOutput_;
     for (size_t i = bluetoothOffset_; i < end; ++i) {
         const auto& device = bluetoothDevices_[i];
-        const float top = viewport.top + rowHeight * static_cast<float>(i - bluetoothOffset_);
+        const float top = viewport.top + bluetoothRowHeight * static_cast<float>(i - bluetoothOffset_);
+        const bool active = device.audio && _wcsicmp(outputName.c_str(), device.name.c_str()) == 0;
         drawAlertIcon(device.audio ? IslandAlert::Kind::bluetoothAudio : IslandAlert::Kind::bluetooth,
-                      pt(x + 1, top + 3), accent_);
-        text(device.name, bodyFont_.get(), box(x + 25, top, innerWidth - 25, rowHeight), rgb(inkColor));
+                      pt(x + 1, top + 8), accent_);
+        text(device.name, bodyFont_.get(), box(x + 23, top + (active ? 0 : 7), width - (device.battery ? 90 : 23), 18),
+             rgb(inkColor));
+        if (active) text(L"Audio output", bodyFont_.get(), box(x + 23, top + 16, width - 23, 16), rgb(mutedColor));
+        if (device.battery) {
+            drawBatteryCell(column.right - 62, top + 16, *device.battery, accent_);
+            text(std::to_wstring(*device.battery) + L"%", bodyEndFont_.get(),
+                 box(column.right - 36, top, 36, bluetoothRowHeight), accent_);
+        }
     }
+    const auto notificationLabel = !windowsNotificationsQuiet_ ? L"Notification settings" :
+        *windowsNotificationsQuiet_ ? L"Do Not Disturb on" : L"Do Not Disturb off";
+    drawButton(box(x, viewport.top + static_cast<float>(std::clamp<size_t>(count, 1, visibleBluetoothRows)) * bluetoothRowHeight + 4,
+                   width, 25), notificationLabel, Hit::notificationSettings, record);
 }
 
 void Island::drawPrayerSchedule(D2D1_RECT_F panel, bool record) {
     const float x = (panel.left + panel.right - prayerPanelWidth) / 2 + padX;
     const float y = panel.top + 12;
     const auto info = box(x, y, prayerInfoWidth, 115);
-    const auto picker = box(x + 12, y + 83, 137, 24);
+    const auto picker = box(x + 12, panel.top + prayerPickerTop, 137, prayerPickerHeight);
     target_->FillRoundedRectangle(rounded(info, 12), ink(withAlpha(accent_, 0.10f)));
     drawPickerButton(picker, L"Change location", Hit::prayerLocationPicker, record, prayerPickerOpen_);
 
@@ -2933,14 +3051,14 @@ void Island::drawPrayerSchedule(D2D1_RECT_F panel, bool record) {
 
 void Island::drawPrayerLocationMenu(D2D1_RECT_F panel) {
     const float x = (panel.left + panel.right - prayerPanelWidth) / 2 + padX + 12;
-    const float y = panel.top + 12;
-    constexpr float rowHeight = 24;
+    const float y = panel.top + prayerMenuTop;
     constexpr float menuWidth = 137;
-    const auto menu = box(x, y, menuWidth, 8 + rowHeight * static_cast<float>(prayerLocations.size()));
+    const auto menu = box(x, y, menuWidth, pickerHeight(prayerLocations.size()));
     drawPickerSurface(menu, Hit::prayerLocationMenu);
     for (size_t i = 0; i < prayerLocations.size(); ++i) {
-        const auto row = box(x + 4, y + 4 + rowHeight * static_cast<float>(i), menuWidth - 8, rowHeight - 1);
-        drawButton(row, prayerLocations[i].name, Hit::prayerLocation, true, i + 1, preferences_.prayerCity == i + 1);
+        const auto row = box(x + pickerInset, y + pickerInset + pickerRowHeight * static_cast<float>(i),
+                             menuWidth - 2 * pickerInset, pickerRowHeight - 1);
+        drawPickerRow(row, prayerLocations[i].name, Hit::prayerLocation, i + 1, preferences_.prayerCity == i + 1);
     }
 }
 
@@ -2958,15 +3076,11 @@ void Island::drawAppVolume(size_t index, D2D1_RECT_F row, bool record) {
     }
     const float iconOpacity = muted ? 0.4f : 1.0f;
     const auto glyph = box(tile.left + 3, tile.top + 3, 18, 18);
+    auto* logo = app.iconId.empty() ? nullptr : icon(app.iconId);
+    if (!logo && app.id != L"system") logo = icon(app.id);
     if (app.id == L"system") {
-        const auto color = withAlpha(rgb(inkColor), iconOpacity);
-        const float gx = glyph.left + 1, gy = glyph.top + 1;
-        fillPolygon({pt(gx + 1.5f, gy + 6), pt(gx + 4, gy + 6), pt(gx + 7.5f, gy + 3), pt(gx + 7.5f, gy + 13),
-                     pt(gx + 4, gy + 10), pt(gx + 1.5f, gy + 10)}, color);
-        PathBuilder waves(graphics_.get());
-        waves.move(pt(gx + 10, gy + 5.5f), false).arc(pt(gx + 10, gy + 10.5f), 3.5f, false, true);
-        target_->DrawGeometry(waves.finish().get(), ink(color), 1.5f, roundStroke_.get());
-    } else if (auto* logo = icon(app.id); logo && bitmap(*logo)) {
+        drawAudioGlyph(pt(tile.left + 12, middle), false, withAlpha(rgb(inkColor), iconOpacity));
+    } else if (logo && bitmap(*logo)) {
         target_->DrawBitmap(logo->bitmap.get(), glyph, iconOpacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     } else {
         target_->FillRoundedRectangle(rounded(glyph, 5), ink(withAlpha(accent_, iconOpacity)));
@@ -2978,11 +3092,11 @@ void Island::drawAppVolume(size_t index, D2D1_RECT_F row, bool record) {
     }
     if (record) addTarget(tile, Hit::appMute, index);
 
-    text(app.name, bodyFont_.get(), box(row.left + 31, row.top, 86, appRowHeight),
+    text(app.name, bodyFont_.get(), box(row.left + 28, row.top, 75, appRowHeight),
          rgb(muted ? mutedColor : inkColor));
 
     // Slider: a 4 DIP track with a 12 DIP thumb; the whole row height is draggable.
-    const float trackLeft = row.left + 124;
+    const float trackLeft = row.left + 110;
     const float trackRight = row.right - 44;
     const float fill = trackLeft + (trackRight - trackLeft) * clamp01(level);
     const auto color = muted ? rgb(0x6b7280) : accent_;
@@ -3006,7 +3120,6 @@ std::wstring_view Island::screenLabel(Screen screen) {
     case Screen::scratch: return L"Scratchpad";
     case Screen::drop: return L"Drop Zone";
     case Screen::system: return L"System";
-    case Screen::connection: return L"Connection";
     case Screen::prayer: return L"Prayer";
     }
     return {};
@@ -3035,9 +3148,6 @@ void Island::drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color
         target_->DrawRoundedRectangle(rounded(box(center.x - 7, center.y + 3, 14, 4), 1), ink(color), 1.5f);
         break;
     case Screen::system: drawChipGlyph(center, color); break;
-    case Screen::connection:
-        drawAlertIcon(IslandAlert::Kind::connection, pt(center.x - 7.5f, center.y - 7.5f), color);
-        break;
     case Screen::prayer: text(L"☾", glyphFont_.get(), rect, color); break;
     }
 }
@@ -3074,8 +3184,7 @@ void Island::drawNav(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     const float reveal = navExpansion(now);
     const float step = std::lerp(12.0f, expandedStep, reveal);
     const float start = centerX - static_cast<float>(count) * step / 2;
-    constexpr Hit hits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem,
-                         Hit::navConnection, Hit::navPrayer};
+    constexpr Hit hits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem, Hit::navPrayer};
     for (size_t i = 0; i < count; ++i) {
         const auto cell = box(start + static_cast<float>(i) * step, top, step, height);
         const auto rect = grow(cell, -2, -2);

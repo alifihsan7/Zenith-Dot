@@ -109,7 +109,6 @@ public:
     unsigned frameInterval() const;
     bool visible() const;
     bool wantsSystemStats() const;
-    bool wantsConnectionStatus() const;
     bool wantsPrayerClock() const;
 
     // Pointer input in window client pixels. The bool results say whether a redraw is needed.
@@ -127,7 +126,7 @@ private:
                      navScratch, navSystem, navPrayer, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
                      timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, lyricsDelay, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
-                     appVolume, appMute, autoCycle, prayerLocationPicker, prayerLocationMenu, prayerLocation, navConnection,
+                     appVolume, appMute, autoCycle, prayerLocationPicker, prayerLocationMenu, prayerLocation,
                      audioOutputMenu, audioOutputChoice, soundSettings };
     using Screen = Feature;
     Settings preferences_;
@@ -230,7 +229,8 @@ private:
     void drawSourceMenu(D2D1_RECT_F panel);
     void drawAudioOutputMenu(D2D1_RECT_F panel);
     void drawPickerSurface(D2D1_RECT_F rect, Hit hit);
-    void drawPickerButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record, bool expanded);
+    void drawPickerButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record, bool expanded,
+                          std::optional<bool> headphones = {});
     void drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double position);
     void prepareLyricLayout(float width);
     void drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record);
@@ -249,7 +249,11 @@ private:
     float navHeightAt(Clock::time_point now) const;
     bool setNavExpanded(bool expanded, Clock::time_point now);
     void drawNav(D2D1_RECT_F panel, Clock::time_point now, bool record);
-    void drawConnection(D2D1_RECT_F panel, bool record);
+    void drawConnection(D2D1_RECT_F column, bool record);
+    void drawAudioGlyph(D2D1_POINT_2F center, bool headphones, D2D1_COLOR_F color);
+    void drawPickerCheck(D2D1_POINT_2F center);
+    void drawPickerRow(D2D1_RECT_F row, std::wstring_view label, Hit hit, size_t index,
+                       bool selected, std::optional<bool> headphones = {});
     void drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color);
     static std::wstring_view screenLabel(Screen screen);
     void drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float value);

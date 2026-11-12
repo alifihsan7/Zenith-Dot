@@ -6,7 +6,7 @@ A Windows 11 overlay that sits as a dot at the top center of the primary display
 - **Timers:** choose Focus, Break, or Quick Timer from one tab. Focus and Break start at 25 and 5 minutes. Quick Timer offers 1, 5, and 10 minute presets, or use − and + to set 1–120 minutes. It can run alongside a Focus or Break countdown. The pill shows the selected active timer. Turn on **Auto** to let Focus and Break follow each other without a click. A round has four Focus sessions, shown as dots beside **Auto**. The fourth break is three times the Break length, then the round starts again. The pill adds the round, such as **Focus 2/4**, and each hand-off shows the next phase in its notice. **Reset** returns to the first Focus. Zenith Dot remembers the Auto setting.
 - **Scratchpad:** one note that saves locally as you type. While editing, press Esc to close the panel and return focus to the previous app.
 - **Drop Zone.** Drop files or text onto the dashed area. Screenshots and other images copied on their own also appear in the list with a thumbnail. Click a thumbnail to preview the image in Zenith and close it with × or Esc to return to Drop Zone. Drag the rest of the row to another app. Use × beside an item to remove it or **Clear all** to empty the list. Up to 64 items can share the list. Clipboard images are exported as temporary PNGs that Zenith removes when you clear them or exit.
-- **System:** CPU, memory, power, and Windows notification mode on the left, sound on the right. Click the output name to select a device. The picker changes the default for system and media audio and also offers a shortcut to Sound settings. Below it, **App Volume** lists each app with audio on the current output, like the Windows volume mixer. Drag a slider to set that app's volume, or click its icon to mute it. Three apps are visible at a time; scroll the list for more. The notification button opens Windows notification settings.
+- **System:** CPU, memory, GPU, and disk activity across the top. Disk labels use the drive letters Windows assigns. Battery and the audio mixer sit on the left, with network and Bluetooth on the right. Click the output name to select a device. The picker changes the default for system and media audio and also offers a shortcut to Sound settings. Below it, **App Volume** lists each app with audio on the current output, like the Windows volume mixer. Drag a slider to set that app's volume, or click its icon to mute it. Three apps are visible at a time; scroll the list for more. The notification button opens Windows notification settings.
 
 Click the pin icon beside the panel tabs to keep Zenith Dot open while you use another app. The filled icon indicates that the panel is pinned. Click it again to restore hover dismissal. When the panel closes, the next hover restores the last tab and any open Lyrics column. If you scrolled manually, the reading position is kept for the same track.
 
@@ -38,7 +38,7 @@ Choose Jakarta, Makassar, or Jayapura under **Prayer timetable city** to enable 
 
 ### Connection status
 
-The Connection panel shows the active network, its internet status, and connected Bluetooth devices. Wi-Fi includes the network name when available. Zenith shows **Connection lost** or **Back online** after a change in internet availability. These alerts follow the island’s Do Not Disturb setting.
+The System panel shows the active network, its internet status, and connected Bluetooth devices. Wi-Fi shows the network name and signal strength when available. Bluetooth devices show battery levels when Windows reports them. Zenith shows **Connection lost** or **Back online** after a change in internet availability. These alerts follow the island’s Do Not Disturb setting.
 
 ## Notifications from Windows apps
 
@@ -103,7 +103,7 @@ Temporary connection or service failures are retried automatically. If the looku
 | `src/media.*` | Windows GSMTC sessions, metadata, timeline, and transport controls |
 | `src/lyrics.*` | On-demand lookup and parsing for synced lyrics |
 | `src/power.*` | Native battery and AC telemetry |
-| `src/system.*` | CPU and memory use for the System screen |
+| `src/system.*` | CPU, memory, GPU, disk activity, and network status |
 | `src/desktop.*` | Fullscreen detection, capture indicators, and audio device monitoring |
 | `src/bluetooth.*` | Paired Bluetooth connection changes and battery levels |
 | `src/scratchpad.*` | Native text editor, focus handoff, and local note storage |

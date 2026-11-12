@@ -92,11 +92,14 @@ SettingsExample::SettingsExample(SettingsTest test, Feature feature, Settings co
             island_.setScratchpad(scratch_);
         }
         if (feature == Feature::system) {
-            island_.setSystem({12, 45});
-            island_.setAudioOutput(L"Speakers");
-        } else if (feature == Feature::connection) {
-            island_.setNetwork({NetworkAccess::internet, NetworkType::wifi, L"Home Wi-Fi"});
-            island_.setBluetoothDevices({{L"Headphones", true}, {L"Wireless mouse", false}});
+            island_.setSystem({12, 45, 8, {{L'C', 3}, {L'D', 1}}});
+            island_.setPower({true, true, true, true, 81, {}});
+            island_.setAudioOutput(L"Headphones");
+            island_.setAudioOutputs({{L"headphones", L"Headphones", true, true},
+                                     {L"speakers", L"Speakers", false, false}});
+            island_.setAppVolumes({{L"system", L"System sounds", 0.65f, false, false, {}}});
+            island_.setNetwork({NetworkAccess::internet, NetworkType::wifi, L"Home Wi-Fi", 4});
+            island_.setBluetoothDevices({{L"Headphones", true, 84}, {L"Wireless mouse", false, 63}});
         }
         showFeature(feature, start_);
         break;
