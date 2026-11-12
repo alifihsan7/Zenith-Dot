@@ -56,11 +56,11 @@ struct IslandAlert {
     std::optional<unsigned> battery = std::nullopt;   // drawn as a battery cell before value
     bool fromCompanion = false;
     bool captureEnded = false;
-    struct CaptureDotOrigin {
+    struct DotOrigin {
         float width;
         float iconLeft;
     };
-    std::optional<CaptureDotOrigin> captureDotOrigin;
+    std::optional<DotOrigin> dotOrigin;
 };
 
 // The island UI from preview V7: an idle dot, a pill while something is going on, and a panel on hover.
@@ -289,7 +289,7 @@ private:
     void drawSplit(Clock::time_point now, float amount, std::optional<D2D1_RECT_F> slot);
     D2D1_RECT_F closingDotShape(D2D1_RECT_F pill) const;
     void drawBubbleToDot(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F bubble, bool fromSlot);
-    void drawBubbleFromCaptureDot(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F bubble);
+    void drawBubbleFromDot(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F bubble);
     void drawBubblePrimary(Clock::time_point now, D2D1_RECT_F pill, float opacity);
     void drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity,
                           std::optional<float> iconOrigin = std::nullopt);

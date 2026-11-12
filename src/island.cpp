@@ -142,10 +142,16 @@ constexpr auto themeTime = 700ms;
 constexpr auto splitTime = 1152ms;
 constexpr float splitRate = 5.0f / 6.0f;
 constexpr auto bubbleHoldTime = 1200ms;
-constexpr auto cameraHoldTime = 450ms;
+constexpr auto shortBubbleHoldTime = 450ms;
+
+bool isCountdownAlert(IslandAlert::Kind kind) {
+    return kind == IslandAlert::Kind::timerDone || kind == IslandAlert::Kind::focusDone ||
+           kind == IslandAlert::Kind::breakDone;
+}
 
 auto alertHoldTime(IslandAlert const& alert) {
-    return std::min(alert.hold, alert.kind == IslandAlert::Kind::camera ? cameraHoldTime : bubbleHoldTime);
+    const bool brief = alert.kind == IslandAlert::Kind::camera || isCountdownAlert(alert.kind);
+    return std::min(alert.hold, brief ? shortBubbleHoldTime : bubbleHoldTime);
 }
 constexpr auto visibilityTime = 200ms;
 constexpr auto lyricScrollTime = 190ms;
@@ -1194,7 +1200,7 @@ bool Island::setCaptureActivity(CaptureActivity const& activity, bool announce) 
                 float iconLeft = (width + (hasActivity ? activityDotSize : 0) - total * companionIconPitch) / 2;
                 for (size_t j = 0; j < i; ++j) iconLeft += amounts[j] * companionIconPitch;
                 iconLeft += (amounts[i] * companionIconPitch - 15) / 2;
-                alert.captureDotOrigin = IslandAlert::CaptureDotOrigin{width, iconLeft};
+                alert.dotOrigin = IslandAlert::DotOrigin{width, iconLeft};
             }
             notify(std::move(alert));
         }
@@ -1328,10 +1334,14 @@ void Island::finishFocus(Clock::time_point now, bool fromCompanion) {
 
 void Island::completeCountdown(Clock::time_point now, PillMode mode, IslandAlert alert) {
     if (!suppressed_ && !open_ && pillMode_ == mode && alertAllowed(alert.kind)) {
-        countdownCompletion_ = {now, now + alert.hold, mode, std::move(alert.title)};
-    } else {
-        notify(std::move(alert));
+        const auto reveal = animate_ ? countdownCompletionMotion : 0ms;
+        countdownCompletion_ = {now, now + reveal + alertHoldTime(alert), mode, std::move(alert.title)};
+        return;
     }
+    if (alert.fromCompanion) {
+        alert.dotOrigin = IslandAlert::DotOrigin{companionWidth(now, true), (activityDotSize - 15) / 2};
+    }
+    notify(std::move(alert));
 }
 
 void Island::selectTimerView(size_t index) {
@@ -3715,7 +3725,8 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
     const bool hasPrimaryPill = pillMode_ != PillMode::dot && pillMode_ != PillMode::privacy;
     const bool hasCompanion = activityCompanion() != PillMode::dot ||
         std::ranges::any_of(captureIndicators_, &CaptureIndicator::shown);
-    alertUsesCompanionSlot_ = hasPrimaryPill && !isCaptureAlert(alert_->kind) && (alert_->fromCompanion || hasCompanion);
+    alertUsesCompanionSlot_ = hasPrimaryPill && !isCaptureAlert(alert_->kind) && !alert_->dotOrigin &&
+        (alert_->fromCompanion || hasCompanion);
     const bool closing = !open_ && panelValue(now) > 0;
     if (!closing) {
         // The split starts from a settled dot or pill.
@@ -3746,8 +3757,8 @@ void Island::beginAlertClose(Clock::time_point now) {
     alertStart_ = now;
     alertHoldUntil_.reset();
 
-    // A capture-off bubble reverses the primary pill's capture-on split.
-    if (alert_->captureEnded) return;
+    // Activity-ending bubbles that grow from a dot return along the primary pill's split.
+    if (alert_->captureEnded || alert_->dotOrigin) return;
 
     AlertDot destination;
     destination.mode = activityCompanion();
@@ -3867,8 +3878,8 @@ void Island::drawBubblePrimary(Clock::time_point now, D2D1_RECT_F pill, float op
     target_->DrawRoundedRectangle(shell, ink(white(0.13f * opacity)), 1);
 }
 
-void Island::drawBubbleFromCaptureDot(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F bubble) {
-    const auto& origin = *alert_->captureDotOrigin;
+void Island::drawBubbleFromDot(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F bubble) {
+    const auto& origin = *alert_->dotOrigin;
     const float progress = alertValue(now);
     const float height = pill.bottom - pill.top;
     const float width = pill.right - pill.left;
@@ -3880,7 +3891,15 @@ void Island::drawBubbleFromCaptureDot(Clock::time_point now, D2D1_RECT_F pill, D
     const auto dot = box(pill.right + activityDotGap, top, origin.width, activityDotSize);
     const auto shape = mixRect(dot, bubble, progress);
     drawCompanionShell(shape, 0, 0.13f);
-    drawAlertContent(shape, 1, easeInOut(lin(0.55f, 1, progress)), shape.left + origin.iconLeft);
+    const float textOpacity = easeInOut(lin(0.55f, 1, progress));
+    const float notice = isCountdownAlert(alert_->kind) ? easeInOut(lin(0, 0.35f, progress)) : 1;
+    if (notice < 1) {
+        const auto mode = alert_->kind == IslandAlert::Kind::timerDone ? PillMode::timer : PillMode::focus;
+        pushLayer(nullptr, 1 - notice);
+        drawCompanionIndicators(now, shape, mode);
+        popLayer();
+    }
+    drawAlertContent(shape, notice, textOpacity, shape.left + origin.iconLeft);
 }
 
 void Island::drawSplit(Clock::time_point now, float amount, std::optional<D2D1_RECT_F> slot) {
@@ -4208,13 +4227,13 @@ void Island::draw(HWND window) {
         bounds = unite(bounds, grow(box(-width / 2, top, width, height), 2, 2));
     }
     if (directClose) bounds = unite(bounds, grow(closingDotShape(compact), 2, 2));
-    const bool growsFromCaptureDot = splitVisible && amount >= 1 && alertTo_ > 0 && alert_->captureDotOrigin;
-    if (growsFromCaptureDot) {
+    const bool growsFromDot = splitVisible && amount >= 1 && alertTo_ > 0 && alert_->dotOrigin;
+    if (growsFromDot) {
         const float top = (compact.top + compact.bottom - activityDotSize) / 2;
-        bounds = unite(bounds, grow(box(compact.right + activityDotGap, top, alert_->captureDotOrigin->width,
+        bounds = unite(bounds, grow(box(compact.right + activityDotGap, top, alert_->dotOrigin->width,
                                        activityDotSize), 2, 2));
     }
-    const float slotOpacity = directClose || growsFromCaptureDot ? 0 : splitVisible ? companionSlotOpacity(now) : 1;
+    const float slotOpacity = directClose || growsFromDot ? 0 : splitVisible ? companionSlotOpacity(now) : 1;
     std::optional<D2D1_RECT_F> activityDot;
     if (!panelVisible && amount >= 1 && companion != PillMode::dot && slotOpacity > 0) {
         const float centerY = (compact.top + compact.bottom) / 2;
@@ -4268,8 +4287,8 @@ void Island::draw(HWND window) {
         if (bubbleSlot && (!directClose || !closingDot_->idle)) drawIsland(now, value, amount, morphTitle);
         if (directClose) {
             drawBubbleToDot(now, compact, fullBubble, slotBubble);
-        } else if (growsFromCaptureDot) {
-            drawBubbleFromCaptureDot(now, compact, fullBubble);
+        } else if (growsFromDot) {
+            drawBubbleFromDot(now, compact, fullBubble);
         } else {
             drawSplit(now, amount, bubbleSlot);
         }
