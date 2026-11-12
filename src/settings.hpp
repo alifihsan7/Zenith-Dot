@@ -20,8 +20,10 @@ constexpr bool validSettingsTest(unsigned test) {
 
 int runSettingsWindow(HINSTANCE instance);
 
-enum class Feature : unsigned { media, timers, scratch, drop, system, prayer };
-inline constexpr std::array featureOrder{Feature::media, Feature::timers, Feature::scratch, Feature::drop, Feature::system};
+enum class Feature : unsigned { media, timers, scratch, drop, system, connection, prayer };
+inline constexpr std::array featureOrder{Feature::media, Feature::timers, Feature::scratch, Feature::drop,
+                                         Feature::system, Feature::connection};
+inline constexpr unsigned featureMask = (1u << featureOrder.size()) - 1;
 
 enum class QuietMode : unsigned { off, followWindows, on };
 
@@ -48,7 +50,7 @@ struct Settings {
     unsigned focusPreset = 1;
     unsigned breakPreset = 0;
     std::array<Feature, featureOrder.size()> features = featureOrder;
-    unsigned enabledFeatures = 0x1f;
+    unsigned enabledFeatures = featureMask;
 
     bool enabled(Feature feature) const {
         if (feature == Feature::prayer) return prayerCity != 0;

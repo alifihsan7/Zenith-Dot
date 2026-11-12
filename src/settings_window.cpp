@@ -98,16 +98,17 @@ constexpr Option options[]{
     {IDC_ENABLE_SCRATCH, IDC_SETTINGS_FEATURES, nullptr, nullptr, nullptr},
     {IDC_ENABLE_DROP, IDC_SETTINGS_FEATURES, nullptr, nullptr, nullptr},
     {IDC_ENABLE_SYSTEM, IDC_SETTINGS_FEATURES, nullptr, nullptr, nullptr},
+    {IDC_ENABLE_CONNECTION, IDC_SETTINGS_FEATURES, nullptr, nullptr, nullptr},
 };
 
-bool isFeatureSwitch(int id) { return id >= IDC_ENABLE_MEDIA && id <= IDC_ENABLE_SYSTEM; }
+bool isFeatureSwitch(int id) { return id >= IDC_ENABLE_MEDIA && id <= IDC_ENABLE_CONNECTION; }
 Feature featureForSwitch(int id) { return static_cast<Feature>(id - IDC_ENABLE_MEDIA); }
 bool hovered(HWND window) {
     POINT pointer{};
     return IsWindowEnabled(window) && GetCursorPos(&pointer) && WindowFromPoint(pointer) == window;
 }
 
-constexpr wchar_t const* featureNames[]{L"Now Playing", L"Timers", L"Scratchpad", L"Drop Zone", L"System"};
+constexpr wchar_t const* featureNames[]{L"Now Playing", L"Timers", L"Scratchpad", L"Drop Zone", L"System", L"Connection"};
 constexpr wchar_t const* widthChoices[]{L"Fit to title", L"147 px minimum"};
 constexpr wchar_t const* sizeChoices[]{L"Compact", L"Default", L"Large"};
 constexpr wchar_t const* accentChoices[]{L"Album artwork", L"Zenith blue", L"Custom"};
@@ -373,7 +374,8 @@ void SettingsWindow::initialize(HWND window) {
     for (const int id : choiceControls)
         SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
     for (const int id : {IDC_APP_NOTIFICATIONS, IDC_TEST_NOTIFICATION, IDC_SETTINGS_GITHUB, IDC_FEATURE_BACK, IDC_FEATURE_UP, IDC_FEATURE_DOWN,
-                        IDC_FEATURE_MEDIA, IDC_FEATURE_TIMERS, IDC_FEATURE_SCRATCH, IDC_FEATURE_DROP, IDC_FEATURE_SYSTEM}) {
+                        IDC_FEATURE_MEDIA, IDC_FEATURE_TIMERS, IDC_FEATURE_SCRATCH, IDC_FEATURE_DROP, IDC_FEATURE_SYSTEM,
+                        IDC_FEATURE_CONNECTION}) {
         SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
     }
     const auto instance = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(window, GWLP_HINSTANCE));
@@ -475,11 +477,11 @@ void SettingsWindow::showControls() {
                  fullscreen.right - fullscreen.left, fullscreen.bottom - fullscreen.top, SWP_NOZORDER | SWP_NOACTIVATE);
     for (size_t index = 0; index < settings_.features.size(); ++index) {
         const auto id = IDC_FEATURE_MEDIA + static_cast<int>(settings_.features[index]);
-        const int y = 69 + 41 * static_cast<int>(index);
-        const auto bounds = units(144, y, 413, y + 36);
+        const int y = 69 + 35 * static_cast<int>(index);
+        const auto bounds = units(144, y, 413, y + 30);
         SetWindowPos(GetDlgItem(window_, id), nullptr, bounds.left, bounds.top, bounds.right - bounds.left,
                      bounds.bottom - bounds.top, SWP_NOZORDER | SWP_NOACTIVATE);
-        const auto toggle = units(415, y, 456, y + 36);
+        const auto toggle = units(415, y, 456, y + 30);
         const int toggleId = IDC_ENABLE_MEDIA + static_cast<int>(settings_.features[index]);
         SetWindowPos(GetDlgItem(window_, toggleId), GetDlgItem(window_, id), toggle.left, toggle.top,
                      toggle.right - toggle.left, toggle.bottom - toggle.top, SWP_NOACTIVATE);
@@ -676,7 +678,7 @@ bool SettingsWindow::command(int id) {
             return true;
         }
     }
-    if (id >= IDC_FEATURE_MEDIA && id <= IDC_FEATURE_SYSTEM) {
+    if (id >= IDC_FEATURE_MEDIA && id <= IDC_FEATURE_CONNECTION) {
         openDetail(id);
         SetFocus(GetDlgItem(window_, IDC_FEATURE_BACK));
         return true;
@@ -756,7 +758,7 @@ void SettingsWindow::redrawMotion() {
             for (size_t i = 0; i < choices(id).size(); ++i)
                 InvalidateRect(GetDlgItem(window_, choiceButtonId(row, i)), nullptr, FALSE);
         }
-        for (int id = IDC_FEATURE_MEDIA; id <= IDC_FEATURE_SYSTEM; ++id)
+        for (int id = IDC_FEATURE_MEDIA; id <= IDC_FEATURE_CONNECTION; ++id)
             InvalidateRect(GetDlgItem(window_, id), nullptr, FALSE);
         if (page_ == IDC_SETTINGS_ABOUT) InvalidateRect(GetDlgItem(window_, IDC_SETTINGS_GITHUB), nullptr, FALSE);
     }
@@ -872,7 +874,7 @@ void SettingsWindow::drawButton(DRAWITEMSTRUCT const& item) {
     const auto now = Clock::now();
     const float selectedAmount = segment ? (animate_ ? choiceMotion_[id - firstChoiceButton].value(now) :
         choiceMotion_[id - firstChoiceButton].to) : static_cast<float>(active);
-    const bool featureRow = id >= IDC_FEATURE_MEDIA && id <= IDC_FEATURE_SYSTEM;
+    const bool featureRow = id >= IDC_FEATURE_MEDIA && id <= IDC_FEATURE_CONNECTION;
     const bool compactButton = isTestButton(id) || id == IDC_FEATURE_BACK ||
         id == IDC_FEATURE_UP || id == IDC_FEATURE_DOWN;
     const bool disabled = (item.itemState & ODS_DISABLED) != 0;

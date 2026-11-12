@@ -72,7 +72,6 @@ private:
     void announceBluetooth();
     void addTray();
     void showMenu(POINT point);
-    void showAudioPicker();
     void queueClipboard(bool listenerEvent = false);
     void refreshClipboard();
     void updateLockKey(RAWKEYBOARD const& keyboard, HANDLE device);
@@ -106,6 +105,7 @@ private:
     unsigned announcedPrayers_ = 0;
     std::optional<PrayerSchedule> prayers_;
     std::chrono::steady_clock::time_point systemSampled_{};
+    std::chrono::steady_clock::time_point connectionSampled_{};
     Island island_;
     std::optional<SettingsExample> example_;
     bool tracking_ = false;
@@ -228,7 +228,12 @@ void App::frame() {
     if (island_.wantsSystemStats() && now - systemSampled_ >= 1s) {
         island_.setSystem(system_.sample());
         island_.setAppVolumes(desktop_.appVolumes());
+        island_.setAudioOutputs(desktop_.audioOutputs());
         systemSampled_ = now;
+    }
+    if (island_.wantsConnectionStatus() && now - connectionSampled_ >= 1s) {
+        island_.setBluetoothDevices(bluetooth_.connectedDevices());
+        connectionSampled_ = now;
     }
     const bool shown = IsWindowVisible(window_) != FALSE;
     const bool visible = island_.visible() && (shown || !suppressed());
@@ -296,7 +301,18 @@ void App::run(IslandCommand const& command) {
             island_.setScratchEditing(scratchpad_.open(window_, *bounds));
         }
         break;
-    case IslandCommand::Kind::audioPicker: showAudioPicker(); break;
+    case IslandCommand::Kind::selectAudioOutput:
+        if (!desktop_.selectAudioOutput(command.appId)) {
+            MessageBoxW(window_, L"Windows couldn't switch to that audio output.", appName, MB_OK | MB_ICONWARNING);
+        }
+        desktop_.refreshAudioDevice();
+        island_.setAudioOutput(desktop_.audioOutput());
+        island_.setAudioOutputs(desktop_.audioOutputs());
+        systemSampled_ = {};
+        break;
+    case IslandCommand::Kind::soundSettings:
+        ShellExecuteW(window_, L"open", L"ms-settings:sound", nullptr, nullptr, SW_SHOWNORMAL);
+        break;
     case IslandCommand::Kind::clearDrop: dropZone_.clear(); break;
     case IslandCommand::Kind::removeDrop: dropZone_.remove(command.index); break;
     case IslandCommand::Kind::openDropImage:
@@ -392,7 +408,7 @@ void App::applyNetwork(NetworkStatus status) {
         island_.notify({IslandAlert::Kind::connection, *online ? L"Back online" : L"Connection lost",
                         L"", *online ? 0x91caffu : 0xff9f0au, 2});
         frame();
-    } else if (island_.wantsSystemStats()) {
+    } else if (island_.wantsConnectionStatus()) {
         frame();
     }
 }
@@ -540,42 +556,6 @@ void App::showMenu(POINT point) {
     }
 }
 
-void App::showAudioPicker() {
-    const auto outputs = desktop_.audioOutputs();
-    const auto menu = CreatePopupMenu();
-    if (!menu) return;
-    const auto settings = static_cast<UINT>(outputs.size()) + 1;
-    for (size_t i = 0; i < outputs.size(); ++i) {
-        auto label = outputs[i].name;
-        for (size_t pos = 0; (pos = label.find(L'&', pos)) != std::wstring::npos; pos += 2) {
-            label.insert(pos, 1, L'&');
-        }
-        AppendMenuW(menu, MF_STRING | (outputs[i].active ? MF_CHECKED : MF_UNCHECKED), i + 1, label.c_str());
-    }
-    if (outputs.empty()) AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"No outputs available");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, settings, L"Sound settings…");
-    POINT point{};
-    GetCursorPos(&point);
-    const auto previous = GetForegroundWindow();
-    island_.setPopupOpen(true);
-    SetForegroundWindow(window_);
-    const auto selected = static_cast<UINT>(
-        TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, point.x, point.y, 0, window_, nullptr));
-    island_.setPopupOpen(false);
-    DestroyMenu(menu);
-    PostMessageW(window_, WM_NULL, 0, 0);
-    if (previous && previous != window_ && IsWindow(previous)) SetForegroundWindow(previous);
-    if (selected == settings) {
-        ShellExecuteW(window_, L"open", L"ms-settings:sound", nullptr, nullptr, SW_SHOWNORMAL);
-    } else if (selected > 0 && selected <= outputs.size() && !outputs[selected - 1].active) {
-        if (!desktop_.selectAudioOutput(outputs[selected - 1].id)) {
-            MessageBoxW(window_, L"Windows couldn't switch to that audio output.", appName, MB_OK | MB_ICONWARNING);
-        }
-        desktop_.refreshAudioDevice();
-        island_.setAudioOutput(desktop_.audioOutput());
-    }
-}
 
 // Private clipboard formats are excluded before either previewing text or staging an image.
 std::optional<IslandAlert> App::clipboardAlert(bool& busy, HBITMAP& image, std::wstring& stagedText) {

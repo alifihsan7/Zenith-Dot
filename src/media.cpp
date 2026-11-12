@@ -53,27 +53,32 @@ unsigned fromHsl(float hue, float saturation, float lightness) {
     return (level(0) << 16) | (level(8) << 8) | level(4);
 }
 
-// Picks the cover's most vivid hue, then clamps it so it stays readable on the black island.
-// Pixels vote into twelve hue buckets, weighted by saturation and distance from black or white.
+// Dominant hues vote by chroma. Weak color votes leave the accent close to the cover's neutral tone.
 CoverTheme coverTheme(std::span<const uint8_t> bgra) {
     struct Bucket { float weight = 0, x = 0, y = 0, saturation = 0, lightness = 0; };
     constexpr float degrees = 3.14159265f / 180.0f;
     std::array<Bucket, 12> buckets{};
+    float visibleWeight = 0;
+    float totalLightness = 0;
     for (size_t pixel = 0; pixel + 3 < bgra.size(); pixel += 4) {
-        const float b = bgra[pixel] / 255.0f;
-        const float g = bgra[pixel + 1] / 255.0f;
-        const float r = bgra[pixel + 2] / 255.0f;
+        if (bgra[pixel + 3] < 64) continue;
+        const auto alpha = static_cast<float>(bgra[pixel + 3]);
+        const float weight = alpha / 255.0f;
+        const float b = std::min(1.0f, bgra[pixel] / alpha);
+        const float g = std::min(1.0f, bgra[pixel + 1] / alpha);
+        const float r = std::min(1.0f, bgra[pixel + 2] / alpha);
         const float high = std::max({r, g, b});
         const float delta = high - std::min({r, g, b});
-        if (delta <= 0) continue;
         const float lightness = high - delta / 2;
+        visibleWeight += weight;
+        totalLightness += weight * lightness;
+        if (delta <= 0) continue;
         const float saturation = delta / (1.0f - std::abs(2.0f * lightness - 1.0f));
-        if (saturation < 0.12f) continue;
         float hue = high == r ? std::fmod((g - b) / delta, 6.0f) :
             (high == g ? (b - r) / delta + 2 : (r - g) / delta + 4);
         hue *= 60;
         if (hue < 0) hue += 360;
-        const float score = saturation * (1.0f - std::abs(lightness - 0.5f) * 1.4f);
+        const float score = weight * delta;
         auto& bucket = buckets[static_cast<size_t>(hue / 30.0f) % buckets.size()];
         bucket.weight += score;
         bucket.x += score * std::cos(hue * degrees);
@@ -81,14 +86,16 @@ CoverTheme coverTheme(std::span<const uint8_t> bgra) {
         bucket.saturation += score * saturation;
         bucket.lightness += score * lightness;
     }
+    if (visibleWeight == 0) return {};
     const auto& best = *std::ranges::max_element(buckets, {}, &Bucket::weight);
-    // A greyscale or nearly colourless cover keeps the default colours.
-    if (best.weight < static_cast<float>(bgra.size() / 4) * 0.02f) return {};
-    float hue = std::atan2(best.y, best.x) / degrees;
+    const float neutral = totalLightness / visibleWeight;
+    const float colorStrength = std::clamp(best.weight / (visibleWeight * 0.10f), 0.0f, 1.0f);
+    const float tone = best.weight > 0 ? std::lerp(neutral, best.lightness / best.weight, colorStrength) : neutral;
+    float hue = best.weight > 0 ? std::atan2(best.y, best.x) / degrees : 0;
     if (hue < 0) hue += 360;
-    const float saturation = std::clamp(best.saturation / best.weight, 0.45f, 0.9f);
-    const float lightness = std::clamp(best.lightness / best.weight, 0.68f, 0.78f);
-    return {fromHsl(hue, saturation, lightness), fromHsl(hue, saturation * 0.55f, 0.09f)};
+    const float saturation = best.weight > 0 ? std::min(best.saturation / best.weight, 0.9f) * colorStrength : 0;
+    return {fromHsl(hue, saturation, std::lerp(0.67f, 0.95f, tone)),
+            fromHsl(hue, saturation * 0.55f, std::lerp(0.07f, 0.12f, tone))};
 }
 
 void sendMediaKey(MediaCommand command) {

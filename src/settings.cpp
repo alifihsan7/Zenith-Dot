@@ -24,6 +24,7 @@ constexpr wchar_t displayValue[] = L"DisplayOptions";
 constexpr DWORD hideInFullscreenBit = 2;
 constexpr wchar_t islandValue[] = L"IslandOptions";
 constexpr wchar_t featuresValue[] = L"FeatureOrder";
+constexpr wchar_t featuresV2Value[] = L"FeatureOrderV2";
 constexpr wchar_t notificationsValue[] = L"NotificationOptions";
 constexpr wchar_t accentValue[] = L"CustomAccent";
 
@@ -80,17 +81,21 @@ Settings Settings::load() {
         settings.showAppNotifications = (*value & 32u) != 0;
     }
     if (const auto value = read(accentValue)) settings.customAccent = *value & 0xffffff;
-    if (const auto value = read(featuresValue)) {
-        settings.enabledFeatures = *value & 0x1f;
+    const auto updatedFeatures = read(featuresV2Value);
+    const auto savedFeatures = updatedFeatures ? updatedFeatures : read(featuresValue);
+    if (savedFeatures) {
+        const unsigned count = updatedFeatures ? static_cast<unsigned>(featureOrder.size()) : 5u;
+        const unsigned mask = (1u << count) - 1;
+        settings.enabledFeatures = (*savedFeatures & mask) | (featureMask & ~mask);
         auto order = featureOrder;
         unsigned seen = 0;
-        for (unsigned index = 0; index < order.size(); ++index) {
-            const auto feature = (*value >> (5 + 3 * index)) & 7;
-            if (feature >= order.size() || (seen & (1u << feature))) break;
+        for (unsigned index = 0; index < count; ++index) {
+            const auto feature = (*savedFeatures >> (count + 3 * index)) & 7;
+            if (feature >= count || (seen & (1u << feature))) break;
             order[index] = static_cast<Feature>(feature);
             seen |= 1u << feature;
         }
-        if (seen == 0x1f) settings.features = order;
+        if (seen == mask) settings.features = order;
     }
     return settings;
 }
@@ -125,9 +130,9 @@ bool Settings::saveIsland() const {
 bool Settings::saveFeatures() const {
     DWORD value = enabledFeatures;
     for (unsigned index = 0; index < features.size(); ++index) {
-        value |= static_cast<DWORD>(features[index]) << (5 + 3 * index);
+        value |= static_cast<DWORD>(features[index]) << (features.size() + 3 * index);
     }
-    return write(featuresValue, value);
+    return write(featuresV2Value, value);
 }
 
 bool Settings::saveAccent() const {

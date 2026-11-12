@@ -6,6 +6,7 @@
 #include <winrt/Windows.Devices.Enumeration.h>
 
 #include <chrono>
+#include <algorithm>
 #include <map>
 #include <mutex>
 #include <string_view>
@@ -244,6 +245,27 @@ void BluetoothMonitor::stop() {
 std::vector<BluetoothEvent> BluetoothMonitor::take() {
     std::lock_guard guard(state_->lock);
     return std::exchange(state_->events, {});
+}
+
+std::vector<ConnectedBluetoothDevice> BluetoothMonitor::connectedDevices() const {
+    std::lock_guard guard(state_->lock);
+    std::map<std::wstring_view, ConnectedBluetoothDevice> devices;
+    for (const auto& [id, endpoint] : state_->endpoints) {
+        if (!endpoint.connected) continue;
+        const auto container = std::wstring_view(endpoint.container.empty() ? id : endpoint.container);
+        auto& device = devices[container];
+        if (device.name.empty()) device.name = endpoint.name;
+        device.audio = device.audio || endpoint.audio;
+    }
+    std::vector<ConnectedBluetoothDevice> result;
+    result.reserve(devices.size());
+    for (auto& entry : devices) {
+        auto& device = entry.second;
+        if (device.name.empty()) device.name = L"Bluetooth device";
+        result.push_back(std::move(device));
+    }
+    std::ranges::stable_sort(result, {}, &ConnectedBluetoothDevice::name);
+    return result;
 }
 
 }

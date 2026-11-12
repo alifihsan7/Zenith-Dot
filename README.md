@@ -38,7 +38,7 @@ Choose Jakarta, Makassar, or Jayapura under **Prayer timetable city** to enable 
 
 ### Connection status
 
-The System panel shows the active connection and whether Windows reports internet access. Wi-Fi includes the network name when available. Zenith shows **Connection lost** or **Back online** after a change in internet availability. These alerts follow the island’s Do Not Disturb setting.
+The Connection panel shows the active network, its internet status, and connected Bluetooth devices. Wi-Fi includes the network name when available. Zenith shows **Connection lost** or **Back online** after a change in internet availability. These alerts follow the island’s Do Not Disturb setting.
 
 ## Notifications from Windows apps
 

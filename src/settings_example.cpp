@@ -93,8 +93,10 @@ SettingsExample::SettingsExample(SettingsTest test, Feature feature, Settings co
         }
         if (feature == Feature::system) {
             island_.setSystem({12, 45});
-            island_.setNetwork({NetworkAccess::internet, NetworkType::wifi, L"Home Wi-Fi"});
             island_.setAudioOutput(L"Speakers");
+        } else if (feature == Feature::connection) {
+            island_.setNetwork({NetworkAccess::internet, NetworkType::wifi, L"Home Wi-Fi"});
+            island_.setBluetoothDevices({{L"Headphones", true}, {L"Wireless mouse", false}});
         }
         showFeature(feature, start_);
         break;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "desktop.hpp"
+#include "bluetooth.hpp"
 #include "audio_spectrum.hpp"
 #include "media.hpp"
 #include "lyrics.hpp"
@@ -33,7 +34,7 @@ class SettingsExample;
 // Something a click on the island asks the app to do.
 struct IslandCommand {
     enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, adjustLyricsDelay, editScratchpad,
-                      audioPicker, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute,
+                      selectAudioOutput, soundSettings, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute,
                       autoCycle, prayerLocation };
     Kind kind = Kind::none;
     double seconds = 0;              // seek position; appVolume: level 0..1; appMute, autoCycle: 1 = on
@@ -74,8 +75,10 @@ public:
     void setPower(PowerState const& power);
     void setSystem(SystemStats const& stats);
     void setNetwork(NetworkStatus const& status);
+    void setBluetoothDevices(std::vector<ConnectedBluetoothDevice> devices);
     void setPrayerSchedule(std::optional<PrayerSchedule> const& schedule);
     void setAudioOutput(std::wstring const& output);
+    void setAudioOutputs(std::vector<AudioOutput> outputs);
     void setAppVolumes(std::vector<AppVolume> apps);
     void setAutoCycle(bool enabled);
     // A command produced while dragging (an app volume slider), to apply before the button is released.
@@ -106,6 +109,7 @@ public:
     unsigned frameInterval() const;
     bool visible() const;
     bool wantsSystemStats() const;
+    bool wantsConnectionStatus() const;
     bool wantsPrayerClock() const;
 
     // Pointer input in window client pixels. The bool results say whether a redraw is needed.
@@ -123,7 +127,8 @@ private:
                      navScratch, navSystem, navPrayer, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
                      timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, lyricsDelay, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
-                     appVolume, appMute, autoCycle, prayerLocationPicker, prayerLocationMenu, prayerLocation };
+                     appVolume, appMute, autoCycle, prayerLocationPicker, prayerLocationMenu, prayerLocation, navConnection,
+                     audioOutputMenu, audioOutputChoice, soundSettings };
     using Screen = Feature;
     Settings preferences_;
     std::vector<Screen> screens_{featureOrder.begin(), featureOrder.end()};
@@ -223,6 +228,9 @@ private:
     void drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record);
     void drawSourceIcon(MediaSource const& source, D2D1_POINT_2F center);
     void drawSourceMenu(D2D1_RECT_F panel);
+    void drawAudioOutputMenu(D2D1_RECT_F panel);
+    void drawPickerSurface(D2D1_RECT_F rect, Hit hit);
+    void drawPickerButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record, bool expanded);
     void drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double position);
     void prepareLyricLayout(float width);
     void drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record);
@@ -237,7 +245,11 @@ private:
     void drawPrayerLocationMenu(D2D1_RECT_F panel);
     void drawAppVolume(size_t index, D2D1_RECT_F row, bool record);
     float volumeFraction(D2D1_POINT_2F point) const;
-    void drawNav(D2D1_RECT_F panel, bool record);
+    float navExpansion(Clock::time_point now) const;
+    float navHeightAt(Clock::time_point now) const;
+    bool setNavExpanded(bool expanded, Clock::time_point now);
+    void drawNav(D2D1_RECT_F panel, Clock::time_point now, bool record);
+    void drawConnection(D2D1_RECT_F panel, bool record);
     void drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color);
     static std::wstring_view screenLabel(Screen screen);
     void drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float value);
@@ -271,8 +283,17 @@ private:
     PowerState power_;
     SystemStats system_;
     NetworkStatus network_;
+    std::vector<ConnectedBluetoothDevice> bluetoothDevices_;
+    size_t bluetoothOffset_ = 0;
+    int bluetoothWheelRemainder_ = 0;
+    D2D1_RECT_F bluetoothViewport_{};
     std::optional<PrayerSchedule> prayerSchedule_;
     std::wstring audioOutput_;
+    std::vector<AudioOutput> audioOutputs_;
+    bool audioPickerOpen_ = false;
+    size_t audioOutputOffset_ = 0;
+    int audioOutputWheelRemainder_ = 0;
+    D2D1_RECT_F audioOutputMenuRect_{};
     std::vector<AppVolume> appVolumes_;
     size_t appOffset_ = 0;
     int appWheelRemainder_ = 0;
@@ -345,6 +366,10 @@ private:
     bool lyricsOpen_ = false;
     bool sourcePickerOpen_ = false;
     bool prayerPickerOpen_ = false;
+    bool navExpanded_ = false;
+    float navFrom_ = 0;
+    Clock::time_point navStart_{};
+    D2D1_RECT_F navHoverRect_{};
     size_t sourceOffset_ = 0;
     int sourceWheelRemainder_ = 0;
     D2D1_RECT_F sourceMenuRect_{};
