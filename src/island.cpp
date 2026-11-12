@@ -4151,7 +4151,7 @@ void Island::drawBubbleToDot(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_
         drawBubblePrimary(now, main, opacity);
     }
     const auto shape = mixRect(bubble, closingDotShape(pill), progress);
-    const float pinch = std::sin(pi * progress) * 0.28f;
+    const float pinch = std::sin(pi * progress) * (isCaptureAlert(alert_->kind) ? 0.65f : 0.28f);
     drawCompanionShell(shape, pinch, 0.13f);
     drawAlertContent(shape, 1 - easeInOut(lin(0.05f, 0.45f, progress)), 1);
     if (!closingDot_->idle && progress > 0.3f) {
@@ -4237,18 +4237,19 @@ void Island::drawSplit(Clock::time_point now, float amount, std::optional<D2D1_R
         visible = stretched.get();
         area = box(shiftX + area.left * scale, top, (area.right - area.left) * scale, size.height);
     }
-    if (slot) {
-        // Only expose the liquid as it emerges past the source pill's trailing cap.
+    const bool drawsWholePill = !slot || isCaptureAlert(alert_->kind);
+    if (!drawsWholePill) {
+        // A small companion bubble draws only the part beyond the primary pill.
         target_->PushAxisAlignedClip(D2D1::RectF(slot->right, slot->top - 1,
                                                  slot->right + releaseGap * scale + std::max(target, size.height) + 2,
                                                  slot->bottom + 1), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     }
     fillShell(visible);
     target_->DrawGeometry(visible, ink(white(0.13f)), 1);
-    if (slot) target_->PopAxisAlignedClip();
+    if (!drawsWholePill) target_->PopAxisAlignedClip();
 
-    if (fromPill && !slot) {
-        const auto capsule = box(left * scale, pillTop, size.width, size.height);
+    if (fromPill && drawsWholePill) {
+        const auto capsule = box(shiftX + left * scale, top, size.width, size.height);
         winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
         winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(
             rounded(capsule, size.height / 2), clip.put()));
@@ -4483,10 +4484,11 @@ void Island::draw(HWND window) {
     const bool directClose = splitVisible && closingDot_.has_value();
     D2D1_RECT_F fullBubble{};
     std::optional<D2D1_RECT_F> bubbleSlot;
+    const bool captureSplit = slotBubble && isCaptureAlert(alert_->kind);
     if (slotBubble) {
-        const float height = isCaptureAlert(alert_->kind) ? compact.bottom - compact.top : activityDotSize;
+        const float height = captureSplit ? compact.bottom - compact.top : activityDotSize;
         const float top = (compact.top + compact.bottom - height) / 2;
-        bubbleSlot = box(compact.right - height, top, height, height);
+        bubbleSlot = captureSplit ? compact : box(compact.right - height, top, height, height);
         const float gap = releaseGap * height / pillHeight;
         fullBubble = box(compact.right + gap, top, std::max(alertWidth_, height), height);
         bounds = unite(bounds, grow(fullBubble, gap + 2, 2));
@@ -4571,7 +4573,8 @@ void Island::draw(HWND window) {
     target_->SetTransform(base_);
     target_->Clear(D2D1::ColorF(0, 0));
     if (splitVisible) {
-        if (bubbleSlot && (!directClose || !closingDot_->idle)) drawIsland(now, value, amount, morphTitle);
+        if (bubbleSlot && (directClose ? !closingDot_->idle : !captureSplit))
+            drawIsland(now, value, amount, morphTitle);
         if (directClose) {
             drawBubbleToDot(now, compact, fullBubble, slotBubble);
         } else if (growsFromDot) {
