@@ -267,9 +267,9 @@ private:
     void fillShell(D2D1_ROUNDED_RECT shape);
     void fillShell(ID2D1Geometry* shape);
     void drawSplit(Clock::time_point now, float amount);
-    void drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity);
+    void drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity, float textBlur);
     void drawAlertText(std::wstring_view value, IDWriteTextFormat* font, D2D1_RECT_F rect,
-                       D2D1_COLOR_F color, float reveal);
+                       D2D1_COLOR_F color, float opacity, float blur);
     void drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color);
     void drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color, bool charging = false);
     void drawInlineAlert(D2D1_RECT_F panel);

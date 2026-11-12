@@ -2,6 +2,7 @@
 
 #include <shobjidl.h>
 #include <tlhelp32.h>
+#include <wincodec.h>
 
 #include <algorithm>
 #include <cmath>
@@ -3448,7 +3449,7 @@ void Island::drawCaptureHandoff(Clock::time_point now, float amount) {
     const auto shell = rounded(area, std::min(area.right - area.left, area.bottom - area.top) / 2);
     fillShell(shell);
     target_->DrawRoundedRectangle(shell, ink(white(0.13f)), 1);
-    drawAlertContent(area, 1, 1 - t);
+    drawAlertContent(area, 1, 1 - t, 0);
 }
 
 void Island::drawSplit(Clock::time_point now, float amount) {
@@ -3462,7 +3463,6 @@ void Island::drawSplit(Clock::time_point now, float amount) {
     float left = 0;
     D2D1_RECT_F area{};
     float alertOpacity = 0;
-    float copyOpacity = 0;
     const bool fromPill = amount >= 1;
     const auto size = pillSize(now);
     const float scale = fromPill ? size.height / pillHeight : 1;
@@ -3477,7 +3477,6 @@ void Island::drawSplit(Clock::time_point now, float amount) {
         left = -span / 2;
         const float bx = left + width - capRadius;
         alertOpacity = lin(pinchAt - 0.1f, pinchAt + 0.12f, p);
-        copyOpacity = lin(0.8f, 1, p);
         if (p < pinchAt) {
             // The bubble is a full-size copy of the pill's cap sliding out of it.
             const float k = 1 - std::pow(lin(0.28f, pinchAt, p), 2.0f);
@@ -3497,7 +3496,6 @@ void Island::drawSplit(Clock::time_point now, float amount) {
         capsule(shape, area);
         const float t = lin(0.31f, 0.82f, p);
         alertOpacity = t * t * (3 - 2 * t);
-        copyOpacity = 1;
     }
     const auto geometry = shape.finish();
     winrt::com_ptr<ID2D1TransformedGeometry> stretched;
@@ -3520,13 +3518,15 @@ void Island::drawSplit(Clock::time_point now, float amount) {
         drawCompactContent(now, capsule, false);
         popLayer();
     }
-    drawAlertContent(area, alertOpacity, copyOpacity);
+    const float textOpacity = easeOut(lin(0.84f, 0.95f, p));
+    const float textBlur = animate_ && alertTo_ > 0 ? 3.2f * (1 - easeInOut(lin(0.91f, 0.997f, p))) : 0;
+    drawAlertContent(area, alertOpacity, textOpacity, textBlur);
     if (fromPill) {
         if (const auto privacy = companionPrivacyShape(now, area)) drawCompanionPrivacy(now, *privacy, 1);
     }
 }
 
-void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity) {
+void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity, float textBlur) {
     if (opacity <= 0 || !alert_) return;
     const float width = area.right - area.left;
     const bool copied = alert_->kind == IslandAlert::Kind::copy;
@@ -3534,7 +3534,7 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity
     const float contentWidth = alertWidth_ - (capture ? privacyTextRevealSpace : 0);
     const float contentLeft = area.left + (width - contentWidth) / 2;
     const float iconProgress = easeInOut(lin(contentWidth - 24, contentWidth - 6, width));
-    // Lay out the complete label once. The final stretch controls its opacity and focus.
+    // Fade in only once there is room for the complete label.
     const float revealWidth = capture ? alertWidth_ - 1 : contentWidth - 0.5f;
     const float reveal = textOpacity * easeInOut(lin(revealWidth - 16, revealWidth, width));
     const float radius = std::min(width, area.bottom - area.top) / 2;
@@ -3561,7 +3561,7 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity
         const float measuredTitle = measure(alert_->title, alertTitleFont_.get());
         const float titleWidth = copied ? std::ceil(measuredTitle) + 2 :
             std::min(measuredTitle + 1, std::max(0.0f, end - x - valueWidth));
-        drawAlertText(alert_->title, alertTitleFont_.get(), box(x, middle - 10, titleWidth, 20), rgb(inkColor), reveal);
+        drawAlertText(alert_->title, alertTitleFont_.get(), box(x, middle - 10, titleWidth, 20), rgb(inkColor), reveal, textBlur);
         x += titleWidth + 6;
     }
     if (!alert_->value.empty() && end > x) {
@@ -3571,31 +3571,98 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity
             drawBatteryCell(x, middle, *alert_->battery, withAlpha(color, reveal));
             x += batteryCellWidth;
         }
-        drawAlertText(alert_->value, alertValueFont_.get(), box(x, middle - 10, end - x, 20), color, reveal);
+        drawAlertText(alert_->value, alertValueFont_.get(), box(x, middle - 10, end - x, 20), color, reveal, textBlur);
     }
     popLayer();
 }
 
 void Island::drawAlertText(std::wstring_view value, IDWriteTextFormat* font, D2D1_RECT_F rect,
-                           D2D1_COLOR_F color, float reveal) {
-    const float blur = animate_ ? 1.8f * (1 - reveal) : 0;
-    if (blur < 0.2f) {
-        text(value, font, rect, withAlpha(color, reveal));
+                           D2D1_COLOR_F color, float opacity, float blur) {
+    if (value.empty() || rect.right <= rect.left) return;
+    const auto drawSharp = [&] { text(value, font, rect, withAlpha(color, opacity)); };
+    if (blur < 0.25f) {
+        drawSharp();
         return;
     }
 
-    // Blend offset glyphs only during the reveal, using the existing render target.
-    const float spread = blur / 1.8f;
-    constexpr D2D1_POINT_2F offsets[]{{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
-    for (const auto offset : offsets) {
-        auto sample = rect;
-        sample.left += offset.x * blur;
-        sample.right += offset.x * blur;
-        sample.top += offset.y * blur;
-        sample.bottom += offset.y * blur;
-        text(value, font, sample, withAlpha(color, reveal * spread * 0.22f));
+    const float sigma = blur * scale_;
+    const int radius = static_cast<int>(std::ceil(3 * sigma));
+    const int width = static_cast<int>(std::ceil((rect.right - rect.left) * scale_)) + 2 * radius;
+    const int height = static_cast<int>(std::ceil((rect.bottom - rect.top) * scale_)) + 2 * radius;
+    const auto size = D2D1::SizeU(width, height);
+    const auto format = D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED);
+    const auto properties = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE, format, 96, 96);
+    winrt::com_ptr<IWICImagingFactory> factory;
+    winrt::com_ptr<IWICBitmap> mask;
+    winrt::com_ptr<ID2D1RenderTarget> raster;
+    winrt::com_ptr<ID2D1SolidColorBrush> brush;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(factory.put()))) ||
+        FAILED(factory->CreateBitmap(width, height, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, mask.put())) ||
+        FAILED(graphics_->CreateWicBitmapRenderTarget(mask.get(), properties, raster.put())) ||
+        FAILED(raster->CreateSolidColorBrush(white(1), brush.put()))) {
+        drawSharp();
+        return;
     }
-    text(value, font, rect, withAlpha(color, reveal * (1 - spread * 0.68f)));
+    raster->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+    raster->SetTransform(D2D1::Matrix3x2F::Scale(scale_, scale_) *
+                          D2D1::Matrix3x2F::Translation(static_cast<float>(radius), static_cast<float>(radius)));
+    raster->BeginDraw();
+    raster->Clear(white(0));
+    raster->DrawText(value.data(), static_cast<UINT32>(value.size()), font,
+                     box(0, 0, rect.right - rect.left, rect.bottom - rect.top), brush.get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    if (FAILED(raster->EndDraw())) {
+        drawSharp();
+        return;
+    }
+
+    std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 4);
+    const UINT stride = width * 4;
+    if (FAILED(mask->CopyPixels(nullptr, stride, static_cast<UINT>(pixels.size()), pixels.data()))) {
+        drawSharp();
+        return;
+    }
+
+    // Blur only the glyph alpha. The bubble surface and its icon stay crisp.
+    std::vector<float> weights(radius + 1);
+    float sum = 1;
+    weights[0] = 1;
+    for (int i = 1; i <= radius; ++i) {
+        weights[i] = std::exp(-0.5f * (i / sigma) * (i / sigma));
+        sum += 2 * weights[i];
+    }
+    for (auto& weight : weights) weight /= sum;
+
+    std::vector<float> horizontal(static_cast<size_t>(width) * height);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            float alpha = 0;
+            for (int dx = std::max(-radius, -x); dx <= std::min(radius, width - 1 - x); ++dx)
+                alpha += weights[std::abs(dx)] * pixels[(y * width + x + dx) * 4 + 3];
+            horizontal[y * width + x] = alpha;
+        }
+    }
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            float alpha = 0;
+            for (int dy = std::max(-radius, -y); dy <= std::min(radius, height - 1 - y); ++dy)
+                alpha += weights[std::abs(dy)] * horizontal[(y + dy) * width + x];
+            const auto index = (y * width + x) * 4;
+            const auto alphaByte = static_cast<uint8_t>(std::lround(std::min(alpha, 255.0f)));
+            pixels[index] = static_cast<uint8_t>(std::lround(color.b * alphaByte));
+            pixels[index + 1] = static_cast<uint8_t>(std::lround(color.g * alphaByte));
+            pixels[index + 2] = static_cast<uint8_t>(std::lround(color.r * alphaByte));
+            pixels[index + 3] = alphaByte;
+        }
+    }
+
+    winrt::com_ptr<ID2D1Bitmap> bitmap;
+    if (FAILED(target_->CreateBitmap(size, pixels.data(), stride, D2D1::BitmapProperties(format), bitmap.put()))) {
+        drawSharp();
+        return;
+    }
+    const float padding = radius / scale_;
+    target_->DrawBitmap(bitmap.get(), box(rect.left - padding, rect.top - padding, width / scale_, height / scale_),
+                        opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
 }
 
 // The V7 alert glyphs, drawn in a 16-unit box scaled to 15 DIPs.
