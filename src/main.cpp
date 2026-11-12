@@ -456,7 +456,7 @@ bool App::refreshFullscreen() {
     if (settings_.hideInFullscreen && foreground &&
         (foreground == window_ || foreground == scratchpad_.window())) return false;
     const bool fullscreen = settings_.hideInFullscreen &&
-        foreground != dropZone_.previewWindow() && fullscreenOnPrimary(window_);
+        (!foreground || foreground != dropZone_.previewWindow()) && fullscreenOnPrimary(window_, foreground);
     if (fullscreen == fullscreen_) return false;
     fullscreen_ = fullscreen;
     applyVisibility();

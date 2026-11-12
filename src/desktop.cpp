@@ -494,31 +494,77 @@ void restoreOverlayZOrder(HWND overlay) {
     }
 }
 
-bool fullscreenOnPrimary(HWND overlay) {
-    const auto foreground = GetForegroundWindow();
-    if (!foreground || foreground == overlay || foreground == GetShellWindow() || IsIconic(foreground)) return false;
-    const auto primary = MonitorFromPoint(POINT{}, MONITOR_DEFAULTTOPRIMARY);
-    if (MonitorFromWindow(foreground, MONITOR_DEFAULTTONULL) != primary) return false;
+namespace {
+
+struct FullscreenScan {
+    HWND overlay;
+    HWND foreground;
+    HMONITOR primary;
+    RECT screen;
+    bool fullscreen = false;
+};
+
+std::optional<bool> primaryWindowFullscreen(HWND window, FullscreenScan const& scan) {
+    if (!window || window == scan.overlay || window == GetShellWindow() ||
+        !IsWindowVisible(window) || IsIconic(window) ||
+        MonitorFromWindow(window, MONITOR_DEFAULTTONULL) != scan.primary) return std::nullopt;
+
+    const auto style = GetWindowLongPtrW(window, GWL_STYLE);
+    const auto extendedStyle = GetWindowLongPtrW(window, GWL_EXSTYLE);
+    if ((style & WS_CHILD) || GetAncestor(window, GA_ROOTOWNER) == scan.overlay ||
+        (extendedStyle & WS_EX_NOACTIVATE)) return std::nullopt;
+
     wchar_t windowClass[64]{};
-    GetClassNameW(foreground, windowClass, static_cast<int>(std::size(windowClass)));
+    GetClassNameW(window, windowClass, static_cast<int>(std::size(windowClass)));
     const std::wstring_view name(windowClass);
-    if (name == L"Progman" || name == L"WorkerW" || name == L"Shell_TrayWnd" || name == L"Shell_SecondaryTrayWnd") {
-        return false;
+    if (name == L"Progman" || name == L"WorkerW" || name == L"Shell_TrayWnd" || name == L"Shell_SecondaryTrayWnd")
+        return std::nullopt;
+
+    DWORD cloaked = 0;
+    if (SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
+        return std::nullopt;
+
+    RECT bounds{};
+    if (FAILED(DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS, &bounds, sizeof(bounds))) &&
+        !GetWindowRect(window, &bounds)) return std::nullopt;
+    if (IsRectEmpty(&bounds)) return std::nullopt;
+
+    const auto& screen = scan.screen;
+    const bool maximized = IsZoomed(window) && (style & WS_CAPTION) == WS_CAPTION;
+    const bool fillsScreen = bounds.left <= screen.left + 1 && bounds.top <= screen.top + 1 &&
+                             bounds.right >= screen.right - 1 && bounds.bottom >= screen.bottom - 1;
+    if (!maximized && fillsScreen) return true;
+
+    // Floating controls and owned popups may sit above a fullscreen app without replacing it.
+    if (window != scan.foreground &&
+        ((extendedStyle & (WS_EX_TOOLWINDOW | WS_EX_TOPMOST)) || GetWindow(window, GW_OWNER))) return std::nullopt;
+    return false;
+}
+
+}
+
+bool fullscreenOnPrimary(HWND overlay, HWND foreground) {
+    const auto primary = MonitorFromPoint(POINT{}, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO monitor{sizeof(MONITORINFO)};
+    if (!GetMonitorInfoW(primary, &monitor)) return false;
+    FullscreenScan scan{overlay, foreground, primary, monitor.rcMonitor};
+
+    if (const auto fullscreen = primaryWindowFullscreen(foreground, scan)) {
+        if (*fullscreen) return true;
+        QUERY_USER_NOTIFICATION_STATE notification{};
+        return SUCCEEDED(SHQueryUserNotificationState(&notification)) &&
+            (notification == QUNS_RUNNING_D3D_FULL_SCREEN || notification == QUNS_PRESENTATION_MODE);
     }
 
-    QUERY_USER_NOTIFICATION_STATE notification{};
-    if (SUCCEEDED(SHQueryUserNotificationState(&notification)) &&
-        (notification == QUNS_RUNNING_D3D_FULL_SCREEN || notification == QUNS_PRESENTATION_MODE)) return true;
-
-    MONITORINFO monitor{sizeof(MONITORINFO)};
-    RECT bounds{};
-    if (!GetMonitorInfoW(primary, &monitor)) return false;
-    if (FAILED(DwmGetWindowAttribute(foreground, DWMWA_EXTENDED_FRAME_BOUNDS, &bounds, sizeof(bounds))) &&
-        !GetWindowRect(foreground, &bounds)) return false;
-    if (IsZoomed(foreground) && (GetWindowLongPtrW(foreground, GWL_STYLE) & WS_CAPTION) == WS_CAPTION) return false;
-    const auto& screen = monitor.rcMonitor;
-    return bounds.left <= screen.left + 1 && bounds.top <= screen.top + 1 &&
-           bounds.right >= screen.right - 1 && bounds.bottom >= screen.bottom - 1;
+    // Focus can be on another display. Find the frontmost app on the island's display.
+    EnumWindows([](HWND window, LPARAM context) -> BOOL {
+        auto& scan = *reinterpret_cast<FullscreenScan*>(context);
+        const auto fullscreen = primaryWindowFullscreen(window, scan);
+        if (!fullscreen) return TRUE;
+        scan.fullscreen = *fullscreen;
+        return FALSE;
+    }, reinterpret_cast<LPARAM>(&scan));
+    return scan.fullscreen;
 }
 
 bool activateMediaWindow(HWND overlay, std::wstring const& appId) {

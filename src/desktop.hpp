@@ -34,7 +34,7 @@ struct AppVolume {
     bool operator==(AppVolume const&) const = default;
 };
 
-bool fullscreenOnPrimary(HWND overlay);
+bool fullscreenOnPrimary(HWND overlay, HWND foreground);
 void restoreOverlayZOrder(HWND overlay);
 bool activateMediaWindow(HWND overlay, std::wstring const& appId);
 CaptureActivity readCaptureActivity();
