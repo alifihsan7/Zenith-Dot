@@ -132,7 +132,7 @@ public:
 
 private:
     friend class SettingsExample;
-    enum class Hit { none, pill, activityDot, previous, toggle, next, timeline, cover, sourcePicker, sourceMenu, source, navMedia, navTimers,
+    enum class Hit { none, pill, activityDot, privacyBadge, previous, toggle, next, timeline, cover, sourcePicker, sourceMenu, source, navMedia, navTimers,
                      navScratch, navSystem, navPrayer, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
                      timerToggle, timerReset, quickAdjust, timerDuration, lyrics, lyricLine, retryLyrics, lyricsDelay, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
@@ -197,7 +197,8 @@ private:
     void drawHandoffShell(D2D1_RECT_F retiring, D2D1_RECT_F incoming, float merge);
     void drawHandoffOutgoing(D2D1_RECT_F pill, float opacity);
     D2D1_RECT_F compactShape(Clock::time_point now, float amount) const;
-    std::optional<D2D1_RECT_F> companionPrivacyShape(Clock::time_point now, D2D1_RECT_F anchor) const;
+    float privacyBadgeWidth(Clock::time_point now) const;
+    D2D1_RECT_F privacyBadgeRect(Clock::time_point now, D2D1_RECT_F pill) const;
     float visibility(Clock::time_point now) const;
     float panelValue(Clock::time_point now) const;
     MotionSample panelMotion(Clock::time_point now) const;
@@ -265,11 +266,9 @@ private:
     void drawCaptureIndicators(D2D1_POINT_2F right, std::array<float, 3> const& amounts);
     void drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F shape);
     float companionSlotOpacity(Clock::time_point now) const;
-    float companionWidth(Clock::time_point now, bool hasActivity) const;
-    void drawCompanionIndicators(Clock::time_point now, D2D1_RECT_F shape, PillMode mode,
-                                 std::optional<std::array<float, 3>> amounts = std::nullopt);
+    void drawPrivacyBadge(Clock::time_point now, D2D1_RECT_F badge);
+    void drawPrivacyDetails(D2D1_RECT_F details);
     void drawCompanionShell(D2D1_RECT_F shape, float pinch, float border);
-    void drawCompanionPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity);
     void drawSystem(D2D1_RECT_F panel, bool record);
     void drawPrayerSchedule(D2D1_RECT_F panel, bool record);
     void drawPrayerLocationMenu(D2D1_RECT_F panel);
@@ -482,6 +481,7 @@ private:
     Clock::time_point dotHoverStart_{};
     float dotHoverFrom_ = 0;
     bool dotHot_ = false;
+    bool privacyDetailsOpen_ = false;
     size_t hoveredIndex_ = 0;
     Hit pressed_ = Hit::none;
     size_t pressedIndex_ = 0;
@@ -529,7 +529,6 @@ private:
     struct AlertDot {
         bool idle = false;
         PillMode mode = PillMode::dot;
-        std::array<float, 3> capture{};
     };
     std::optional<AlertDot> closingDot_;
 
