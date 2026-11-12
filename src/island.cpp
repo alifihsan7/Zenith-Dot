@@ -3815,7 +3815,7 @@ void Island::drawSplit(Clock::time_point now, float amount, std::optional<D2D1_R
     } else {
         // From the idle dot the bubble grows out of the dot itself.
         const float width = std::lerp(dotSize, target, p);
-        const float height = std::lerp(dotSize, pillHeight, p);
+        const float height = std::lerp(dotSize, activityDotSize, p);
         area = box(-width / 2, pillCenterY - height / 2, width, height);
         capsule(shape, area);
         const float t = lin(0.31f, 0.82f, p);
@@ -4069,7 +4069,9 @@ void Island::draw(HWND window) {
     auto bounds = unite(grow(compact, 2, 2), compactHit(compact, amount));
     if (panelVisible) bounds = unite(bounds, grow(panelRect(now), 2, 2));
     const bool splitVisible = !panelVisible && bubbleShowing();
-    const bool slotBubble = splitVisible && alert_->fromCompanion && amount >= 1 && pillMode_ != PillMode::dot;
+    const auto companion = activityCompanion();
+    const bool slotBubble = splitVisible && amount >= 1 && pillMode_ != PillMode::dot &&
+        (alert_->fromCompanion || companion != PillMode::dot || companionPrivacyShape(now, compact).has_value());
     std::optional<D2D1_RECT_F> bubbleSlot;
     if (slotBubble) {
         const float top = (compact.top + compact.bottom - activityDotSize) / 2;
@@ -4079,13 +4081,14 @@ void Island::draw(HWND window) {
                                         activityDotSize), 2, 2));
     } else if (splitVisible) {
         const auto size = pillSize(now);
-        const float height = amount >= 1 ? size.height : pillHeight;
+        const bool fromPill = amount >= 1;
+        const float height = fromPill ? size.height : activityDotSize;
         const float bubble = std::max(alertWidth_, height);
-        const float width = amount >= 1 ? size.width + releaseGap * height / pillHeight + bubble : bubble;
-        bounds = unite(bounds, grow(box(-width / 2, pillTop, width, height), 2, 2));
+        const float width = fromPill ? size.width + releaseGap * height / pillHeight + bubble : bubble;
+        const float top = fromPill ? pillTop : pillCenterY - height / 2;
+        bounds = unite(bounds, grow(box(-width / 2, top, width, height), 2, 2));
     }
     const float slotOpacity = splitVisible ? companionSlotOpacity(now) : 1;
-    const auto companion = activityCompanion();
     std::optional<D2D1_RECT_F> activityDot;
     if (!panelVisible && amount >= 1 && companion != PillMode::dot && slotOpacity > 0) {
         const float centerY = (compact.top + compact.bottom) / 2;
