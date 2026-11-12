@@ -2,7 +2,6 @@
 
 #include <shobjidl.h>
 #include <tlhelp32.h>
-#include <wincodec.h>
 
 #include <algorithm>
 #include <cmath>
@@ -109,15 +108,8 @@ constexpr float navHeight = 31;
 constexpr float compactNavHeight = 20;
 constexpr auto navRevealTime = 150ms;
 constexpr float keepOpenMargin = 28;
-constexpr float pi = 3.14159265f;
-
-// Liquid split, from preview V7. The bubble slides out of the pill's right cap on a metaball neck,
-// the neck pinches at pinchAt, then each side's tip retracts into its own cap.
-constexpr float capRadius = pillHeight / 2;
-constexpr float pinchAt = 0.55f;
-constexpr float releaseGap = 10;      // gap between pill and bubble at the pinch and at rest
-constexpr float neckSpread = 0.5f;
-constexpr float handleSize = 2.4f;
+constexpr float bubbleGap = 8;
+constexpr float bubbleHeight = 34;
 constexpr float maxBubble = 259;
 
 constexpr auto openDelay = 50ms;
@@ -132,8 +124,8 @@ constexpr float privacyPadding = 6;
 constexpr float privacyGap = 8;
 constexpr float privacyTextRevealSpace = 12;
 constexpr auto themeTime = 700ms;
-constexpr auto splitTime = 1152ms;
-constexpr float splitRate = 5.0f / 6.0f;
+constexpr auto bubbleTime = 560ms;
+constexpr float bubbleRate = 1.5f;
 constexpr auto inlineAlertTime = 2600ms;
 constexpr auto visibilityTime = 200ms;
 constexpr auto lyricScrollTime = 190ms;
@@ -251,26 +243,6 @@ Point pt(float x, float y) {
     return D2D1::Point2F(x, y);
 }
 
-Point add(Point a, Point v, float scale) {
-    return pt(a.x + v.x * scale, a.y + v.y * scale);
-}
-
-Point half(Point a, Point b) {
-    return pt((a.x + b.x) / 2, (a.y + b.y) / 2);
-}
-
-Point flip(Point a) {
-    return pt(a.x, 2 * pillCenterY - a.y);
-}
-
-float distance(Point a, Point b) {
-    return std::hypot(b.x - a.x, b.y - a.y);
-}
-
-float arcHandle(float angle, float radius) {
-    return 4.0f / 3 * std::tan(angle / 4) * radius;
-}
-
 // SVG-style path building onto a Direct2D path geometry.
 class PathBuilder {
 public:
@@ -321,118 +293,6 @@ private:
     bool open_ = false;
 };
 
-void capsule(PathBuilder& path, D2D1_RECT_F rect) {
-    const float radius = std::min(rect.right - rect.left, rect.bottom - rect.top) / 2;
-    path.move(pt(rect.left + radius, rect.top)).line(pt(rect.right - radius, rect.top))
-        .arc(pt(rect.right - radius, rect.bottom), radius, false, true).line(pt(rect.left + radius, rect.bottom))
-        .arc(pt(rect.left + radius, rect.top), radius, false, true).close();
-}
-
-// The pill's right cap (center bx, radius R) joined to a bubble (center bx + d, radius r) by a
-// metaball neck that stays tangent to both circles. k pulls the neck's waist toward the axis.
-struct Neck {
-    float alpha, beta, la, lb, cx, lenIn, lenOut;
-    Point A, B, dirA, dirB, q0, q2, waist, into, out;
-};
-
-Neck neck(float bx, float d, float r, float k) {
-    constexpr float R = capRadius;
-    constexpr float cy = pillCenterY;
-    Neck n{};
-    n.cx = bx + d;
-    const bool overlap = d < R + r;
-    const float u1 = overlap ? std::acos(std::clamp((R * R + d * d - r * r) / (2 * R * d), -1.0f, 1.0f)) : 0;
-    const float u2 = overlap ? std::acos(std::clamp((r * r + d * d - R * R) / (2 * r * d), -1.0f, 1.0f)) : 0;
-    const float maxSpread = std::acos(std::clamp((R - r) / d, -1.0f, 1.0f));
-    n.alpha = u1 + (maxSpread - u1) * neckSpread;
-    n.beta = u2 + (pi - u2 - maxSpread) * neckSpread;
-    n.A = pt(bx + R * std::cos(n.alpha), cy - R * std::sin(n.alpha));
-    n.B = pt(n.cx - r * std::cos(n.beta), cy - r * std::sin(n.beta));
-    n.dirA = pt(std::sin(n.alpha), std::cos(n.alpha));
-    n.dirB = pt(std::sin(n.beta), -std::cos(n.beta));
-    const float reach = std::min(neckSpread * handleSize, distance(n.A, n.B) / (R + r)) *
-                        std::min(1.0f, 2 * d / (R + r));
-    n.la = R * reach;
-    n.lb = r * reach;
-    // Split the upper curve at its middle so the midpoint can be pinched.
-    const Point p1 = add(n.A, n.dirA, n.la);
-    const Point p2 = add(n.B, n.dirB, -n.lb);
-    n.q0 = half(n.A, p1);
-    const Point q1 = half(p1, p2);
-    n.q2 = half(p2, n.B);
-    const Point r0 = half(n.q0, q1);
-    const Point r1 = half(q1, n.q2);
-    const Point m = half(r0, r1);
-    n.lenIn = distance(r0, m);
-    n.lenOut = distance(m, r1);
-    float span = distance(r0, r1);
-    if (span == 0) span = 1;
-    // Pinch: lower the waist toward the axis, but never below the union of the two circles.
-    const auto depth = [](float x, float c, float radius) {
-        return std::sqrt(std::max(0.0f, radius * radius - (x - c) * (x - c)));
-    };
-    const float floor = std::max(depth(m.x, bx, R), depth(m.x, n.cx, r));
-    n.waist = pt(m.x, cy - std::max(floor, (cy - m.y) * k));
-    float dx = std::lerp(1.0f, (r1.x - r0.x) / span, k);
-    float dy = (r1.y - r0.y) / span * k;
-    float length = std::hypot(dx, dy);
-    if (length == 0) length = 1;
-    dx /= length;
-    dy /= length;
-    n.into = pt(n.waist.x - dx * n.lenIn, n.waist.y - dy * n.lenIn);
-    n.out = pt(n.waist.x + dx * n.lenOut, n.waist.y + dy * n.lenOut);
-    return n;
-}
-
-void connectedPath(PathBuilder& path, float left, float bx, float d, float r, float k) {
-    constexpr float R = capRadius;
-    constexpr float top = pillTop;
-    constexpr float bottom = pillTop + pillHeight;
-    const auto n = neck(bx, d, r, k);
-    const float start = left + R;
-    path.move(pt(start, top)).line(pt(bx, top)).arc(n.A, R, false, true)
-        .curve(n.q0, n.into, n.waist).curve(n.out, n.q2, n.B)
-        .arc(flip(n.B), r, n.beta < pi / 2, true)
-        .curve(flip(n.q2), flip(n.out), flip(n.waist)).curve(flip(n.into), flip(n.q0), flip(n.A))
-        .arc(pt(bx, bottom), R, false, true).line(pt(start, bottom)).arc(pt(start, top), R, false, true).close();
-}
-
-// The neck at the exact pinch moment, relative to bx = 0. The release phase starts from it.
-Neck const& pinchShape() {
-    static const Neck shape = neck(0, 2 * capRadius + releaseGap, capRadius, 0);
-    return shape;
-}
-
-// After the pinch: each side keeps a tip that slides back and rounds into its cap (q: 0 -> 1).
-void releasedPath(PathBuilder& path, float left, float bx, float q, float bubbleLeft, float bubbleWidth) {
-    constexpr float R = capRadius;
-    constexpr float cy = pillCenterY;
-    constexpr float top = pillTop;
-    constexpr float bottom = pillTop + pillHeight;
-    const auto& s = pinchShape();
-    const float phi = q * pi / 2;   // tip tangent: 0 = needle, 90 degrees = round
-    const Point u = pt(std::cos(phi), std::sin(phi));
-    const float start = left + R;
-    const float arcA = arcHandle(s.alpha, R);
-    const Point A = pt(bx + s.A.x, s.A.y);
-    const Point hA = add(A, s.dirA, std::lerp(s.la / 2, arcA, q));
-    const Point T = pt(std::lerp(bx + s.waist.x, bx + R, q), cy);
-    const Point hT = add(T, u, -std::lerp(s.lenIn, arcA, q));
-    path.move(pt(start, top)).line(pt(bx, top)).arc(A, R, false, true)
-        .curve(hA, hT, T).curve(flip(hT), flip(hA), flip(A))
-        .arc(pt(bx, bottom), R, false, true).line(pt(start, bottom)).arc(pt(start, top), R, false, true).close();
-    const float cc = bubbleLeft + R;
-    const float right = bubbleLeft + bubbleWidth - R;
-    const float shift = cc - s.cx;
-    const float arcB = arcHandle(s.beta, R);
-    const Point B = pt(s.B.x + shift, s.B.y);
-    const Point hB = add(B, s.dirB, -std::lerp(s.lb / 2, arcB, q));
-    const Point T2 = pt(std::lerp(s.waist.x + shift, cc - R, q), cy);
-    const Point hT2 = add(T2, pt(u.x, -u.y), std::lerp(s.lenOut, arcB, q));
-    path.move(B).arc(pt(cc, top), R, false, true).line(pt(right, top)).arc(pt(right, bottom), R, false, true)
-        .line(pt(cc, bottom)).arc(flip(B), R, false, true)
-        .curve(flip(hB), flip(hT2), T2).curve(hT2, hB, B).close();
-}
 
 std::wstring timestamp(double seconds, bool showHours = false) {
     const auto total = static_cast<long long>(std::max(0.0, seconds));
@@ -714,18 +574,18 @@ Island::MotionSample Island::sampleSpring(Clock::time_point start, Clock::durati
                                           float from, float to, float velocity, Spring spring) {
     if (now - start >= duration) return {to, 0};
     const float seconds = std::max(0.0f, std::chrono::duration<float>(now - start).count());
-    // Scale the split spring's rate while preserving its damping ratio and velocity on reversal.
-    const float damping = spring == Spring::split ? 18.0f * splitRate : 25.0f;
-    const float stiffness = spring == Spring::split ? 78.0f * splitRate * splitRate : 190.0f;
+    // Scale the bubble spring's rate while preserving its damping ratio and velocity on reversal.
+    const float damping = spring == Spring::bubble ? 18.0f * bubbleRate : 25.0f;
+    const float stiffness = spring == Spring::bubble ? 78.0f * bubbleRate * bubbleRate : 190.0f;
     const float decayRate = damping / 2;
     const float frequency = std::sqrt(std::abs(stiffness - decayRate * decayRate));
     const float phase = frequency * seconds;
     const float displacement = from - to;
     const float slope = (velocity + decayRate * displacement) / frequency;
-    const float cosine = spring == Spring::split ? std::cosh(phase) : std::cos(phase);
-    const float sine = spring == Spring::split ? std::sinh(phase) : std::sin(phase);
+    const float cosine = spring == Spring::bubble ? std::cosh(phase) : std::cos(phase);
+    const float sine = spring == Spring::bubble ? std::sinh(phase) : std::sin(phase);
     const float curve = displacement * cosine + slope * sine;
-    const float curveSpeed = frequency * ((spring == Spring::split ? displacement : -displacement) * sine + slope * cosine);
+    const float curveSpeed = frequency * ((spring == Spring::bubble ? displacement : -displacement) * sine + slope * cosine);
     const float decay = std::exp(-decayRate * seconds);
     const float value = to + decay * curve;
     if (value < 0 || value > 1) return {clamp01(value), 0};
@@ -868,7 +728,7 @@ bool Island::moving(Clock::time_point now) const {
            now - screenStart_ < shapeTime ||
            now - widthStart_ < shapeTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
            now - themeStart_ < themeTime || now - pillTransitionStart_ < pillTransitionTime_ ||
-           (bubbleShowing() && now - alertStart_ < splitTime);
+           (bubbleShowing() && now - alertStart_ < bubbleTime);
 }
 
 std::wstring Island::title() const {
@@ -912,7 +772,7 @@ void Island::updatePill(Clock::time_point now) {
         else pillTitle_ = screenLabel(screen_);
         pillPlaying_ = media_.playing;
     }
-    if (bubbleShowing()) return;   // never reshape while a bubble is split off
+    if (bubbleShowing()) return;   // keep the pill shape stable while a bubble is visible
     const float target = mode == PillMode::dot ? 0.0f : 1.0f;
     if (target != pillTarget_) {
         const auto motion = pillMotion(now);
@@ -1269,7 +1129,7 @@ void Island::tick() {
                 startAlert(std::move(alert), now, false);
             }
         } else if (alertTo_ > 0) {
-            if (!alertHoldUntil_ && (!animate_ || now - alertStart_ >= splitTime)) {
+            if (!alertHoldUntil_ && (!animate_ || now - alertStart_ >= bubbleTime)) {
                 alertHoldUntil_ = now + alert_->hold;
             }
             if (alertHoldUntil_ && now >= *alertHoldUntil_) {
@@ -1279,7 +1139,7 @@ void Island::tick() {
                 alertStart_ = now;
                 alertHoldUntil_.reset();
             }
-        } else if (!animate_ || now - alertStart_ >= splitTime) {
+        } else if (!animate_ || now - alertStart_ >= bubbleTime) {
             finishAlert(now);
         }
     }
@@ -1934,20 +1794,6 @@ void Island::fillShell(D2D1_ROUNDED_RECT shape) {
                                             D2D1::Point2F(shape.rect.right, shape.rect.bottom)),
         collection.get(), gradient.put()));
     target_->FillRoundedRectangle(shape, gradient.get());
-}
-
-void Island::fillShell(ID2D1Geometry* shape) {
-    D2D1_RECT_F bounds{};
-    winrt::check_hresult(shape->GetBounds(nullptr, &bounds));
-    const D2D1_GRADIENT_STOP stops[]{{0, D2D1::ColorF(0, 0, 0, 0.94f)}, {1, withAlpha(tint_, 0.9f)}};
-    winrt::com_ptr<ID2D1GradientStopCollection> collection;
-    winrt::check_hresult(target_->CreateGradientStopCollection(stops, 2, collection.put()));
-    winrt::com_ptr<ID2D1LinearGradientBrush> gradient;
-    winrt::check_hresult(target_->CreateLinearGradientBrush(
-        D2D1::LinearGradientBrushProperties(D2D1::Point2F(bounds.left, bounds.top),
-                                            D2D1::Point2F(bounds.right, bounds.bottom)),
-        collection.get(), gradient.put()));
-    target_->FillGeometry(shape, gradient.get());
 }
 
 void Island::fillPolygon(std::initializer_list<D2D1_POINT_2F> points, D2D1_COLOR_F color) {
@@ -3336,7 +3182,7 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
     if (update) return;
     const bool closing = !open_ && panelValue(now) > 0;
     if (!closing) {
-        // The split starts from a settled dot or pill.
+        // The bubble starts from a settled dot or pill.
         pillFrom_ = pillTarget_;
         pillVelocity_ = 0;
         pillStart_ = {};
@@ -3388,7 +3234,7 @@ void Island::finishAlert(Clock::time_point now) {
 
 Island::MotionSample Island::alertMotion(Clock::time_point now) const {
     if (!animate_) return {alertTo_, 0};
-    return sampleSpring(alertStart_, splitTime, now, alertFrom_, alertTo_, alertVelocity_, Spring::split);
+    return sampleSpring(alertStart_, bubbleTime, now, alertFrom_, alertTo_, alertVelocity_, Spring::bubble);
 }
 
 float Island::alertValue(Clock::time_point now) const {
@@ -3420,113 +3266,7 @@ Island::CaptureIndicator const* Island::captureHandoff() const {
     return item != captureIndicators_.end() && !item->app.empty() ? &*item : nullptr;
 }
 
-void Island::drawCaptureHandoff(Clock::time_point now, float amount) {
-    const float t = easeInOut(progress(alertStart_, splitTime, now));
-    const auto compact = compactShape(now, amount);
-    const float centerY = (compact.top + compact.bottom) / 2;
-    constexpr float width = 2 * privacyPadding + captureSlot;
-    const bool companion = pillMode_ != PillMode::dot && amount >= 1;
-    const auto destination = box(companion ? compact.right + privacyGap : -width / 2,
-                                 centerY - privacyHeight / 2, width, privacyHeight);
-    auto origin = box(-alertWidth_ / 2, pillTop, alertWidth_, pillHeight);
-    if (companion) {
-        const float height = compact.bottom - compact.top;
-        const float gap = releaseGap * height / pillHeight;
-        const float alertWidth = std::max(height, alertWidth_);
-        const float offset = (gap + alertWidth) / 2;
-        const auto main = mixRect(box(compact.left - offset, compact.top, compact.right - compact.left, height), compact, t);
-        const auto shell = rounded(main, height / 2);
-        fillShell(shell);
-        target_->DrawRoundedRectangle(shell, ink(white(0.13f)), 1);
-        winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
-        winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(shell, clip.put()));
-        pushLayer(clip.get(), 1);
-        drawCompactContent(now, main, false);
-        popLayer();
-        origin = box(compact.right - offset + gap, compact.top, alertWidth, height);
-    }
-    const auto area = mixRect(origin, destination, t);
-    const auto shell = rounded(area, std::min(area.right - area.left, area.bottom - area.top) / 2);
-    fillShell(shell);
-    target_->DrawRoundedRectangle(shell, ink(white(0.13f)), 1);
-    drawAlertContent(area, 1, 1 - t, 0);
-}
-
-void Island::drawSplit(Clock::time_point now, float amount) {
-    if (captureHandoff()) {
-        drawCaptureHandoff(now, amount);
-        return;
-    }
-    const float p = alertValue(now);
-    const float target = alertWidth_;
-    PathBuilder shape(graphics_.get());
-    float left = 0;
-    D2D1_RECT_F area{};
-    float alertOpacity = 0;
-    const bool fromPill = amount >= 1;
-    const auto size = pillSize(now);
-    const float scale = fromPill ? size.height / pillHeight : 1;
-    if (fromPill) {
-        const float width = size.width / scale;
-        // Stretch until the pinch, then widen. The whole shape stays centered and only grows.
-        const float travel = easeInOut(lin(0, pinchAt, p));
-        const float widen = easeInOut(lin(pinchAt, 1, p));
-        const float d = (2 * capRadius + releaseGap) * travel;
-        const float bubbleWidth = std::lerp(pillHeight, std::max(pillHeight, target / scale), widen);
-        const float span = p < pinchAt ? width + d : width + releaseGap + bubbleWidth;
-        left = -span / 2;
-        const float bx = left + width - capRadius;
-        alertOpacity = lin(pinchAt - 0.1f, pinchAt + 0.12f, p);
-        if (p < pinchAt) {
-            // The bubble is a full-size copy of the pill's cap sliding out of it.
-            const float k = 1 - std::pow(lin(0.28f, pinchAt, p), 2.0f);
-            area = box(bx + d - capRadius, pillTop, 2 * capRadius, pillHeight);
-            if (d < 0.5f) capsule(shape, box(left, pillTop, width, pillHeight));
-            else connectedPath(shape, left, bx, d, capRadius, k);
-        } else {
-            const float q = easeOut(lin(pinchAt, pinchAt + 0.28f, p));
-            area = box(left + width + releaseGap, pillTop, bubbleWidth, pillHeight);
-            releasedPath(shape, left, bx, q, area.left, bubbleWidth);
-        }
-    } else {
-        // From the idle dot the bubble grows out of the dot itself.
-        const float width = std::lerp(dotSize, target, p);
-        const float height = std::lerp(dotSize, pillHeight, p);
-        area = box(-width / 2, pillCenterY - height / 2, width, height);
-        capsule(shape, area);
-        const float t = lin(0.31f, 0.82f, p);
-        alertOpacity = t * t * (3 - 2 * t);
-    }
-    const auto geometry = shape.finish();
-    winrt::com_ptr<ID2D1TransformedGeometry> stretched;
-    ID2D1Geometry* visible = geometry.get();
-    if (scale != 1) {
-        const auto transform = D2D1::Matrix3x2F::Scale(scale, scale, pt(0, pillTop));
-        winrt::check_hresult(graphics_->CreateTransformedGeometry(geometry.get(), &transform, stretched.put()));
-        visible = stretched.get();
-        area = box(area.left * scale, pillTop, (area.right - area.left) * scale, size.height);
-    }
-    fillShell(visible);
-    target_->DrawGeometry(visible, ink(white(0.13f)), 1);
-
-    if (fromPill) {
-        const auto capsule = box(left * scale, pillTop, size.width, size.height);
-        winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
-        winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(
-            rounded(capsule, size.height / 2), clip.put()));
-        pushLayer(clip.get(), 1);
-        drawCompactContent(now, capsule, false);
-        popLayer();
-    }
-    const float textOpacity = easeOut(lin(0.84f, 0.95f, p));
-    const float textBlur = animate_ && alertTo_ > 0 ? 3.2f * (1 - easeInOut(lin(0.91f, 0.997f, p))) : 0;
-    drawAlertContent(area, alertOpacity, textOpacity, textBlur);
-    if (fromPill) {
-        if (const auto privacy = companionPrivacyShape(now, area)) drawCompanionPrivacy(now, *privacy, 1);
-    }
-}
-
-void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity, float textBlur) {
+void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity) {
     if (opacity <= 0 || !alert_) return;
     const float width = area.right - area.left;
     const bool copied = alert_->kind == IslandAlert::Kind::copy;
@@ -3561,7 +3301,7 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity
         const float measuredTitle = measure(alert_->title, alertTitleFont_.get());
         const float titleWidth = copied ? std::ceil(measuredTitle) + 2 :
             std::min(measuredTitle + 1, std::max(0.0f, end - x - valueWidth));
-        drawAlertText(alert_->title, alertTitleFont_.get(), box(x, middle - 10, titleWidth, 20), rgb(inkColor), reveal, textBlur);
+        text(alert_->title, alertTitleFont_.get(), box(x, middle - 10, titleWidth, 20), withAlpha(rgb(inkColor), reveal));
         x += titleWidth + 6;
     }
     if (!alert_->value.empty() && end > x) {
@@ -3571,98 +3311,9 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity
             drawBatteryCell(x, middle, *alert_->battery, withAlpha(color, reveal));
             x += batteryCellWidth;
         }
-        drawAlertText(alert_->value, alertValueFont_.get(), box(x, middle - 10, end - x, 20), color, reveal, textBlur);
+        text(alert_->value, alertValueFont_.get(), box(x, middle - 10, end - x, 20), withAlpha(color, reveal));
     }
     popLayer();
-}
-
-void Island::drawAlertText(std::wstring_view value, IDWriteTextFormat* font, D2D1_RECT_F rect,
-                           D2D1_COLOR_F color, float opacity, float blur) {
-    if (value.empty() || rect.right <= rect.left) return;
-    const auto drawSharp = [&] { text(value, font, rect, withAlpha(color, opacity)); };
-    if (blur < 0.25f) {
-        drawSharp();
-        return;
-    }
-
-    const float sigma = blur * scale_;
-    const int radius = static_cast<int>(std::ceil(3 * sigma));
-    const int width = static_cast<int>(std::ceil((rect.right - rect.left) * scale_)) + 2 * radius;
-    const int height = static_cast<int>(std::ceil((rect.bottom - rect.top) * scale_)) + 2 * radius;
-    const auto size = D2D1::SizeU(width, height);
-    const auto format = D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED);
-    const auto properties = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE, format, 96, 96);
-    winrt::com_ptr<IWICImagingFactory> factory;
-    winrt::com_ptr<IWICBitmap> mask;
-    winrt::com_ptr<ID2D1RenderTarget> raster;
-    winrt::com_ptr<ID2D1SolidColorBrush> brush;
-    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(factory.put()))) ||
-        FAILED(factory->CreateBitmap(width, height, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, mask.put())) ||
-        FAILED(graphics_->CreateWicBitmapRenderTarget(mask.get(), properties, raster.put())) ||
-        FAILED(raster->CreateSolidColorBrush(white(1), brush.put()))) {
-        drawSharp();
-        return;
-    }
-    raster->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-    raster->SetTransform(D2D1::Matrix3x2F::Scale(scale_, scale_) *
-                          D2D1::Matrix3x2F::Translation(static_cast<float>(radius), static_cast<float>(radius)));
-    raster->BeginDraw();
-    raster->Clear(white(0));
-    raster->DrawText(value.data(), static_cast<UINT32>(value.size()), font,
-                     box(0, 0, rect.right - rect.left, rect.bottom - rect.top), brush.get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-    if (FAILED(raster->EndDraw())) {
-        drawSharp();
-        return;
-    }
-
-    std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 4);
-    const UINT stride = width * 4;
-    if (FAILED(mask->CopyPixels(nullptr, stride, static_cast<UINT>(pixels.size()), pixels.data()))) {
-        drawSharp();
-        return;
-    }
-
-    // Blur only the glyph alpha. The bubble surface and its icon stay crisp.
-    std::vector<float> weights(radius + 1);
-    float sum = 1;
-    weights[0] = 1;
-    for (int i = 1; i <= radius; ++i) {
-        weights[i] = std::exp(-0.5f * (i / sigma) * (i / sigma));
-        sum += 2 * weights[i];
-    }
-    for (auto& weight : weights) weight /= sum;
-
-    std::vector<float> horizontal(static_cast<size_t>(width) * height);
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            float alpha = 0;
-            for (int dx = std::max(-radius, -x); dx <= std::min(radius, width - 1 - x); ++dx)
-                alpha += weights[std::abs(dx)] * pixels[(y * width + x + dx) * 4 + 3];
-            horizontal[y * width + x] = alpha;
-        }
-    }
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            float alpha = 0;
-            for (int dy = std::max(-radius, -y); dy <= std::min(radius, height - 1 - y); ++dy)
-                alpha += weights[std::abs(dy)] * horizontal[(y + dy) * width + x];
-            const auto index = (y * width + x) * 4;
-            const auto alphaByte = static_cast<uint8_t>(std::lround(std::min(alpha, 255.0f)));
-            pixels[index] = static_cast<uint8_t>(std::lround(color.b * alphaByte));
-            pixels[index + 1] = static_cast<uint8_t>(std::lround(color.g * alphaByte));
-            pixels[index + 2] = static_cast<uint8_t>(std::lround(color.r * alphaByte));
-            pixels[index + 3] = alphaByte;
-        }
-    }
-
-    winrt::com_ptr<ID2D1Bitmap> bitmap;
-    if (FAILED(target_->CreateBitmap(size, pixels.data(), stride, D2D1::BitmapProperties(format), bitmap.put()))) {
-        drawSharp();
-        return;
-    }
-    const float padding = radius / scale_;
-    target_->DrawBitmap(bitmap.get(), box(rect.left - padding, rect.top - padding, width / scale_, height / scale_),
-                        opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
 }
 
 // The V7 alert glyphs, drawn in a 16-unit box scaled to 15 DIPs.
@@ -3824,21 +3475,45 @@ void Island::draw(HWND window) {
     const auto compact = compactShape(now, amount);
     auto bounds = unite(grow(compact, 2, 2), compactHit(compact, amount));
     if (panelVisible) bounds = unite(bounds, grow(panelRect(now), 2, 2));
-    const bool splitVisible = !panelVisible && bubbleShowing();
-    auto privacyAnchor = compact;
-    if (splitVisible) {
-        const auto size = pillSize(now);
-        const float height = amount >= 1 ? size.height : pillHeight;
-        const float bubble = std::max(alertWidth_, height);
-        const float width = amount >= 1 ? size.width + releaseGap * height / pillHeight + bubble : bubble;
-        privacyAnchor = box(-width / 2, pillTop, width, height);
-        bounds = unite(bounds, grow(privacyAnchor, 2, 2));
-        if (captureHandoff() && pillMode_ != PillMode::dot)
-            bounds.right = std::max(bounds.right, compact.right + privacyGap + 2 * privacyPadding + captureSlot + 2);
-    }
     const float compactOpacity = lin(0.55f, 1, amount) * (1 - lin(0, 0.38f, value));
-    const auto privacy = compactOpacity > 0 ? companionPrivacyShape(now, privacyAnchor) : std::nullopt;
+    const auto privacy = compactOpacity > 0 ? companionPrivacyShape(now, compact) : std::nullopt;
     if (privacy) bounds = unite(bounds, grow(*privacy, 2, 2));
+
+    std::optional<D2D1_RECT_F> bubble;
+    const bool beside = amount >= 1;
+    float bubbleOpacity = 1, iconOpacity = 0, textOpacity = 0;
+    if (!panelVisible && bubbleShowing()) {
+        const bool handoff = captureHandoff() != nullptr;
+        const float p = handoff ? 1 : alertValue(now);
+        const float height = std::lerp(beside ? 20.0f : dotSize, beside ? bubbleHeight : pillHeight,
+                                       easeOut(lin(0, 0.55f, p)));
+        const float width = std::lerp(height, alertWidth_, easeOut(lin(0.24f, 0.92f, p)));
+        const float centerY = (compact.top + compact.bottom) / 2;
+        const auto anchor = privacy ? unite(compact, *privacy) : compact;
+        const float gap = bubbleGap * easeOut(p);
+        const float edge = workWidth / 2 - 4;
+        float x = -width / 2;
+        float y = centerY - height / 2;
+        if (beside) {
+            // Choose the side using the settled width so the bubble cannot jump while opening.
+            if (anchor.right + bubbleGap + alertWidth_ <= edge) x = anchor.right + gap;
+            else if (anchor.left - bubbleGap - alertWidth_ >= -edge) x = anchor.left - gap - width;
+            else y = compact.bottom + gap;
+            bubbleOpacity = easeOut(lin(0, 0.42f, p));
+        }
+        bubble = box(x, y, width, height);
+        iconOpacity = easeInOut(lin(0.10f, 0.45f, p));
+        textOpacity = easeInOut(lin(0.58f, 0.96f, p));
+        if (handoff) {
+            const float t = easeInOut(progress(alertStart_, bubbleTime, now));
+            constexpr float capsuleWidth = 2 * privacyPadding + captureSlot;
+            const auto destination = box(beside ? compact.right + privacyGap : -capsuleWidth / 2,
+                                         centerY - privacyHeight / 2, capsuleWidth, privacyHeight);
+            bubble = mixRect(*bubble, destination, t);
+            textOpacity = 1 - t;
+        }
+        bounds = unite(bounds, grow(*bubble, 2, 2));
+    }
     bounds.top = std::max(bounds.top, 0.0f);
     origin_ = {static_cast<LONG>(std::floor(bounds.left * scale_)), static_cast<LONG>(std::floor(bounds.top * scale_))};
     const int width = static_cast<int>(std::ceil(bounds.right * scale_)) - origin_.x;
@@ -3864,11 +3539,15 @@ void Island::draw(HWND window) {
     target_->BeginDraw();
     target_->SetTransform(base_);
     target_->Clear(D2D1::ColorF(0, 0));
-    if (splitVisible) {
-        drawSplit(now, amount);
-    } else {
-        if (privacy) drawCompanionPrivacy(now, *privacy, compactOpacity);
-        drawIsland(now, value, amount, morphTitle);
+    if (privacy) drawCompanionPrivacy(now, *privacy, compactOpacity);
+    if (!bubble || beside) drawIsland(now, value, amount, morphTitle);
+    if (bubble && bubbleOpacity > 0) {
+        if (bubbleOpacity < 1) pushLayer(nullptr, bubbleOpacity);
+        const auto shell = rounded(*bubble, (bubble->bottom - bubble->top) / 2);
+        fillShell(shell);
+        target_->DrawRoundedRectangle(shell, ink(white(0.13f)), 1);
+        drawAlertContent(*bubble, iconOpacity, textOpacity);
+        if (bubbleOpacity < 1) popLayer();
     }
     const HRESULT result = target_->EndDraw();
     if (result == D2DERR_RECREATE_TARGET) {

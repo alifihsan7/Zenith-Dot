@@ -42,7 +42,7 @@ struct IslandCommand {
     size_t index = 0;
 };
 
-// A short notice that splits off the pill as a liquid bubble (or shows inside the open panel).
+// A short notice beside the pill or inside the open panel.
 struct IslandAlert {
     enum class Kind { copy, charging, battery, lowBattery, focusDone, breakDone, timerDone,
                       microphone, camera, screenCapture, capsLock, numLock, bluetooth, bluetoothAudio, prayer,
@@ -154,7 +154,7 @@ private:
         float value;
         float velocity;
     };
-    enum class Spring { shape, split };
+    enum class Spring { shape, bubble };
     static MotionSample sampleSpring(Clock::time_point start, Clock::duration duration, Clock::time_point now,
                                      float from, float to, float velocity = 0, Spring spring = Spring::shape);
     MotionSample pillMotion(Clock::time_point now) const;
@@ -237,7 +237,6 @@ private:
     void drawScratchpad(D2D1_RECT_F panel, bool record);
     void drawDropZone(D2D1_RECT_F panel, bool record);
     void drawCaptureIndicators(D2D1_POINT_2F right, std::array<float, 3> const& amounts);
-    void drawCaptureHandoff(Clock::time_point now, float amount);
     void drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F shape);
     void drawCompanionPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity);
     void drawSystem(D2D1_RECT_F panel, bool record);
@@ -265,11 +264,7 @@ private:
     void drawButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record,
                     size_t index = 0, bool selected = false);
     void fillShell(D2D1_ROUNDED_RECT shape);
-    void fillShell(ID2D1Geometry* shape);
-    void drawSplit(Clock::time_point now, float amount);
-    void drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity, float textBlur);
-    void drawAlertText(std::wstring_view value, IDWriteTextFormat* font, D2D1_RECT_F rect,
-                       D2D1_COLOR_F color, float opacity, float blur);
+    void drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity);
     void drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color);
     void drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color, bool charging = false);
     void drawInlineAlert(D2D1_RECT_F panel);

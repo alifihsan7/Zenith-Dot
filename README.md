@@ -12,7 +12,7 @@ Click the pin icon beside the panel tabs to keep Zenula open while you use anoth
 
 Scroll over the compact pill or anywhere in the open panel to move one tab at a time. Over the pill, the new tab's icon and name appear briefly before the panel opens. Lyrics and a Drop Zone list with more than four rows use the wheel to scroll their own content. Over Scratchpad, the wheel scrolls the note only when the text extends beyond the visible area.
 
-Short notices split off the pill as a liquid bubble, or grow out of the dot: plugging in or unplugging the charger, low battery at 20% and 10%, the end of a Focus session, and copying something (with a short preview). While the panel is open they show as a row at its top instead. Zenula ignores clipboard content marked as private by the source app.
+Short notices spring open next to an active pill or expand from the idle dot. They cover plugging in or unplugging the charger, low battery at 20% and 10%, the end of a Focus session, and copying something (with a short preview). While the panel is open they show as a row at its top instead. Zenula ignores clipboard content marked as private by the source app.
 
 Open **Zenula Settings** from the Start menu or choose **Settings** from the tray. From a portable build, run `Zenula.exe --settings`. **Appearance** controls the island's scale, minimum media pill width, accent, and fullscreen behavior. Island transitions follow Windows’ animation accessibility setting. **Features** lets you show, hide, and reorder the five feature tabs. Now Playing controls the waveform, pill lyrics, and compact pause delay. Timers controls the default Focus and Break durations. Drop Zone controls what is captured from the clipboard.
 
@@ -22,7 +22,7 @@ Click **Test** beside an appearance or feature setting to see a sample in the is
 
 When the panel closes, it shrinks to a pill. The pill stays visible while an activity is running and shrinks to the black dot when idle.
 
-The dot, pill, panel, and split bubbles use spring motion. Hover back while the panel closes to reverse its movement.
+The dot, pill, panel, and bubbles use spring motion. Hover back while the panel closes to reverse its movement.
 
 Zenula hides during fullscreen on the primary display and resumes when you leave fullscreen. Microphone or camera activity shows a pill with a device icon and label. When music or a timer is active, device icons sit beside that activity. Orange marks the microphone, and green marks the camera. Both icons appear when both devices are in use. The panel shows the same icons beside its tabs. A microphone muted at the Windows device level is excluded. An app's own mute button can leave its Windows capture session active.
 
@@ -128,10 +128,10 @@ Temporary connection or service failures are retried automatically. If the looku
 - While music plays, choose **Hide Zenula** from the tray. Confirm playback continues, then restore the island with **Show Zenula**.
 - With the browser extension enabled, play two tabs in the same browser and select each numbered logo. Verify that play/pause and seek affect the selected tab.
 - Open Lyrics on a song with an LRCLIB match. Check that long lines wrap. Click a wrapped line and confirm playback jumps to its timestamp in a seekable player. Scroll to the first and last lines and check that playback following resumes five seconds after the last scroll. Switch tracks while a lookup is pending and check that the old track's lyrics disappear.
-- Leave Lyrics enabled and move away from the panel. Check that the pill shows the active line, wraps a long line, and returns to the track title when paused. Trigger a Copy notice while the lyric pill is wide and verify that it splits off cleanly.
+- Leave Lyrics enabled and move away from the panel. Check that the pill shows the active line, wraps a long line, and returns to the track title when paused. Trigger a Copy notice while the lyric pill is wide and verify that it opens without moving the lyric pill.
 - Scroll over the compact pill and over the tab bar. Check the selected tab, the compact preview, and that scrolling inside Lyrics still moves the text.
 - Pause playback and wait three seconds. The title should fade as the pill shrinks to the cover and pause icon. Hover to open the same track, then move away to return to the compact pill. With Lyrics open, check that the feature icons are centered under the full panel.
-- Copy some text: a "Copied" bubble should stretch out of the pill, pinch off, show the first line, and merge back after about two seconds. Copy with the panel open: the notice should appear as a row at the top of the panel. Copy a password from a password manager: no notice.
+- Copy some text: the "Copied" bubble should reveal its icon first, fade in the text, then fade out the text and shrink back. Copy with the panel open: the notice should appear as a row at the top of the panel. Copy a password from a password manager: no notice.
 - Enable **Add copied text to Drop Zone** and turn off **Show clipboard previews**. Copy two lines of text and verify that the bubble says **Copied** and that dragging the new item out of Drop Zone transfers both lines.
 - Capture a screenshot with Windows+Shift+S and open **Drop Zone**. Check that one thumbnail appears, click it to open the image, and close the preview to return to the list. Drag the row into Explorer. Add another file or text and check that they share the list. Clear the list and check that the dashed area returns to its empty layout.
 - Unplug and reconnect the charger: "On Battery" and then a green "Charging" bubble, each with the battery level.
