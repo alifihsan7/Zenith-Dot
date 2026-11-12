@@ -2699,8 +2699,20 @@ void Island::drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT
 
 void Island::drawActivityHandoff(Clock::time_point now, D2D1_RECT_F pill) {
     const float merge = 1 - reverseSplitMotion(activitySwap_.start, now).value;
-    const auto retiring = mixRect(activitySwap_.pill, pill, merge);
-    const auto incoming = mixRect(activitySwap_.dot, pill, merge);
+    auto retiring = mixRect(activitySwap_.pill, pill, merge);
+    auto incoming = mixRect(activitySwap_.dot, pill, merge);
+    const float dotCenter = (activitySwap_.dot.left + activitySwap_.dot.right) / 2;
+    const float pillCenter = (pill.left + pill.right) / 2;
+    const float originalCenter = (activitySwap_.pill.left + activitySwap_.pill.right) / 2;
+    const float slide = 1 - std::pow(1 - merge, 1.75f);
+    const float lead = (pillCenter - dotCenter) * (slide - merge);
+    incoming.left += lead;
+    incoming.right += lead;
+
+    const float follow = std::clamp((dotCenter - originalCenter) * 0.2f, -22.0f, 22.0f) *
+                         std::sin(pi * merge) * (1 - merge);
+    retiring.left += follow;
+    retiring.right += follow;
     const float height = incoming.bottom - incoming.top;
 
     drawHandoffShell(retiring, incoming, merge);
