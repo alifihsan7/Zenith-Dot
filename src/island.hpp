@@ -179,6 +179,7 @@ private:
     PillMode activityCompanion() const;
     bool activitySwapActive(Clock::time_point now) const;
     void swapActivities(Clock::time_point now);
+    void drawCountdownCheck(D2D1_POINT_2F center, D2D1_COLOR_F color, float scale = 1);
     void drawActivityIndicator(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, D2D1_COLOR_F color);
     void drawActivityDot(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, bool interactive);
     void drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F dot);
@@ -345,11 +346,13 @@ private:
         D2D1_RECT_F dot{};
         std::wstring title;
         bool retireOutgoing = false;
+        bool outgoingCompleted = false;
     } activitySwap_;
     std::optional<D2D1_RECT_F> lastActivityDot_;
     D2D1_RECT_F retiringMediaDot_{};
     Clock::time_point mediaDotExitStart_{};
     struct CountdownCompletion {
+        Clock::time_point start{};
         Clock::time_point until{};
         PillMode mode = PillMode::dot;
         std::wstring label;

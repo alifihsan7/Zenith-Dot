@@ -32,6 +32,7 @@ constexpr float activityDotSize = pillHeight;
 constexpr float activityDotGap = 8;
 constexpr auto activitySwapTime = 440ms;
 constexpr auto activityDotExitTime = 240ms;
+constexpr auto countdownCompletionMotion = 280ms;
 constexpr float activitySwapDrop = 31;
 constexpr float activitySwapLift = 7;
 constexpr float panelWidth = 369;
@@ -589,7 +590,7 @@ void Island::setMedia(MediaState const& media) {
     }
     if (media.playing) {
         mediaDotExitStart_ = {};
-        if (activitySwap_.retireOutgoing) activitySwap_.start = {};
+        if (activitySwap_.retireOutgoing && activitySwap_.incoming != PillMode::media) activitySwap_.start = {};
     } else if (animate_ && media.hasSession && media_.playing && lastActivityDot_ &&
                !suppressed_ && !open_ && panelValue(now) <= 0) {
         const auto companion = activityCompanion();
@@ -889,7 +890,8 @@ D2D1_RECT_F Island::panelRect(Clock::time_point now) const {
 
 bool Island::moving(Clock::time_point now) const {
     if (!animate_) return false;
-    return activitySwapActive(now) || now - mediaDotExitStart_ < activityDotExitTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime ||
+    return activitySwapActive(now) || now - countdownCompletion_.start < countdownCompletionMotion ||
+           now - mediaDotExitStart_ < activityDotExitTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime ||
            std::ranges::any_of(captureIndicators_, [now](auto const& item) { return now - item.start < captureTime; }) ||
            now - screenStart_ < shapeTime ||
            now - widthStart_ < shapeTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
@@ -930,7 +932,8 @@ Island::PillMode Island::activityCompanion() const {
 bool Island::activitySwapActive(Clock::time_point now) const {
     return animate_ && now - activitySwap_.start < activitySwapTime &&
            pillMode_ == activitySwap_.incoming &&
-           (activitySwap_.retireOutgoing ? !media_.playing : activityCompanion() == activitySwap_.outgoing);
+           (activitySwap_.retireOutgoing ? (activitySwap_.incoming == PillMode::media) == media_.playing
+                                         : activityCompanion() == activitySwap_.outgoing);
 }
 
 void Island::swapActivities(Clock::time_point now) {
@@ -1290,7 +1293,7 @@ void Island::finishFocus(Clock::time_point now) {
 
 void Island::completeCountdown(Clock::time_point now, PillMode mode, IslandAlert alert) {
     if (!suppressed_ && pillMode_ == mode && activityCompanion() == PillMode::media) {
-        countdownCompletion_ = {now + alert.hold, mode, std::move(alert.title)};
+        countdownCompletion_ = {now, now + alert.hold, mode, std::move(alert.title)};
     } else {
         notify(std::move(alert));
     }
@@ -1383,8 +1386,20 @@ void Island::tick() {
             finishAlert(now);
         }
     }
+    const bool completionExpired = countdownCompletion_.until != Clock::time_point{} && now >= countdownCompletion_.until;
+    const bool returnToMedia = completionExpired && animate_ && !suppressed_ && !open_ && panelValue(now) <= 0 &&
+                               !bubbleShowing() && lastActivityDot_ && pillMode_ == countdownCompletion_.mode &&
+                               activityCompanion() == PillMode::media;
+    const auto completedPill = returnToMedia ? compactShape(now, pillAmount(now)) : D2D1_RECT_F{};
     updateCaptureIndicators(now);
     updatePill(now);
+    if (returnToMedia && pillMode_ == PillMode::media) {
+        activitySwap_ = {now, PillMode::media, countdownCompletion_.mode, completedPill, *lastActivityDot_,
+                         countdownCompletion_.label, true, true};
+        showScreen(Screen::media, now);
+        openAt_.reset();
+    }
+    if (completionExpired) countdownCompletion_ = {};
     updateTheme(now);
 }
 
@@ -2241,19 +2256,33 @@ void Island::drawPillContent(Clock::time_point now, float width, bool hideTitle)
         const auto& timer = quickTimer ? quick_ : focus_;
         const auto color = timer.paused() ? rgb(mutedColor) : accent_;
         const auto center = pt(pillLeft + 19, pillCenterY);
-        if (timer.paused()) {
-            target_->FillRectangle(box(center.x - 4, center.y - 5, 2.5f, 10), ink(color));
-            target_->FillRectangle(box(center.x + 1.5f, center.y - 5, 2.5f, 10), ink(color));
-        } else if (quickTimer) {
-            drawTimerGlyph(center, color);
-        } else {
-            drawFocusGlyph(center, 14, color);
-        }
         const bool completed = countdownCompletion_.mode == pillContent_ && now < countdownCompletion_.until;
+        const float motion = completed ? (animate_ ? progress(countdownCompletion_.start, countdownCompletionMotion, now) : 1) : 0;
+        const float checkOpacity = easeOut(lin(0.04f, 0.58f, motion));
+        const auto timerColor = withAlpha(color, 1 - checkOpacity);
+        if (checkOpacity < 1) {
+            if (timer.paused()) {
+                target_->FillRectangle(box(center.x - 4, center.y - 5, 2.5f, 10), ink(timerColor));
+                target_->FillRectangle(box(center.x + 1.5f, center.y - 5, 2.5f, 10), ink(timerColor));
+            } else if (quickTimer) {
+                drawTimerGlyph(center, timerColor);
+            } else {
+                drawFocusGlyph(center, 14, timerColor);
+            }
+        }
+        if (checkOpacity > 0) {
+            const float pop = std::lerp(0.76f, 1.0f, easeOut(motion)) + 0.15f * std::sin(pi * motion);
+            drawCountdownCheck(center, withAlpha(accent_, checkOpacity), pop);
+        }
+
+        const float labelOpacity = easeInOut(lin(0.26f, 0.95f, motion));
         const float clockWidth = completed ? 34.0f : 44.0f;
         text(timestamp(completed ? 0 : timer.seconds(now)), timerFont_.get(), box(right - clockWidth, pillTop, clockWidth, pillHeight), color);
-        text(completed ? countdownCompletion_.label : pillTitle_, pillTitleFont_.get(),
-             box(pillLeft + 34, pillTop, right - clockWidth - 4 - (pillLeft + 34), pillHeight), rgb(inkColor));
+        const auto labelBox = box(pillLeft + 34, pillTop, right - clockWidth - 4 - (pillLeft + 34), pillHeight);
+        if (labelOpacity < 1)
+            text(pillTitle_, pillTitleFont_.get(), labelBox, withAlpha(rgb(inkColor), 1 - labelOpacity));
+        if (labelOpacity > 0)
+            text(countdownCompletion_.label, pillTitleFont_.get(), labelBox, withAlpha(rgb(inkColor), labelOpacity));
         return;
     }
     const float trackWidth = std::clamp(width, pausedPillWidth, std::max(pillWidth, pillTrackSize_.width));
@@ -2291,6 +2320,14 @@ void Island::drawSpectrumBars(D2D1_POINT_2F center, float spacing, float barWidt
         target_->FillRoundedRectangle(rounded(box(left + static_cast<float>(bar) * spacing,
                                                   center.y - height / 2, barWidth, height), barWidth / 2), ink(color));
     }
+}
+
+void Island::drawCountdownCheck(D2D1_POINT_2F center, D2D1_COLOR_F color, float scale) {
+    PathBuilder check(graphics_.get());
+    check.move(pt(center.x - 5 * scale, center.y), false)
+         .line(pt(center.x - 1.5f * scale, center.y + 3.5f * scale))
+         .line(pt(center.x + 5 * scale, center.y - 4 * scale));
+    target_->DrawGeometry(check.finish().get(), ink(color), 1.9f, roundStroke_.get());
 }
 
 void Island::drawActivityIndicator(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, D2D1_COLOR_F color) {
@@ -2360,19 +2397,32 @@ void Island::drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT
     const float outgoingText = 1 - easeInOut(lin(0.06f, 0.45f, p));
     const float iconX = std::lerp((outgoing.left + outgoing.right) / 2, outgoing.left + 18, outgoingText);
     const auto icon = D2D1::RectF(iconX - 9, outgoing.top, iconX + 9, outgoing.bottom);
-    if (outgoingText > 0)
-        drawScreenGlyph(activitySwap_.outgoing == PillMode::media ? Screen::media : Screen::timers,
-                        icon, withAlpha(rgb(inkColor), outgoingText));
-    const float indicator = easeInOut(lin(0.40f, 0.85f, p));
+    if (outgoingText > 0) {
+        if (activitySwap_.outgoingCompleted)
+            drawCountdownCheck(pt(iconX, (outgoing.top + outgoing.bottom) / 2), withAlpha(accent_, outgoingText));
+        else
+            drawScreenGlyph(activitySwap_.outgoing == PillMode::media ? Screen::media : Screen::timers,
+                            icon, withAlpha(rgb(inkColor), outgoingText));
+    }
+    const float indicator = activitySwap_.outgoingCompleted ? 0 : easeInOut(lin(0.40f, 0.85f, p));
     if (indicator > 0) {
         pushLayer(nullptr, indicator);
         drawActivityIndicator(now, outgoing, activitySwap_.outgoing, rgb(inkColor));
         popLayer();
     }
     if (outgoingText > 0 && outgoing.right - outgoing.left > 40) {
-        text(activitySwap_.title, pillTitleFont_.get(),
-             D2D1::RectF(outgoing.left + 34, outgoing.top, outgoing.right - 6, outgoing.bottom),
-             withAlpha(rgb(inkColor), outgoingText));
+        const float labelLeft = outgoing.left + 34;
+        float labelRight = outgoing.right - 6;
+        if (activitySwap_.outgoingCompleted) {
+            const float clockRight = outgoing.right - 12;
+            labelRight = clockRight - 38;
+            if (labelRight > labelLeft)
+                text(L"0:00", timerFont_.get(), D2D1::RectF(clockRight - 34, outgoing.top, clockRight, outgoing.bottom),
+                     withAlpha(accent_, outgoingText));
+        }
+        if (labelRight > labelLeft)
+            text(activitySwap_.title, pillTitleFont_.get(), D2D1::RectF(labelLeft, outgoing.top, labelRight, outgoing.bottom),
+                 withAlpha(rgb(inkColor), outgoingText));
     }
 
     if (activitySwap_.retireOutgoing) popLayer();
