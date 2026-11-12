@@ -56,6 +56,11 @@ struct IslandAlert {
     std::optional<unsigned> battery = std::nullopt;   // drawn as a battery cell before value
     bool fromCompanion = false;
     bool captureEnded = false;
+    struct CaptureDotOrigin {
+        float width;
+        float iconLeft;
+    };
+    std::optional<CaptureDotOrigin> captureDotOrigin;
 };
 
 // The island UI from preview V7: an idle dot, a pill while something is going on, and a panel on hover.
@@ -284,7 +289,8 @@ private:
     void drawSplit(Clock::time_point now, float amount, std::optional<D2D1_RECT_F> slot);
     D2D1_RECT_F closingDotShape(D2D1_RECT_F pill) const;
     void drawBubbleToDot(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F bubble, bool fromSlot);
-    void drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity);
+    void drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity,
+                          std::optional<float> iconOrigin = std::nullopt);
     void drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color, float size = 15);
     void drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color, bool charging = false);
     void drawInlineAlert(D2D1_RECT_F panel);
@@ -495,6 +501,7 @@ private:
     bool alertUsesCompanionSlot_ = false;
     struct AlertDot {
         bool idle = false;
+        bool vanishes = false;
         PillMode mode = PillMode::dot;
         std::array<float, 3> capture{};
     };
