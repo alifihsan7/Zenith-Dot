@@ -344,7 +344,11 @@ private:
         D2D1_RECT_F pill{};
         D2D1_RECT_F dot{};
         std::wstring title;
+        bool retireOutgoing = false;
     } activitySwap_;
+    std::optional<D2D1_RECT_F> lastActivityDot_;
+    D2D1_RECT_F retiringMediaDot_{};
+    Clock::time_point mediaDotExitStart_{};
     struct CountdownCompletion {
         Clock::time_point until{};
         PillMode mode = PillMode::dot;
