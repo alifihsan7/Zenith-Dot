@@ -279,9 +279,7 @@ private:
                     size_t index = 0, bool selected = false);
     void fillShell(D2D1_ROUNDED_RECT shape);
     void fillShell(ID2D1Geometry* shape);
-    void drawSplit(Clock::time_point now, float amount);
-    D2D1_RECT_F companionBubbleShape(Clock::time_point now, D2D1_RECT_F pill) const;
-    void drawCompanionBubble(Clock::time_point now, D2D1_RECT_F shape);
+    void drawSplit(Clock::time_point now, float amount, std::optional<D2D1_RECT_F> slot);
     void drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity);
     void drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color, float size = 15);
     void drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color, bool charging = false);
@@ -490,7 +488,6 @@ private:
     std::optional<Clock::time_point> alertHoldUntil_;
     Clock::time_point alertUntil_{};
     float alertWidth_ = 52;
-    float alertCompanionWidth_ = 0;
 
     // Last frame: hit targets in stage DIPs and where the surface sits.
     std::vector<Target> targets_;
