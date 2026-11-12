@@ -33,6 +33,8 @@ constexpr float companionIconPitch = 18;
 constexpr auto dotHoverTime = 180ms;
 constexpr float activityDotGap = 8;
 constexpr auto activitySwapTime = 440ms;
+constexpr auto activityHandoffTime = 980ms;
+constexpr auto idleBeforePausedMedia = 110ms;
 constexpr auto activityDotExitTime = 240ms;
 constexpr auto countdownCompletionMotion = 280ms;
 constexpr auto timerDigitMotion = 170ms;
@@ -152,6 +154,7 @@ bool isCountdownAlert(IslandAlert::Kind kind) {
 }
 
 auto alertHoldTime(IslandAlert const& alert) {
+    if (alert.kind == IslandAlert::Kind::mediaStarted) return std::min(alert.hold, 650ms);
     const bool brief = alert.kind == IslandAlert::Kind::camera || isCountdownAlert(alert.kind);
     return std::min(alert.hold, brief ? shortBubbleHoldTime : bubbleHoldTime);
 }
@@ -614,6 +617,14 @@ void Island::setPreferences(Settings const& settings) {
 void Island::setMedia(MediaState const& media) {
     if (media.appId != media_.appId || media.sourceId != media_.sourceId) spectrum_ = {};
     const auto now = Clock::now();
+    const bool introduce = animate_ && !suppressed_ && media.hasSession &&
+        media.playing && !media_.playing &&
+        ((pillMode_ == PillMode::timer && quick_.running()) || (pillMode_ == PillMode::focus && focus_.running()));
+    if (!media.hasSession || media.playing || media.appId != media_.appId ||
+        media.sourceId != media_.sourceId || media.title != media_.title) {
+        pausedMediaRevealAt_ = {};
+        compactPausedMediaAfterTimer_ = false;
+    }
     if (!media.hasSession || media.playing) {
         pausedAt_ = {};
     } else if (!media_.hasSession || media_.playing || media_.appId != media.appId ||
@@ -641,7 +652,16 @@ void Island::setMedia(MediaState const& media) {
     if (media.playing && retiringDotMode_ == PillMode::media) dotExitStart_ = {};
     if (media_.playing && !media.playing) retirePausedActivity(PillMode::media, now);
     media_ = media;
+    if (!media_.playing) {
+        mediaIntroPending_ = false;
+        if (queued_ && queued_->kind == IslandAlert::Kind::mediaStarted) queued_.reset();
+        if (alert_ && alert_->kind == IslandAlert::Kind::mediaStarted) finishAlert(now);
+    }
     updatePill(now);
+    if (introduce && activityCompanion() == PillMode::media) {
+        mediaIntroPending_ = open_ || panelValue(now) > 0;
+        if (!mediaIntroPending_) notify({IslandAlert::Kind::mediaStarted, title()});
+    }
 }
 
 void Island::setPower(PowerState const& power) {
@@ -960,7 +980,7 @@ Island::PillMode Island::activityCompanion() const {
 }
 
 bool Island::activitySwapActive(Clock::time_point now) const {
-    const auto duration = activitySwap_.retireOutgoing ? splitTime : activitySwapTime;
+    const auto duration = activitySwap_.retireOutgoing ? activityHandoffTime : activitySwapTime;
     return animate_ && now - activitySwap_.start < duration &&
            pillMode_ == activitySwap_.incoming &&
            (activitySwap_.retireOutgoing || activityCompanion() == activitySwap_.outgoing);
@@ -1056,7 +1076,7 @@ void Island::updatePill(Clock::time_point now, bool keepActivity) {
     } else if (timersEnabled && quick_.paused()) {
         mode = PillMode::timer;
     } else if (mediaEnabled) {
-        mode = PillMode::media;
+        mode = now < pausedMediaRevealAt_ ? PillMode::dot : PillMode::media;
     } else if (std::ranges::any_of(captureIndicators_, &CaptureIndicator::shown)) {
         mode = PillMode::privacy;
     }
@@ -1100,7 +1120,8 @@ void Island::updatePillLayout(Clock::time_point now, float workWidth) {
     const float captureSlots = captureSlot * static_cast<float>(captureCount);
     const float reserved = privacyGap + 2 * privacyPadding + captureSlot * static_cast<float>(captureIndicators_.size());
     const auto compactAt = pausedAt_ + std::chrono::seconds(preferences_.pauseSeconds());
-    const bool showTitle = pillMode_ != PillMode::media || media_.playing || preferences_.compactPause == 3 || now < compactAt;
+    const bool showTitle = pillMode_ != PillMode::media || media_.playing ||
+        (!compactPausedMediaAfterTimer_ && (preferences_.compactPause == 3 || now < compactAt));
     D2D1_SIZE_F target{pillWidth, pillHeight};
     if (pillMode_ == PillMode::privacy) {
         target = D2D1::SizeF(2 * privacyPadding + captureSlots, privacyHeight);
@@ -1169,7 +1190,8 @@ void Island::updatePillLayout(Clock::time_point now, float workWidth) {
     }
     pillLyricMaxWidth_ = maxWidth;
     pillSizeFrom_ = pillSize(now);
-    if (pillMode_ == PillMode::privacy && pillAmount(now) <= 0) pillSizeFrom_ = target;
+    if ((pillMode_ == PillMode::privacy || (pillMode_ == PillMode::media && compactPausedMediaAfterTimer_)) &&
+        pillAmount(now) <= 0) pillSizeFrom_ = target;
     pillSizeTarget_ = target;
     pillLyric_ = std::move(next);
     pillTitleFrom_ = pillTitleOpacity(now);
@@ -1554,8 +1576,23 @@ void Island::tick() {
                                !bubbleShowing() && lastActivityDot_ && pillMode_ == countdownCompletion_.mode &&
                                activityCompanion() == PillMode::media;
     const auto completedPill = returnToMedia ? compactShape(now, pillAmount(now)) : D2D1_RECT_F{};
+    if (completionExpired && animate_ && !suppressed_ && !open_ && panelValue(now) <= 0 &&
+        pillMode_ == countdownCompletion_.mode && media_.hasSession && !media_.playing &&
+        preferences_.enabled(Screen::media) && !focus_.running() && !quick_.running() &&
+        !focus_.paused() && !quick_.paused()) {
+        pausedMediaRevealAt_ = now + shapeTime + idleBeforePausedMedia;
+        compactPausedMediaAfterTimer_ = true;
+    }
     updateCaptureIndicators(now);
     updatePill(now);
+    if (mediaIntroPending_ && (suppressed_ || activityCompanion() != PillMode::media)) {
+        mediaIntroPending_ = false;
+    } else if (mediaIntroPending_ && !open_ && panelValue(now) <= 0) {
+        mediaIntroPending_ = false;
+        notify({IslandAlert::Kind::mediaStarted, title()});
+    }
+    if (alert_ && alert_->kind == IslandAlert::Kind::mediaStarted && activityCompanion() != PillMode::media)
+        finishAlert(now);
     if (returnToMedia && pillMode_ == PillMode::media) {
         activitySwap_ = {now, PillMode::media, countdownCompletion_.mode, completedPill, *lastActivityDot_,
                          countdownCompletion_.label, true, true};
@@ -1579,6 +1616,7 @@ unsigned Island::frameInterval() const {
     if (suppressed_) return timerRunning ? 1000 : 0;
     if (moving(now) || openAt_ || closeAt_ || dragging_ || timerRepeatAt_ != Clock::time_point{}) return 10;
     if (wantsAudioSpectrum()) return 33;
+    if (now < pausedMediaRevealAt_) return 10;
     if (now < countdownCompletion_.until) {
         const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(countdownCompletion_.until - now);
         return static_cast<unsigned>(std::clamp(remaining, 1ms, 1000ms).count());
@@ -2698,7 +2736,10 @@ void Island::drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT
 }
 
 void Island::drawActivityHandoff(Clock::time_point now, D2D1_RECT_F pill) {
-    const float merge = 1 - reverseSplitMotion(activitySwap_.start, now).value;
+    const auto duration = std::chrono::duration_cast<Clock::duration>(activityHandoffTime);
+    const auto elapsed = std::clamp(now - activitySwap_.start, Clock::duration::zero(), duration);
+    const auto splitElapsed = elapsed * splitTime.count() / activityHandoffTime.count();
+    const float merge = 1 - reverseSplitMotion(activitySwap_.start, activitySwap_.start + splitElapsed).value;
     auto retiring = mixRect(activitySwap_.pill, pill, merge);
     auto incoming = mixRect(activitySwap_.dot, pill, merge);
     const float dotCenter = (activitySwap_.dot.left + activitySwap_.dot.right) / 2;
@@ -3939,6 +3980,7 @@ bool Island::alertsQuiet() const {
 }
 
 bool Island::alertAllowed(IslandAlert::Kind kind) const {
+    if (kind == IslandAlert::Kind::mediaStarted) return preferences_.enabled(Screen::media);
     if (alertsQuiet()) return false;
     switch (kind) {
     case IslandAlert::Kind::copy: return preferences_.showClipboardBubble;
@@ -3999,7 +4041,8 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
     const bool hasPrimaryPill = pillMode_ != PillMode::dot && pillMode_ != PillMode::privacy;
     const bool hasCompanion = activityCompanion() != PillMode::dot ||
         std::ranges::any_of(captureIndicators_, &CaptureIndicator::shown);
-    alertUsesCompanionSlot_ = hasPrimaryPill && !isCaptureAlert(alert_->kind) && !alert_->dotOrigin &&
+    alertUsesCompanionSlot_ = hasPrimaryPill && alert_->kind != IslandAlert::Kind::mediaStarted &&
+        !isCaptureAlert(alert_->kind) && !alert_->dotOrigin &&
         (alert_->fromCompanion || hasCompanion);
     const bool closing = !open_ && panelValue(now) > 0;
     if (!closing) {
@@ -4072,7 +4115,8 @@ void Island::finishAlert(Clock::time_point now) {
     if (queued_) {
         auto next = std::move(*queued_);
         queued_.reset();
-        startAlert(std::move(next), now, false);
+        if (next.kind != IslandAlert::Kind::mediaStarted || activityCompanion() == PillMode::media)
+            startAlert(std::move(next), now, false);
     }
 }
 
@@ -4379,6 +4423,9 @@ void Island::drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_CO
         target_->FillEllipse(D2D1::Ellipse(pt(8, 13.3f), 1.1f, 1.1f), ink(color));
         break;
     }
+    case IslandAlert::Kind::mediaStarted:
+        drawScreenGlyph(Screen::media, box(0, 0, 16, 16), color);
+        break;
     case IslandAlert::Kind::notification: {
         PathBuilder bell(graphics_.get());
         bell.move(pt(2, 11.5f), false).line(pt(4, 9)).line(pt(4, 6))
@@ -4488,7 +4535,8 @@ void Island::draw(HWND window) {
     const bool handoff = !panelVisible && !splitVisible && swapping && activitySwap_.retireOutgoing;
     const bool pendingHandoff = panelVisible && !open_ && swapping && activitySwap_.retireOutgoing;
     if (pendingHandoff) bounds = unite(bounds, grow(unite(activitySwap_.pill, activitySwap_.dot), 2, 2));
-    const float slotOpacity = directClose || growsFromDot || handoff ? 0 :
+    const bool introducingMedia = splitVisible && alert_->kind == IslandAlert::Kind::mediaStarted;
+    const float slotOpacity = directClose || growsFromDot || handoff || introducingMedia ? 0 :
         splitVisible ? companionSlotOpacity(now) : 1;
     std::optional<D2D1_RECT_F> activityDot;
     if (!panelVisible && amount >= 1 && companion != PillMode::dot && slotOpacity > 0) {

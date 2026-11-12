@@ -46,7 +46,7 @@ struct IslandCommand {
 struct IslandAlert {
     enum class Kind { copy, charging, battery, lowBattery, focusDone, breakDone, timerDone,
                       microphone, camera, screenCapture, capsLock, numLock, bluetooth, bluetoothAudio, prayer,
-                      notification, connection };
+                      notification, connection, mediaStarted };
     Kind kind = Kind::copy;
     std::wstring title;
     std::wstring value;
@@ -391,6 +391,9 @@ private:
     bool pillPlaying_ = false;
     Spectrum spectrum_{};
     Clock::time_point pausedAt_{};
+    Clock::time_point pausedMediaRevealAt_{};
+    bool compactPausedMediaAfterTimer_ = false;
+    bool mediaIntroPending_ = false;
     float pillFrom_ = 0;
     float pillVelocity_ = 0;
     float pillTarget_ = 0;
