@@ -3743,11 +3743,12 @@ void Island::finishAlert(Clock::time_point now) {
 
 Island::MotionSample Island::alertMotion(Clock::time_point now) const {
     if (!animate_) return {alertTo_, 0};
-    if (alertFrom_ == 1 - alertTo_ && alertVelocity_ == 0) {
-        const float t = progress(alertStart_, splitTime, now);
-        const float delta = alertTo_ - alertFrom_;
-        const float velocity = delta * 6 * t * (1 - t) / std::chrono::duration<float>(splitTime).count();
-        return {std::lerp(alertFrom_, alertTo_, t * t * (3 - 2 * t)), velocity};
+    if (alertFrom_ == 1 && alertTo_ == 0 && alertVelocity_ == 0) {
+        const auto duration = std::chrono::duration_cast<Clock::duration>(splitTime);
+        const auto elapsed = std::clamp(now - alertStart_, Clock::duration::zero(), duration);
+        const auto opening = sampleSpring(alertStart_, duration, alertStart_ + duration - elapsed,
+                                          0, 1, 0, Spring::split);
+        return {opening.value, -opening.velocity};
     }
     return sampleSpring(alertStart_, splitTime, now, alertFrom_, alertTo_, alertVelocity_, Spring::split);
 }
@@ -3775,19 +3776,19 @@ float Island::measure(std::wstring_view value, IDWriteTextFormat* format) {
 
 D2D1_RECT_F Island::companionBubbleShape(Clock::time_point now, D2D1_RECT_F pill) const {
     const float t = alertValue(now);
-    const float size = alertCompanionWidth_ > 0 ? activityDotSize
-        : activityDotSize * easeInOut(lin(0, 0.46f, t));
-    const float restingWidth = std::max(size, alertCompanionWidth_);
-    const float width = std::lerp(restingWidth, std::max(restingWidth, alertWidth_), easeInOut(t));
+    const float restingWidth = std::max(activityDotSize, alertCompanionWidth_);
+    const float width = std::lerp(restingWidth, std::max(restingWidth, alertWidth_), t);
     const float centerY = (pill.top + pill.bottom) / 2;
-    return box(pill.right + activityDotGap, centerY - size / 2, width, size);
+    return box(pill.right + activityDotGap, centerY - activityDotSize / 2, width, activityDotSize);
 }
 
 void Island::drawCompanionBubble(Clock::time_point now, D2D1_RECT_F shape) {
     const float t = alertValue(now);
     const float notice = easeInOut(lin(0, 0.45f, t));
-    const float pinch = std::sin(pi * lin(0.15f, 0.78f, t)) * 0.85f;
-    drawCompanionShell(shape, pinch, 0.13f);
+    const float opacity = alertCompanionWidth_ > 0 ? 1 : easeInOut(lin(0, 0.18f, t));
+    if (opacity <= 0) return;
+    if (opacity < 1) pushLayer(nullptr, opacity);
+    drawCompanionShell(shape, 0, 0.13f);
 
     auto mode = activityCompanion();
     if (alertTo_ > 0) {
@@ -3795,12 +3796,13 @@ void Island::drawCompanionBubble(Clock::time_point now, D2D1_RECT_F shape) {
         if (alert_->kind == IslandAlert::Kind::focusDone || alert_->kind == IslandAlert::Kind::breakDone)
             mode = PillMode::focus;
     }
-    if (notice < 1 && shape.bottom - shape.top >= activityDotSize - 0.5f) {
+    if (notice < 1) {
         pushLayer(nullptr, 1 - notice);
         drawCompanionIndicators(now, shape, mode);
         popLayer();
     }
     drawAlertContent(shape, notice, 1);
+    if (opacity < 1) popLayer();
 }
 
 void Island::drawSplit(Clock::time_point now, float amount) {
