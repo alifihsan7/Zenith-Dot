@@ -179,7 +179,7 @@ private:
     PillMode activityCompanion() const;
     bool activitySwapActive(Clock::time_point now) const;
     void swapActivities(Clock::time_point now);
-    void drawActivityDot(D2D1_RECT_F shape, PillMode mode, bool interactive);
+    void drawActivityDot(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, bool interactive);
     void drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F dot);
     D2D1_RECT_F compactShape(Clock::time_point now, float amount) const;
     std::optional<D2D1_RECT_F> companionPrivacyShape(Clock::time_point now, D2D1_RECT_F anchor) const;
@@ -226,6 +226,7 @@ private:
     void releaseDeviceResources();
     void drawCompactContent(Clock::time_point now, D2D1_RECT_F shape, bool hideTitle, bool hideArt = false);
     void drawLyricsGlyph(D2D1_POINT_2F origin, D2D1_COLOR_F color);
+    void drawSpectrumBars(D2D1_POINT_2F center, float spacing, float barWidth, float maxHeight, D2D1_COLOR_F color);
     void drawPillContent(Clock::time_point now, float width, bool hideTitle);
     void drawIsland(Clock::time_point now, float value, float amount, bool morphTitle);
     void drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record);

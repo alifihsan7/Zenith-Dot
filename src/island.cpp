@@ -28,7 +28,7 @@ constexpr float pillLyricTravel = 4;
 constexpr float pillCenterY = pillTop + pillHeight / 2;
 constexpr float pillLeft = -pillWidth / 2;
 constexpr float dotSize = 12;
-constexpr float activityDotSize = 24;
+constexpr float activityDotSize = pillHeight;
 constexpr float activityDotGap = 8;
 constexpr auto activitySwapTime = 380ms;
 constexpr float panelWidth = 369;
@@ -1351,7 +1351,8 @@ void Island::tick() {
 
 bool Island::wantsAudioSpectrum() const {
     return animate_ && !suppressed_ && preferences_.showWaveform && preferences_.enabled(Screen::media) &&
-           media_.playing && (open_ ? screen_ == Screen::media : pillMode_ == PillMode::media && !pillLyric_.layout);
+           media_.playing && (open_ ? screen_ == Screen::media :
+                              (pillMode_ == PillMode::media && !pillLyric_.layout) || activityCompanion() == PillMode::media);
 }
 
 unsigned Island::frameInterval() const {
@@ -2210,17 +2211,7 @@ void Island::drawPillContent(Clock::time_point now, float width, bool hideTitle)
     const float trackRight = trackWidth / 2;
     const float full = lin(pausedPillWidth, pillWidth, trackWidth);
     if (pillPlaying_ && preferences_.showWaveform) {
-        constexpr size_t barCount = 4;
-        constexpr size_t bandsPerBar = Spectrum{}.size() / barCount;
-        const float left = trackRight - 29.5f;
-        for (size_t bar = 0; bar < barCount; ++bar) {
-            const auto first = spectrum_.begin() + bar * bandsPerBar;
-            const float level = animate_ ? *std::max_element(first, first + bandsPerBar) : 0;
-            const float height = std::lerp(2.5f, 15.0f, level);
-            target_->FillRoundedRectangle(
-                rounded(box(left + static_cast<float>(bar) * 5, pillCenterY - height / 2, 2.5f, height), 1.25f),
-                ink(accent_));
-        }
+        drawSpectrumBars(pt(trackRight - 20.75f, pillCenterY), 5, 2.5f, 15, accent_);
     } else if (!pillPlaying_) {
         // Paused: the panel's pause glyph (two bars), scaled for the pill.
         const float left = trackRight - std::lerp(19.0f, 22.0f, full);
@@ -2239,13 +2230,57 @@ void Island::drawPillContent(Clock::time_point now, float width, bool hideTitle)
 
 // ---- Panel ---------------------------------------------------------------------------------------
 
-void Island::drawActivityDot(D2D1_RECT_F shape, PillMode mode, bool interactive) {
+void Island::drawSpectrumBars(D2D1_POINT_2F center, float spacing, float barWidth, float maxHeight, D2D1_COLOR_F color) {
+    constexpr size_t bars = 4;
+    constexpr size_t bandsPerBar = Spectrum{}.size() / bars;
+    const float left = center.x - ((bars - 1) * spacing + barWidth) / 2;
+    for (size_t bar = 0; bar < bars; ++bar) {
+        const auto first = spectrum_.begin() + bar * bandsPerBar;
+        const float level = animate_ ? *std::max_element(first, first + bandsPerBar) : 0;
+        const float height = std::lerp(barWidth, maxHeight, level);
+        target_->FillRoundedRectangle(rounded(box(left + static_cast<float>(bar) * spacing,
+                                                  center.y - height / 2, barWidth, height), barWidth / 2), ink(color));
+    }
+}
+
+void Island::drawActivityDot(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, bool interactive) {
     const auto shell = rounded(shape, (shape.bottom - shape.top) / 2);
     fillShell(shell);
     const bool hot = interactive && hovered(Hit::activityDot, static_cast<size_t>(mode));
     const auto color = hot ? accent_ : rgb(inkColor);
     target_->DrawRoundedRectangle(shell, ink(hot ? withAlpha(accent_, 0.6f) : white(0.16f)), 1);
-    drawScreenGlyph(mode == PillMode::media ? Screen::media : Screen::timers, shape, color);
+    const auto center = pt((shape.left + shape.right) / 2, (shape.top + shape.bottom) / 2);
+    if (mode == PillMode::media && media_.playing && preferences_.showWaveform) {
+        drawSpectrumBars(center, 4.5f, 2, 15, accent_);
+    } else if (mode == PillMode::media && !media_.playing) {
+        for (const float x : {center.x - 4, center.x + 1.5f})
+            target_->FillRoundedRectangle(rounded(box(x, center.y - 5, 2.5f, 10), 1), ink(rgb(mutedColor)));
+    } else if (mode == PillMode::media) {
+        drawScreenGlyph(Screen::media, shape, color);
+    } else {
+        const auto& countdown = mode == PillMode::timer ? quick_ : focus_;
+        const auto ringColor = countdown.paused() ? rgb(mutedColor) : accent_;
+        constexpr float radius = activityDotSize / 2 - 4.5f;
+        const auto ring = D2D1::Ellipse(center, radius, radius);
+        target_->DrawEllipse(ring, ink(white(0.12f)), 1.6f);
+        const float remaining = clamp01(static_cast<float>(countdown.seconds(now)) / std::max(1, countdown.duration()));
+        if (remaining >= 1) {
+            target_->DrawEllipse(ring, ink(ringColor), 1.6f);
+        } else if (remaining > 0) {
+            const float angle = remaining * 2 * pi;
+            PathBuilder arc(graphics_.get());
+            arc.move(pt(center.x, center.y - radius), false)
+               .arc(pt(center.x + radius * std::sin(angle), center.y - radius * std::cos(angle)),
+                    radius, remaining > 0.5f, true);
+            target_->DrawGeometry(arc.finish().get(), ink(ringColor), 1.6f, roundStroke_.get());
+        }
+        if (countdown.paused()) {
+            for (const float x : {center.x - 4, center.x + 1.5f})
+                target_->FillRoundedRectangle(rounded(box(x, center.y - 5, 2.5f, 10), 1), ink(ringColor));
+        } else {
+            drawScreenGlyph(Screen::timers, shape, color);
+        }
+    }
     if (interactive) {
         const auto hit = grow(shape, 2, 2);
         target_->FillRectangle(hit, ink(white(1.0f / 255)));
@@ -3921,7 +3956,7 @@ void Island::draw(HWND window) {
         if (activityDot && swapping) drawActivitySwap(now, compact, *activityDot);
         else drawIsland(now, value, amount, morphTitle);
     }
-    if (activityDot && (!swapping || splitVisible)) drawActivityDot(*activityDot, companion, !splitVisible);
+    if (activityDot && (!swapping || splitVisible)) drawActivityDot(now, *activityDot, companion, !splitVisible);
     const HRESULT result = target_->EndDraw();
     if (result == D2DERR_RECREATE_TARGET) {
         releaseDeviceResources();
