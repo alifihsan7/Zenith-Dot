@@ -251,7 +251,9 @@ private:
     void drawCaptureHandoff(Clock::time_point now, float amount);
     void drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F shape);
     float companionSlotOpacity(Clock::time_point now) const;
-    void drawDotCaptureIndicators(Clock::time_point now, D2D1_RECT_F dot, bool sharesActivity);
+    float companionWidth(Clock::time_point now, bool hasActivity) const;
+    void drawCompanionIndicators(Clock::time_point now, D2D1_RECT_F shape, PillMode mode);
+    void drawCompanionShell(D2D1_RECT_F shape, float pinch, float border);
     void drawCompanionPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity);
     void drawSystem(D2D1_RECT_F panel, bool record);
     void drawPrayerSchedule(D2D1_RECT_F panel, bool record);
@@ -281,6 +283,7 @@ private:
     void fillShell(ID2D1Geometry* shape);
     void drawSplit(Clock::time_point now, float amount);
     D2D1_RECT_F companionBubbleShape(Clock::time_point now, D2D1_RECT_F pill) const;
+    void drawCompanionBubble(Clock::time_point now, D2D1_RECT_F shape);
     void drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity);
     void drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color, float size = 15);
     void drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color, bool charging = false);
