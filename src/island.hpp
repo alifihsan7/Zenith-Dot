@@ -177,7 +177,6 @@ private:
     void updateCaptureIndicators(Clock::time_point now);
     float captureProgress(Clock::time_point now, CaptureIndicator const& indicator) const;
     std::array<float, 3> captureAmounts(Clock::time_point now) const;
-    CaptureIndicator const* captureHandoff() const;
     PillMode activityCompanion() const;
     bool activitySwapActive(Clock::time_point now) const;
     void swapActivities(Clock::time_point now);
@@ -248,7 +247,6 @@ private:
     void drawScratchpad(D2D1_RECT_F panel, bool record);
     void drawDropZone(D2D1_RECT_F panel, bool record);
     void drawCaptureIndicators(D2D1_POINT_2F right, std::array<float, 3> const& amounts);
-    void drawCaptureHandoff(Clock::time_point now, float amount);
     void drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F shape);
     float companionSlotOpacity(Clock::time_point now) const;
     float companionWidth(Clock::time_point now, bool hasActivity) const;
@@ -492,6 +490,7 @@ private:
     std::optional<Clock::time_point> alertHoldUntil_;
     Clock::time_point alertUntil_{};
     float alertWidth_ = 52;
+    float alertCompanionWidth_ = 0;
 
     // Last frame: hit targets in stage DIPs and where the surface sits.
     std::vector<Target> targets_;
