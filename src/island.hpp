@@ -179,6 +179,7 @@ private:
     PillMode activityCompanion() const;
     bool activitySwapActive(Clock::time_point now) const;
     void swapActivities(Clock::time_point now);
+    void drawActivityIndicator(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, D2D1_COLOR_F color);
     void drawActivityDot(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, bool interactive);
     void drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F dot);
     D2D1_RECT_F compactShape(Clock::time_point now, float amount) const;
@@ -208,6 +209,7 @@ private:
     int phaseMinutes(bool resting) const;
     std::wstring phaseName(bool resting) const;
     void finishFocus(Clock::time_point now);
+    void completeCountdown(Clock::time_point now, PillMode mode, IslandAlert alert);
     D2D1_POINT_2F stagePoint(POINT client) const;
     std::optional<Target> targetAt(D2D1_POINT_2F point) const;
     float timelineFraction(D2D1_POINT_2F point) const;
@@ -343,6 +345,11 @@ private:
         D2D1_RECT_F dot{};
         std::wstring title;
     } activitySwap_;
+    struct CountdownCompletion {
+        Clock::time_point until{};
+        PillMode mode = PillMode::dot;
+        std::wstring label;
+    } countdownCompletion_;
     std::wstring pillTitle_;
     bool pillPlaying_ = false;
     Spectrum spectrum_{};

@@ -30,7 +30,9 @@ constexpr float pillLeft = -pillWidth / 2;
 constexpr float dotSize = 12;
 constexpr float activityDotSize = pillHeight;
 constexpr float activityDotGap = 8;
-constexpr auto activitySwapTime = 380ms;
+constexpr auto activitySwapTime = 440ms;
+constexpr float activitySwapDrop = 31;
+constexpr float activitySwapLift = 7;
 constexpr float panelWidth = 369;
 constexpr float mediaPanelWidth = 344;
 constexpr float systemPanelWidth = 530;
@@ -880,7 +882,7 @@ std::wstring Island::title() const {
 }
 
 Island::PillMode Island::activityCompanion() const {
-    const bool media = preferences_.enabled(Screen::media) && media_.hasSession;
+    const bool media = preferences_.enabled(Screen::media) && media_.hasSession && media_.playing;
     const bool timers = preferences_.enabled(Screen::timers);
     const bool focus = timers && (focus_.running() || focus_.paused());
     const bool quick = timers && (quick_.running() || quick_.paused());
@@ -925,6 +927,7 @@ void Island::swapActivities(Clock::time_point now) {
     if (incoming != PillMode::media) quickView_ = incoming == PillMode::timer;
     showScreen(incoming == PillMode::media ? Screen::media : Screen::timers, now);
     preferredPill_ = incoming;
+    countdownCompletion_ = {};
     openAt_.reset();
     previewUntil_ = {};
     previousPillLyric_ = {};
@@ -939,12 +942,15 @@ void Island::updatePill(Clock::time_point now, bool keepActivity) {
         (alert_ && (alert_->kind == IslandAlert::Kind::focusDone || alert_->kind == IslandAlert::Kind::breakDone)));
     const bool timerActive = timersEnabled && (quick_.running() || quick_.paused() ||
         (alert_ && alert_->kind == IslandAlert::Kind::timerDone));
-    const bool mediaActive = media_.hasSession && preferences_.enabled(Screen::media);
+    const bool mediaActive = media_.hasSession && preferences_.enabled(Screen::media) &&
+                             (media_.playing || (!focusActive && !timerActive));
     const bool currentActivity = (pillMode_ == PillMode::media && mediaActive) ||
                                  (pillMode_ == PillMode::focus && focusActive) ||
                                  (pillMode_ == PillMode::timer && timerActive);
     if (!open_ && now < previewUntil_) {
         mode = PillMode::preview;
+    } else if (keepActivity && timersEnabled && now < countdownCompletion_.until) {
+        mode = countdownCompletion_.mode;
     } else if (keepActivity && currentActivity && activityCompanion() != PillMode::dot) {
         mode = pillMode_;
     } else if (focusActive && preferredPill_ == PillMode::focus) {
@@ -1218,6 +1224,7 @@ void Island::showScreen(Screen screen, Clock::time_point now) {
 }
 
 void Island::toggleFocus(Clock::time_point now) {
+    if (countdownCompletion_.mode == PillMode::focus) countdownCompletion_ = {};
     if (focus_.done()) {
         if (autoCycle_ && breakPhase_) focusRound_ = focusRound_ % focusRounds + 1;
         selectFocusPhase(!breakPhase_);
@@ -1254,8 +1261,16 @@ void Island::finishFocus(Clock::time_point now) {
         focus_.toggle(now);
         next = phaseName(breakPhase_) + L" · " + std::to_wstring(phaseMinutes(breakPhase_)) + L" min";
     }
-    notify({rested ? IslandAlert::Kind::breakDone : IslandAlert::Kind::focusDone,
-            rested ? L"Break done" : L"Focus done", std::move(next), std::nullopt, 3, 2600ms});
+    completeCountdown(now, PillMode::focus, {rested ? IslandAlert::Kind::breakDone : IslandAlert::Kind::focusDone,
+                      rested ? L"Break done" : L"Focus done", std::move(next), std::nullopt, 3, 2600ms});
+}
+
+void Island::completeCountdown(Clock::time_point now, PillMode mode, IslandAlert alert) {
+    if (!suppressed_ && pillMode_ == mode && activityCompanion() == PillMode::media) {
+        countdownCompletion_ = {now + alert.hold, mode, std::move(alert.title)};
+    } else {
+        notify(std::move(alert));
+    }
 }
 
 void Island::selectTimerView(size_t index) {
@@ -1320,7 +1335,8 @@ void Island::tick() {
     if (!openAt_ && now >= previewUntil_) previewUntil_ = {};
     if (closeAt_ && now >= *closeAt_) setOpen(false, now);
     if (focus_.expire(now)) finishFocus(now);
-    if (quick_.expire(now)) notify({IslandAlert::Kind::timerDone, L"Timer done", L"", std::nullopt, 3, 2600ms});
+    if (quick_.expire(now))
+        completeCountdown(now, PillMode::timer, {IslandAlert::Kind::timerDone, L"Timer done", L"", std::nullopt, 3, 2600ms});
     if (alert_) {
         if (alertInline_) {
             if (now >= alertUntil_) finishAlert(now);
@@ -1362,6 +1378,10 @@ unsigned Island::frameInterval() const {
     if (suppressed_) return timerRunning ? 1000 : 0;
     if (moving(now) || openAt_ || closeAt_ || dragging_) return 10;
     if (wantsAudioSpectrum()) return 33;
+    if (now < countdownCompletion_.until) {
+        const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(countdownCompletion_.until - now);
+        return static_cast<unsigned>(std::clamp(remaining, 1ms, 1000ms).count());
+    }
     if (wantsPrayerClock() && !alert_) return 1000;
     if (panelPinned() && !alert_) {
         if (screen_ == Screen::media && (media_.playing || (wantsLyrics() && now < lyricFollowAt_) ||
@@ -1723,6 +1743,7 @@ IslandCommand Island::pointerUp(POINT client) {
         break;
     case Hit::focusToggle: toggleFocus(now); break;
     case Hit::focusReset:
+        if (countdownCompletion_.mode == PillMode::focus) countdownCompletion_ = {};
         focus_.reset();
         if (autoCycle_) {
             focusRound_ = 1;
@@ -1749,10 +1770,14 @@ IslandCommand Island::pointerUp(POINT client) {
         }
         break;
     case Hit::timerToggle:
+        if (countdownCompletion_.mode == PillMode::timer) countdownCompletion_ = {};
         quick_.toggle(now);
         preferredPill_ = PillMode::timer;
         break;
-    case Hit::timerReset: quick_.reset(); break;
+    case Hit::timerReset:
+        if (countdownCompletion_.mode == PillMode::timer) countdownCompletion_ = {};
+        quick_.reset();
+        break;
     case Hit::audioPicker:
         audioPickerOpen_ = !audioPickerOpen_;
         audioOutputWheelRemainder_ = 0;
@@ -2201,9 +2226,11 @@ void Island::drawPillContent(Clock::time_point now, float width, bool hideTitle)
         } else {
             drawFocusGlyph(center, 14, color);
         }
-        text(timestamp(timer.seconds(now)), timerFont_.get(), box(right - 44, pillTop, 44, pillHeight), color);
-        text(pillTitle_, pillTitleFont_.get(), box(pillLeft + 34, pillTop, right - 48 - (pillLeft + 34), pillHeight),
-             rgb(inkColor));
+        const bool completed = countdownCompletion_.mode == pillContent_ && now < countdownCompletion_.until;
+        const float clockWidth = completed ? 34.0f : 44.0f;
+        text(timestamp(completed ? 0 : timer.seconds(now)), timerFont_.get(), box(right - clockWidth, pillTop, clockWidth, pillHeight), color);
+        text(completed ? countdownCompletion_.label : pillTitle_, pillTitleFont_.get(),
+             box(pillLeft + 34, pillTop, right - clockWidth - 4 - (pillLeft + 34), pillHeight), rgb(inkColor));
         return;
     }
     const float trackWidth = std::clamp(width, pausedPillWidth, std::max(pillWidth, pillTrackSize_.width));
@@ -2243,18 +2270,10 @@ void Island::drawSpectrumBars(D2D1_POINT_2F center, float spacing, float barWidt
     }
 }
 
-void Island::drawActivityDot(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, bool interactive) {
-    const auto shell = rounded(shape, (shape.bottom - shape.top) / 2);
-    fillShell(shell);
-    const bool hot = interactive && hovered(Hit::activityDot, static_cast<size_t>(mode));
-    const auto color = hot ? accent_ : rgb(inkColor);
-    target_->DrawRoundedRectangle(shell, ink(hot ? withAlpha(accent_, 0.6f) : white(0.16f)), 1);
+void Island::drawActivityIndicator(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, D2D1_COLOR_F color) {
     const auto center = pt((shape.left + shape.right) / 2, (shape.top + shape.bottom) / 2);
     if (mode == PillMode::media && media_.playing && preferences_.showWaveform) {
         drawSpectrumBars(center, 4.5f, 2, 15, accent_);
-    } else if (mode == PillMode::media && !media_.playing) {
-        for (const float x : {center.x - 4, center.x + 1.5f})
-            target_->FillRoundedRectangle(rounded(box(x, center.y - 5, 2.5f, 10), 1), ink(rgb(mutedColor)));
     } else if (mode == PillMode::media) {
         drawScreenGlyph(Screen::media, shape, color);
     } else {
@@ -2281,6 +2300,15 @@ void Island::drawActivityDot(Clock::time_point now, D2D1_RECT_F shape, PillMode 
             drawScreenGlyph(Screen::timers, shape, color);
         }
     }
+}
+
+void Island::drawActivityDot(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, bool interactive) {
+    const auto shell = rounded(shape, (shape.bottom - shape.top) / 2);
+    fillShell(shell);
+    const bool hot = interactive && hovered(Hit::activityDot, static_cast<size_t>(mode));
+    const auto color = hot ? accent_ : rgb(inkColor);
+    target_->DrawRoundedRectangle(shell, ink(hot ? withAlpha(accent_, 0.6f) : white(0.16f)), 1);
+    drawActivityIndicator(now, shape, mode, color);
     if (interactive) {
         const auto hit = grow(shape, 2, 2);
         target_->FillRectangle(hit, ink(white(1.0f / 255)));
@@ -2289,20 +2317,33 @@ void Island::drawActivityDot(Clock::time_point now, D2D1_RECT_F shape, PillMode 
 }
 
 void Island::drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F dot) {
-    const float p = easeInOut(progress(activitySwap_.start, activitySwapTime, now));
-    const auto incoming = mixRect(activitySwap_.dot, pill, p);
+    const float t = progress(activitySwap_.start, activitySwapTime, now);
+    const float p = t * t * (3 - 2 * t);
+    auto incoming = mixRect(activitySwap_.dot, pill, p);
     auto outgoing = mixRect(activitySwap_.pill, dot, p);
-    const float arc = 22 * std::sin(p * 3.14159265f);
-    outgoing.top += arc;
-    outgoing.bottom += arc;
+    const float arc = std::sin(pi * p);
+    const float separation = arc * arc;
+    const float lift = std::clamp(incoming.top - 2, 0.0f, activitySwapLift) * separation;
+    incoming.top -= lift;
+    incoming.bottom -= lift;
+    outgoing.top += activitySwapDrop * separation;
+    outgoing.bottom += activitySwapDrop * separation;
 
     const auto outgoingShell = rounded(outgoing, (outgoing.bottom - outgoing.top) / 2);
     fillShell(outgoingShell);
     target_->DrawRoundedRectangle(outgoingShell, ink(white(0.13f)), 1);
-    const float outgoingText = 1 - lin(0, 0.42f, p);
+    const float outgoingText = 1 - easeInOut(lin(0.06f, 0.45f, p));
     const float iconX = std::lerp((outgoing.left + outgoing.right) / 2, outgoing.left + 18, outgoingText);
     const auto icon = D2D1::RectF(iconX - 9, outgoing.top, iconX + 9, outgoing.bottom);
-    drawScreenGlyph(activitySwap_.outgoing == PillMode::media ? Screen::media : Screen::timers, icon, rgb(inkColor));
+    if (outgoingText > 0)
+        drawScreenGlyph(activitySwap_.outgoing == PillMode::media ? Screen::media : Screen::timers,
+                        icon, withAlpha(rgb(inkColor), outgoingText));
+    const float indicator = easeInOut(lin(0.40f, 0.85f, p));
+    if (indicator > 0) {
+        pushLayer(nullptr, indicator);
+        drawActivityIndicator(now, outgoing, activitySwap_.outgoing, rgb(inkColor));
+        popLayer();
+    }
     if (outgoingText > 0 && outgoing.right - outgoing.left > 40) {
         text(activitySwap_.title, pillTitleFont_.get(),
              D2D1::RectF(outgoing.left + 34, outgoing.top, outgoing.right - 6, outgoing.bottom),
@@ -2312,10 +2353,12 @@ void Island::drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT
     const auto shell = rounded(incoming, (incoming.bottom - incoming.top) / 2);
     fillShell(shell);
     target_->DrawRoundedRectangle(shell, ink(white(0.13f)), 1);
-    const float content = easeInOut(lin(0.40f, 0.95f, p));
-    if (content < 1)
-        drawScreenGlyph(activitySwap_.incoming == PillMode::media ? Screen::media : Screen::timers,
-                        incoming, withAlpha(accent_, 1 - content));
+    const float content = easeInOut(lin(0.38f, 0.88f, p));
+    if (content < 1) {
+        pushLayer(nullptr, 1 - content);
+        drawActivityIndicator(now, incoming, activitySwap_.incoming, rgb(inkColor));
+        popLayer();
+    }
     if (content > 0) {
         winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
         winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(shell, clip.put()));
@@ -3919,9 +3962,9 @@ void Island::draw(HWND window) {
         bounds = unite(bounds, grow(*activityDot, 3, 3));
         if (swapping) {
             auto outgoing = unite(activitySwap_.pill, activitySwap_.dot);
-            outgoing.bottom += 22;
+            outgoing.bottom = std::max(outgoing.bottom, activityDot->bottom) + activitySwapDrop;
             bounds = unite(bounds, grow(outgoing, 2, 2));
-            bounds.bottom = std::max(bounds.bottom, activityDot->bottom + 24);
+            bounds.top = std::min(bounds.top, std::min(activitySwap_.dot.top, compact.top) - activitySwapLift - 2);
         }
     }
     bounds.top = std::max(bounds.top, 0.0f);
