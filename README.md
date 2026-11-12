@@ -20,7 +20,7 @@ Open **Zenula Settings** from the Start menu or choose **Settings** from the tra
 
 Click **Test** beside an appearance or feature setting to see a sample in the island at the top of the screen. The island returns to its live state automatically. Clipboard and device indicator tests use sample data.
 
-**Add copied text to Drop Zone** is off by default. When enabled, the full text is available to drag out of Drop Zone until you remove it, clear the list, or exit. **Auto-add screenshots** stages clipboard images and is on by default. In **Privacy**, you can turn off the Copied bubble or its text snippet independently of Drop Zone staging. The camera and microphone indicators each have their own switch. Active devices show as icons in a small capsule next to Now Playing, or in their own capsule when idle.
+**Add copied text to Drop Zone** is off by default. When enabled, the full text is available to drag out of Drop Zone until you remove it, clear the list, or exit. **Auto-add screenshots** stages clipboard images and is on by default. In **Privacy**, you can turn off the Copied bubble or its text snippet independently of Drop Zone staging. The camera and microphone indicators each have their own switch. Active devices use the companion dot, or appear as small icons in the pill when the dot shows another activity. A liquid notification temporarily uses the companion slot.
 
 When the panel closes, it shrinks to a pill. The pill stays visible while an activity is running and shrinks to the black dot when idle.
 

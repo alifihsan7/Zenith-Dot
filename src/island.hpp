@@ -248,6 +248,8 @@ private:
     void drawCaptureIndicators(D2D1_POINT_2F right, std::array<float, 3> const& amounts);
     void drawCaptureHandoff(Clock::time_point now, float amount);
     void drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F shape);
+    float companionSlotOpacity(Clock::time_point now) const;
+    void drawPrivacyBadges(Clock::time_point now, D2D1_RECT_F pill, float opacity = 1);
     void drawCompanionPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity);
     void drawSystem(D2D1_RECT_F panel, bool record);
     void drawPrayerSchedule(D2D1_RECT_F panel, bool record);
@@ -277,7 +279,7 @@ private:
     void fillShell(ID2D1Geometry* shape);
     void drawSplit(Clock::time_point now, float amount);
     void drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity);
-    void drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color);
+    void drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color, float size = 15);
     void drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color, bool charging = false);
     void drawInlineAlert(D2D1_RECT_F panel);
     void fillPolygon(std::initializer_list<D2D1_POINT_2F> points, D2D1_COLOR_F color);

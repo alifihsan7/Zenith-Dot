@@ -828,9 +828,8 @@ std::optional<D2D1_RECT_F> Island::companionPrivacyShape(Clock::time_point now, 
     const auto [screen, camera, mic] = captureAmounts(now);
     const float presence = std::max({screen, camera, mic});
     if (presence <= .01f) return std::nullopt;
-    const float width = 2 * privacyPadding * presence + captureSlot * (screen + camera + mic);
     const float centerY = (anchor.top + anchor.bottom) / 2;
-    return box(anchor.right + privacyGap, centerY - privacyHeight / 2, width, privacyHeight);
+    return box(anchor.right + activityDotGap, centerY - activityDotSize / 2, activityDotSize, activityDotSize);
 }
 
 Island::MotionSample Island::panelMotion(Clock::time_point now) const {
@@ -2223,14 +2222,43 @@ void Island::drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F sh
     drawCaptureIndicators(right, amounts);
 }
 
+float Island::companionSlotOpacity(Clock::time_point now) const {
+    if (!bubbleShowing()) return 1;
+    if (captureHandoff()) return 0;
+    return 1 - easeInOut(lin(0, 0.22f, alertValue(now)));
+}
+
+void Island::drawPrivacyBadges(Clock::time_point now, D2D1_RECT_F pill, float opacity) {
+    if (pillContent_ == PillMode::privacy || pillMode_ == PillMode::dot || opacity <= 0) return;
+    const auto amounts = captureAmounts(now);
+    float x = pill.right - 17;
+    for (size_t i = 0; i < amounts.size(); ++i) {
+        if (amounts[i] <= 0.01f) continue;
+        const auto& item = captureIndicators_[i];
+        drawAlertIcon(item.kind, pt(x, pill.top + 4), rgb(item.color, opacity * amounts[i]), 9);
+        x -= 11 * amounts[i];
+    }
+}
+
 void Island::drawCompanionPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity) {
-    if (opacity <= 0) return;
-    const auto [screen, camera, mic] = captureAmounts(now);
-    const float radius = std::min(shape.right - shape.left, shape.bottom - shape.top) / 2;
-    pushLayer(nullptr, opacity * std::max({screen, mic, camera}));
-    fillShell(rounded(shape, radius));
-    target_->DrawRoundedRectangle(rounded(shape, radius), ink(white(0.13f)), 1);
-    drawCenteredCaptureIndicators(now, shape);
+    const auto amounts = captureAmounts(now);
+    const float presence = *std::ranges::max_element(amounts);
+    if (opacity <= 0 || presence <= 0.01f) return;
+    const auto shell = rounded(shape, (shape.bottom - shape.top) / 2);
+    pushLayer(nullptr, opacity * presence);
+    fillShell(shell);
+    target_->DrawRoundedRectangle(shell, ink(white(0.13f)), 1);
+    constexpr float spacing = 12;
+    const float sum = amounts[0] + amounts[1] + amounts[2];
+    const float size = std::lerp(15.0f, 10.0f, lin(1, 2, sum));
+    float x = (shape.left + shape.right - spacing * (sum - presence) - size) / 2;
+    const float y = (shape.top + shape.bottom - size) / 2;
+    for (size_t i = 0; i < amounts.size(); ++i) {
+        if (amounts[i] <= 0.01f) continue;
+        const auto& item = captureIndicators_[i];
+        drawAlertIcon(item.kind, pt(x, y), rgb(item.color, amounts[i]), size);
+        x += spacing * amounts[i];
+    }
     popLayer();
 }
 
@@ -2440,6 +2468,7 @@ void Island::drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT
         winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(shell, clip.put()));
         pushLayer(clip.get(), content);
         drawCompactContent(now, incoming, false);
+        drawPrivacyBadges(now, incoming);
         popLayer();
     }
 }
@@ -3692,8 +3721,10 @@ void Island::drawCaptureHandoff(Clock::time_point now, float amount) {
     const float centerY = (compact.top + compact.bottom) / 2;
     constexpr float width = 2 * privacyPadding + captureSlot;
     const bool companion = pillMode_ != PillMode::dot && amount >= 1;
-    const auto destination = box(companion ? compact.right + privacyGap : -width / 2,
-                                 centerY - privacyHeight / 2, width, privacyHeight);
+    const bool sharedDot = companion && activityCompanion() != PillMode::dot;
+    const auto destination = sharedDot ? box(compact.right - 19, compact.top + 3, 14, 14) :
+        companion ? box(compact.right + activityDotGap, centerY - activityDotSize / 2, activityDotSize, activityDotSize) :
+                    box(-width / 2, centerY - privacyHeight / 2, width, privacyHeight);
     auto origin = box(-alertWidth_ / 2, pillTop, alertWidth_, pillHeight);
     if (companion) {
         const float height = compact.bottom - compact.top;
@@ -3713,9 +3744,11 @@ void Island::drawCaptureHandoff(Clock::time_point now, float amount) {
     }
     const auto area = mixRect(origin, destination, t);
     const auto shell = rounded(area, std::min(area.right - area.left, area.bottom - area.top) / 2);
+    if (sharedDot) pushLayer(nullptr, 1 - t);
     fillShell(shell);
     target_->DrawRoundedRectangle(shell, ink(white(0.13f)), 1);
     drawAlertContent(area, 1, 1 - t);
+    if (sharedDot) popLayer();
 }
 
 void Island::drawSplit(Clock::time_point now, float amount) {
@@ -3792,12 +3825,10 @@ void Island::drawSplit(Clock::time_point now, float amount) {
             rounded(capsule, size.height / 2), clip.put()));
         pushLayer(clip.get(), 1);
         drawCompactContent(now, capsule, false);
+        drawPrivacyBadges(now, capsule, activityCompanion() != PillMode::dot ? 1 : 1 - companionSlotOpacity(now));
         popLayer();
     }
     drawAlertContent(area, alertOpacity, copyOpacity);
-    if (fromPill) {
-        if (const auto privacy = companionPrivacyShape(now, area)) drawCompanionPrivacy(now, *privacy, 1);
-    }
 }
 
 void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity) {
@@ -3851,8 +3882,8 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity
 }
 
 // The V7 alert glyphs, drawn in a 16-unit box scaled to 15 DIPs.
-void Island::drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color) {
-    const float scale = 15.0f / 16;
+void Island::drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color, float size) {
+    const float scale = size / 16;
     target_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) * D2D1::Matrix3x2F::Translation(origin.x, origin.y) *
                           base_);
     switch (kind) {
@@ -4015,26 +4046,21 @@ void Island::draw(HWND window) {
     auto bounds = unite(grow(compact, 2, 2), compactHit(compact, amount));
     if (panelVisible) bounds = unite(bounds, grow(panelRect(now), 2, 2));
     const bool splitVisible = !panelVisible && bubbleShowing();
-    auto privacyAnchor = compact;
     if (splitVisible) {
         const auto size = pillSize(now);
         const float height = amount >= 1 ? size.height : pillHeight;
         const float bubble = std::max(alertWidth_, height);
         const float width = amount >= 1 ? size.width + releaseGap * height / pillHeight + bubble : bubble;
-        privacyAnchor = box(-width / 2, pillTop, width, height);
-        bounds = unite(bounds, grow(privacyAnchor, 2, 2));
+        bounds = unite(bounds, grow(box(-width / 2, pillTop, width, height), 2, 2));
         if (captureHandoff() && pillMode_ != PillMode::dot)
-            bounds.right = std::max(bounds.right, compact.right + privacyGap + 2 * privacyPadding + captureSlot + 2);
+            bounds.right = std::max(bounds.right, compact.right + activityDotGap + activityDotSize + 2);
     }
-    const float compactOpacity = lin(0.55f, 1, amount) * (1 - lin(0, 0.38f, value));
-    const auto privacy = compactOpacity > 0 ? companionPrivacyShape(now, privacyAnchor) : std::nullopt;
-    if (privacy) bounds = unite(bounds, grow(*privacy, 2, 2));
+    const float slotOpacity = splitVisible ? companionSlotOpacity(now) : 1;
     const auto companion = activityCompanion();
     std::optional<D2D1_RECT_F> activityDot;
-    if (!panelVisible && amount >= 1 && companion != PillMode::dot) {
-        const auto dotAnchor = privacy ? unite(privacyAnchor, *privacy) : privacyAnchor;
+    if (!panelVisible && amount >= 1 && companion != PillMode::dot && slotOpacity > 0) {
         const float centerY = (compact.top + compact.bottom) / 2;
-        activityDot = box(dotAnchor.right + activityDotGap, centerY - activityDotSize / 2, activityDotSize, activityDotSize);
+        activityDot = box(compact.right + activityDotGap, centerY - activityDotSize / 2, activityDotSize, activityDotSize);
         bounds = unite(bounds, grow(*activityDot, 3, 3));
     }
     lastActivityDot_ = activityDot;
@@ -4046,8 +4072,12 @@ void Island::draw(HWND window) {
         bounds = unite(bounds, grow(outgoing, 2, 2));
         bounds.top = std::min(bounds.top, std::min(activitySwap_.dot.top, compact.top) - activitySwapLift - 2);
     }
-    const bool dotExiting = animate_ && !panelVisible && !activityDot && now - mediaDotExitStart_ < activityDotExitTime;
+    const bool dotExiting = animate_ && !panelVisible && !splitVisible && !activityDot &&
+                            now - mediaDotExitStart_ < activityDotExitTime;
     if (dotExiting) bounds = unite(bounds, grow(retiringMediaDot_, 2, 2));
+    const auto privacy = !panelVisible && !activityDot && !drawSwap && !dotExiting &&
+                         slotOpacity > 0 && amount >= 1 ? companionPrivacyShape(now, compact) : std::nullopt;
+    if (privacy) bounds = unite(bounds, grow(*privacy, 2, 2));
     bounds.top = std::max(bounds.top, 0.0f);
     origin_ = {static_cast<LONG>(std::floor(bounds.left * scale_)), static_cast<LONG>(std::floor(bounds.top * scale_))};
     const int width = static_cast<int>(std::ceil(bounds.right * scale_)) - origin_.x;
@@ -4076,11 +4106,18 @@ void Island::draw(HWND window) {
     if (splitVisible) {
         drawSplit(now, amount);
     } else {
-        if (privacy) drawCompanionPrivacy(now, *privacy, compactOpacity);
         if (drawSwap) drawActivitySwap(now, compact, swapEnd);
-        else drawIsland(now, value, amount, morphTitle);
+        else {
+            drawIsland(now, value, amount, morphTitle);
+            if (!panelVisible && (activityDot || dotExiting)) drawPrivacyBadges(now, compact);
+        }
     }
-    if (activityDot && !drawSwap) drawActivityDot(now, *activityDot, companion, !splitVisible);
+    if (privacy) drawCompanionPrivacy(now, *privacy, slotOpacity);
+    if (activityDot && !drawSwap) {
+        if (slotOpacity < 1) pushLayer(nullptr, slotOpacity);
+        drawActivityDot(now, *activityDot, companion, !splitVisible);
+        if (slotOpacity < 1) popLayer();
+    }
     if (dotExiting) {
         const float t = easeInOut(progress(mediaDotExitStart_, activityDotExitTime, now));
         const auto shape = grow(retiringMediaDot_, -12 * t, -12 * t);
