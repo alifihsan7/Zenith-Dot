@@ -2770,12 +2770,11 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
         status += std::to_wstring(minutes % 60) + L"m left";
     }
     text(status, bodyFont_.get(), box(x + 8, top + 20, width - 81, 16), rgb(mutedColor));
-    if (power_.percent) {
-        const auto level = std::to_wstring(*power_.percent) + L"%";
-        const float levelWidth = std::ceil(measure(level, strongEndFont_.get())) + 2;
+    if (power_.percent || power_.charging) {
+        const auto level = power_.percent ? std::to_wstring(*power_.percent) + L"%" : std::wstring{};
+        const float levelWidth = level.empty() ? 0 : std::ceil(measure(level, strongEndFont_.get())) + 2;
         const float levelX = battery.right - 8 - levelWidth;
-        drawBatteryCell(levelX - 26, top + 20, *power_.percent, accent_);
-        if (power_.charging) drawAlertIcon(IslandAlert::Kind::charging, pt(levelX - 42, top + 12), accent_);
+        drawBatteryCell(levelX - 26, top + 20, power_.percent.value_or(0), accent_, power_.charging);
         text(level, strongEndFont_.get(), box(levelX, top, levelWidth, 41), accent_);
     }
 
@@ -3194,9 +3193,12 @@ void Island::drawNav(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         if (selected) target_->FillRoundedRectangle(rounded(rect, 7), ink(withAlpha(accent_, 0.14f * reveal)));
         else if (hovered(hit)) target_->FillRoundedRectangle(rounded(rect, 7), ink(white(0.08f * reveal)));
         const auto color = selected ? accent_ : rgb(mutedColor);
-        const float radius = selected ? 3.4f : 2.4f;
         const auto center = pt((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
-        if (reveal < 1) target_->FillEllipse(D2D1::Ellipse(center, radius, radius), ink(withAlpha(color, 1 - reveal)));
+        if (reveal < 1) {
+            const float markerWidth = selected ? 11.0f : 4.8f;
+            const auto marker = box(center.x - markerWidth / 2, center.y - 2.4f, markerWidth, 4.8f);
+            target_->FillRoundedRectangle(rounded(marker, 2.4f), ink(withAlpha(color, 1 - reveal)));
+        }
         if (reveal > 0) drawScreenGlyph(screen, rect, withAlpha(color, reveal));
         if (record) addTarget(cell, hit);
     }
@@ -3494,16 +3496,12 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity
     const float width = area.right - area.left;
     const bool copied = alert_->kind == IslandAlert::Kind::copy;
     const bool capture = isCaptureAlert(alert_->kind);
-    const float contentWidth = capture ? alertWidth_ - privacyTextRevealSpace : copied ? alertWidth_ : width;
-    const float contentLeft = area.left + std::max(0.0f, (width - contentWidth) / 2);
-    float iconProgress = textOpacity;
-    if (copied) {
-        iconProgress = easeInOut(lin(contentWidth - 24, contentWidth - 6, width));
-        textOpacity *= easeInOut(lin(contentWidth - 6, contentWidth, width));
-    } else if (capture) {
-        iconProgress = easeInOut(lin(contentWidth - 24, contentWidth, width));
-        textOpacity *= easeInOut(lin(contentWidth + 2, alertWidth_ - 1, width));
-    }
+    const float contentWidth = alertWidth_ - (capture ? privacyTextRevealSpace : 0);
+    const float contentLeft = area.left + (width - contentWidth) / 2;
+    const float iconProgress = easeInOut(lin(contentWidth - 24, contentWidth - 6, width));
+    // Lay out the complete label once. The final stretch controls its opacity and focus.
+    const float revealWidth = capture ? alertWidth_ - 1 : contentWidth - 0.5f;
+    const float reveal = textOpacity * easeInOut(lin(revealWidth - 10, revealWidth, width));
     const float radius = std::min(width, area.bottom - area.top) / 2;
     winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
     winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(rounded(area, radius), clip.put()));
@@ -3513,11 +3511,11 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity
     const float iconLeft = std::lerp(area.left + std::max(0.0f, (width - 15) / 2),
                                      contentLeft + 12, iconProgress);
     drawAlertIcon(alert_->kind, pt(iconLeft, middle - 7.5f), alert_->color ? rgb(*alert_->color) : accent_);
-    if (textOpacity <= 0) {
+    if (reveal <= 0) {
         popLayer();
         return;
     }
-    float x = (copied || capture ? contentLeft + 12 : iconLeft) + 15 + 7;
+    float x = contentLeft + 12 + 15 + 7;
     const float end = contentLeft + contentWidth - 12;
     // A long title (a device name) gives way so the value after it stays readable.
     float valueWidth = 0;
@@ -3528,20 +3526,41 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity
         const float measuredTitle = measure(alert_->title, alertTitleFont_.get());
         const float titleWidth = copied ? std::ceil(measuredTitle) + 2 :
             std::min(measuredTitle + 1, std::max(0.0f, end - x - valueWidth));
-        text(alert_->title, alertTitleFont_.get(), box(x, middle - 10, titleWidth, 20),
-             withAlpha(rgb(inkColor), textOpacity));
+        drawAlertText(alert_->title, alertTitleFont_.get(), box(x, middle - 10, titleWidth, 20), rgb(inkColor), reveal);
         x += titleWidth + 6;
     }
     if (!alert_->value.empty() && end > x) {
-        auto color = withAlpha(rgb(mutedColor), textOpacity);
+        auto color = rgb(mutedColor);
         if (alert_->battery && end - x > batteryCellWidth) {
-            color = withAlpha(rgb(batteryColor(*alert_->battery)), textOpacity);
-            drawBatteryCell(x, middle, *alert_->battery, color);
+            color = rgb(batteryColor(*alert_->battery));
+            drawBatteryCell(x, middle, *alert_->battery, withAlpha(color, reveal));
             x += batteryCellWidth;
         }
-        text(alert_->value, alertValueFont_.get(), box(x, middle - 10, end - x, 20), color);
+        drawAlertText(alert_->value, alertValueFont_.get(), box(x, middle - 10, end - x, 20), color, reveal);
     }
     popLayer();
+}
+
+void Island::drawAlertText(std::wstring_view value, IDWriteTextFormat* font, D2D1_RECT_F rect,
+                           D2D1_COLOR_F color, float reveal) {
+    const float blur = animate_ ? 1.8f * (1 - reveal) : 0;
+    if (blur < 0.2f) {
+        text(value, font, rect, withAlpha(color, reveal));
+        return;
+    }
+
+    // Blend offset glyphs only during the reveal, using the existing render target.
+    const float spread = blur / 1.8f;
+    constexpr D2D1_POINT_2F offsets[]{{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+    for (const auto offset : offsets) {
+        auto sample = rect;
+        sample.left += offset.x * blur;
+        sample.right += offset.x * blur;
+        sample.top += offset.y * blur;
+        sample.bottom += offset.y * blur;
+        text(value, font, sample, withAlpha(color, reveal * spread * 0.22f));
+    }
+    text(value, font, rect, withAlpha(color, reveal * (1 - spread * 0.68f)));
 }
 
 // The V7 alert glyphs, drawn in a 16-unit box scaled to 15 DIPs.
@@ -3645,10 +3664,17 @@ void Island::drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_CO
     target_->SetTransform(base_);
 }
 
-void Island::drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color) {
+void Island::drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color, bool charging) {
     const auto cell = box(left + 0.5f, middle - 5, 19, 10);
     target_->DrawRoundedRectangle(rounded(cell, 2.5f), ink(color), 1);
     target_->FillRoundedRectangle(rounded(box(cell.right + 1, middle - 2, 1.5f, 4), 0.75f), ink(color));
+    if (charging) {
+        const float center = cell.left + 9.5f;
+        fillPolygon({pt(center + 0.9f, middle - 3.8f), pt(center - 3, middle + 0.4f),
+                     pt(center - 0.4f, middle + 0.4f), pt(center - 0.9f, middle + 3.8f),
+                     pt(center + 3, middle - 0.6f), pt(center + 0.4f, middle - 0.6f)}, color);
+        return;
+    }
     const float fill = 15 * std::min(level, 100u) / 100.0f;
     if (fill > 0.5f) target_->FillRoundedRectangle(rounded(box(cell.left + 2, middle - 3, fill, 6), 1), ink(color));
 }

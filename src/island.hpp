@@ -268,8 +268,10 @@ private:
     void fillShell(ID2D1Geometry* shape);
     void drawSplit(Clock::time_point now, float amount);
     void drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity);
+    void drawAlertText(std::wstring_view value, IDWriteTextFormat* font, D2D1_RECT_F rect,
+                       D2D1_COLOR_F color, float reveal);
     void drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color);
-    void drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color);
+    void drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color, bool charging = false);
     void drawInlineAlert(D2D1_RECT_F panel);
     void fillPolygon(std::initializer_list<D2D1_POINT_2F> points, D2D1_COLOR_F color);
     void pushLayer(ID2D1Geometry* mask, float opacity);
