@@ -553,7 +553,7 @@ void App::refreshCapture(bool announce) {
     auto activity = desktop_.captureActivity();
     if (!settings_.showMicrophoneIndicator) activity.microphone.clear();
     if (!settings_.showCameraIndicator) activity.camera.clear();
-    if (island_.setCaptureActivity(activity, announce) && announce) frame();
+    if (island_.setCaptureActivity(activity) && announce) frame();
 }
 
 void App::announceBluetooth() {

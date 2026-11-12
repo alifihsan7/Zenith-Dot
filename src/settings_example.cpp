@@ -58,12 +58,12 @@ SettingsExample::SettingsExample(SettingsTest test, Feature feature, Settings co
         break;
     case SettingsTest::camera:
         if (settings.showCameraIndicator) {
-            island_.setCaptureActivity({{}, L"Test", {}, false}, true);
+            island_.setCaptureActivity({{}, L"Test", {}, false});
         }
         break;
     case SettingsTest::microphone:
         if (settings.showMicrophoneIndicator) {
-            island_.setCaptureActivity({L"Test", {}, {}, false}, true);
+            island_.setCaptureActivity({L"Test", {}, {}, false});
         }
         break;
     case SettingsTest::copiedText:

@@ -55,7 +55,6 @@ struct IslandAlert {
     std::chrono::milliseconds hold{2600};
     std::optional<unsigned> battery = std::nullopt;   // drawn as a battery cell before value
     bool fromCompanion = false;
-    bool captureEnded = false;
     struct DotOrigin {
         float width;
         float iconLeft;
@@ -93,7 +92,7 @@ public:
     bool alertsQuiet() const;
     bool setWindowsNotificationsQuiet(std::optional<bool> quiet);
     void setSuppressed(bool suppressed);
-    bool setCaptureActivity(CaptureActivity const& activity, bool announce);
+    bool setCaptureActivity(CaptureActivity const& activity);
     void setLyrics(LyricsView const& lyrics);
     void setScratchpad(ScratchpadView const& scratchpad);
     void setScratchEditing(bool editing);
@@ -190,6 +189,7 @@ private:
     void swapActivities(Clock::time_point now);
     void retirePausedActivity(PillMode mode, Clock::time_point now);
     void drawCountdownCheck(D2D1_POINT_2F center, D2D1_COLOR_F color, float scale = 1);
+    float activityWidth(PillMode mode, Clock::time_point now) const;
     void drawActivityIndicator(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, D2D1_COLOR_F color);
     void drawActivityDot(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, bool interactive);
     void drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F dot);
@@ -236,7 +236,6 @@ private:
     void finishAlert(Clock::time_point now);
     void clearAlerts();
     float alertValue(Clock::time_point now) const;
-    std::chrono::milliseconds alertDuration() const;
     MotionSample alertMotion(Clock::time_point now) const;
     static MotionSample reverseSplitMotion(Clock::time_point start, Clock::time_point now);
     bool bubbleShowing() const;
@@ -276,6 +275,7 @@ private:
     void drawAppVolume(size_t index, D2D1_RECT_F row, bool record);
     float volumeFraction(D2D1_POINT_2F point) const;
     float navExpansion(Clock::time_point now) const;
+    float navSelection(Clock::time_point now) const;
     float navHeightAt(Clock::time_point now) const;
     bool setNavExpanded(bool expanded, Clock::time_point now);
     void drawNav(D2D1_RECT_F panel, Clock::time_point now, bool record);
@@ -297,9 +297,7 @@ private:
     void fillShell(D2D1_ROUNDED_RECT shape);
     void fillShell(ID2D1Geometry* shape);
     void drawSplit(Clock::time_point now, float amount, std::optional<D2D1_RECT_F> slot);
-    D2D1_RECT_F centeredPrivacyBubble() const;
-    void drawCenteredPrivacyAlert(Clock::time_point now, D2D1_RECT_F bubble);
-    D2D1_RECT_F closingDotShape(D2D1_RECT_F pill) const;
+    D2D1_RECT_F closingDotShape(Clock::time_point now, D2D1_RECT_F pill) const;
     void drawBubbleToDot(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F bubble, bool fromSlot);
     void drawBubbleFromDot(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F bubble);
     void drawBubblePrimary(Clock::time_point now, D2D1_RECT_F pill, float opacity);
@@ -436,6 +434,8 @@ private:
     bool navExpanded_ = false;
     float navFrom_ = 0;
     Clock::time_point navStart_{};
+    float navSelectionFrom_ = 0;
+    Clock::time_point navSelectionStart_{};
     D2D1_RECT_F navHoverRect_{};
     size_t sourceOffset_ = 0;
     int sourceWheelRemainder_ = 0;
@@ -534,14 +534,6 @@ private:
         PillMode mode = PillMode::dot;
     };
     std::optional<AlertDot> closingDot_;
-    struct CenteredPrivacyAlert {
-        D2D1_RECT_F source{};
-        std::array<float, 3> sourceIcons{};
-        D2D1_RECT_F destination{};
-        std::array<float, 3> destinationIcons{};
-    };
-    std::optional<CenteredPrivacyAlert> centeredPrivacy_;
-
     // Last frame: hit targets in stage DIPs and where the surface sits.
     std::vector<Target> targets_;
     D2D1_RECT_F timelineRect_{};
@@ -561,6 +553,9 @@ private:
     winrt::com_ptr<IDWriteFactory> fonts_;
     winrt::com_ptr<IDWriteTextFormat> pillTitleFont_;
     winrt::com_ptr<IDWriteTextFormat> timerFont_;
+    float timerDigitWidth_ = 7.25f;
+    std::wstring measuredTimerLabel_;
+    float timerLabelWidth_ = 0;
     winrt::com_ptr<IDWriteTextFormat> titleFont_;
     winrt::com_ptr<IDWriteTextFormat> mediaTitleFont_;
     winrt::com_ptr<IDWriteTextFormat> prayerTitleFont_;
