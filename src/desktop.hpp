@@ -35,6 +35,7 @@ struct AppVolume {
 };
 
 bool fullscreenOnPrimary(HWND overlay);
+void restoreOverlayZOrder(HWND overlay);
 bool activateMediaWindow(HWND overlay, std::wstring const& appId);
 CaptureActivity readCaptureActivity();
 

@@ -35,8 +35,8 @@ $manifest = Join-Path $stage 'AppxManifest.xml'
          IgnorableNamespaces="uap uap3 rescap">
   <Identity Name="ZenithDot" Publisher="$escapedPublisher" Version="$Version" ProcessorArchitecture="x64" />
   <Properties>
-    <DisplayName>Zenith Dot</DisplayName>
-    <PublisherDisplayName>Zenith Dot</PublisherDisplayName>
+    <DisplayName>Zenula</DisplayName>
+    <PublisherDisplayName>Zenula</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
   <Dependencies>
@@ -46,8 +46,8 @@ $manifest = Join-Path $stage 'AppxManifest.xml'
     <Resource Language="en-us" />
   </Resources>
   <Applications>
-    <Application Id="ZenithDot" Executable="ZenithDot.exe" EntryPoint="Windows.FullTrustApplication">
-      <uap:VisualElements DisplayName="Zenith Dot" Description="Zenith Dot"
+    <Application Id="ZenithDot" Executable="Zenula.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="Zenula" Description="Zenula"
                          BackgroundColor="transparent"
                          Square150x150Logo="Assets\Square150x150Logo.png"
                          Square44x44Logo="Assets\Square44x44Logo.png" />
@@ -67,7 +67,7 @@ try {
     $image = $icon.ToBitmap()
     try {
         $logos = [ordered]@{ StoreLogo = 50; Square150x150Logo = 150; Square44x44Logo = 44 }
-        $mapping = @('[Files]', ('"{0}" "AppxManifest.xml"' -f $manifest), ('"{0}" "ZenithDot.exe"' -f $source))
+        $mapping = @('[Files]', ('"{0}" "AppxManifest.xml"' -f $manifest), ('"{0}" "Zenula.exe"' -f $source))
         foreach ($name in $logos.Keys) {
             $size = $logos[$name]
             $bitmap = [Drawing.Bitmap]::new($size, $size)

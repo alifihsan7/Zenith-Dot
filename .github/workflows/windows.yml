@@ -24,13 +24,13 @@ jobs:
         run: cmake --install out --config Release --prefix dist
       - uses: actions/upload-artifact@v4
         with:
-          name: Zenith-Dot-Windows-x64
+          name: Zenula-Windows-x64
           path: dist/
           if-no-files-found: error
       - name: Package MSIX for testing
-        run: ./scripts/package-msix.ps1 -Executable ./out/Release/ZenithDot.exe -Output ./out/ZenithDot-test.msix -UnsignedTest
+        run: ./scripts/package-msix.ps1 -Executable ./out/Release/Zenula.exe -Output ./out/Zenula-test.msix -UnsignedTest
       - uses: actions/upload-artifact@v4
         with:
-          name: Zenith-Dot-Windows-x64-MSIX-test
-          path: out/ZenithDot-test.msix
+          name: Zenula-Windows-x64-MSIX-test
+          path: out/Zenula-test.msix
           if-no-files-found: error

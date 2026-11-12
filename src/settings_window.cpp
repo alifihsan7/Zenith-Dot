@@ -21,8 +21,8 @@
 namespace zenith {
 namespace {
 
-constexpr wchar_t title[] = L"Zenith Dot Settings";
-constexpr wchar_t repository[] = L"https://github.com/alifihsan7/Zenith-Dot";
+constexpr wchar_t title[] = L"Zenula Settings";
+constexpr wchar_t repository[] = L"https://github.com/alifihsan7/Zenula";
 constexpr COLORREF background = RGB(15, 18, 24);
 constexpr COLORREF sidebar = RGB(20, 24, 32);
 constexpr COLORREF surface = RGB(24, 29, 38);
@@ -51,12 +51,12 @@ struct Page {
 };
 
 constexpr Page pages[]{
-    {IDC_SETTINGS_GENERAL, L"General", L"Choose how Zenith Dot starts on this PC.", L"Startup"},
+    {IDC_SETTINGS_GENERAL, L"General", L"Choose how Zenula starts on this PC.", L"Startup"},
     {IDC_SETTINGS_DISPLAY, L"Appearance", L"Adjust the island's size, shape, and accent.", nullptr},
     {IDC_SETTINGS_FEATURES, L"Features", L"Choose what appears in the island and arrange its feature bar.", nullptr},
     {IDC_SETTINGS_PRIVACY, L"Privacy & Clipboard", L"Choose which clipboard and device indicators appear.", nullptr},
     {IDC_SETTINGS_NOTIFICATIONS, L"Notifications", L"Manage island alerts and prayer reminders.", nullptr},
-    {IDC_SETTINGS_ABOUT, L"About", L"Zenith Dot for Windows", nullptr},
+    {IDC_SETTINGS_ABOUT, L"About", L"Zenula for Windows", nullptr},
 };
 
 struct Option {
@@ -69,7 +69,7 @@ struct Option {
 };
 
 constexpr Option options[]{
-    {IDC_START_WITH_WINDOWS, IDC_SETTINGS_GENERAL, L"Launch Zenith Dot when you sign in.", nullptr, nullptr},
+    {IDC_START_WITH_WINDOWS, IDC_SETTINGS_GENERAL, L"Launch Zenula when you sign in.", nullptr, nullptr},
     {IDC_PRAYER_REMINDERS, IDC_SETTINGS_NOTIFICATIONS, L"Show a bubble when it’s time to pray.",
         &Settings::prayerReminders, &Settings::saveNotifications},
     {IDC_HIDE_FULLSCREEN, IDC_SETTINGS_DISPLAY, L"Hide the island over fullscreen apps and games.",
@@ -110,7 +110,7 @@ bool hovered(HWND window) {
 constexpr wchar_t const* featureNames[]{L"Now Playing", L"Timers", L"Scratchpad", L"Drop Zone", L"System"};
 constexpr wchar_t const* widthChoices[]{L"Fit to title", L"147 px minimum"};
 constexpr wchar_t const* sizeChoices[]{L"Compact", L"Default", L"Large"};
-constexpr wchar_t const* accentChoices[]{L"Album artwork", L"Zenith blue", L"Custom"};
+constexpr wchar_t const* accentChoices[]{L"Album artwork", L"Zenula blue", L"Custom"};
 constexpr wchar_t const* pauseChoices[]{L"Immediately", L"3 seconds", L"5 seconds", L"Keep the title"};
 constexpr wchar_t const* focusChoices[]{L"15 minutes", L"25 minutes", L"45 minutes"};
 constexpr wchar_t const* breakChoices[]{L"5 minutes", L"10 minutes", L"15 minutes"};
@@ -533,7 +533,7 @@ void SettingsWindow::runTest(SettingsTest test) {
         DWORD_PTR accepted = 0;
         if (SendMessageTimeoutW(overlay, settingsTestMessage, static_cast<WPARAM>(test), static_cast<LPARAM>(target),
                                 SMTO_ABORTIFHUNG, 1500, &accepted) && accepted) return;
-        MessageBoxW(window_, L"Restart Zenith Dot with this build to run the test.", title, MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(window_, L"Restart Zenula with this build to run the test.", title, MB_OK | MB_ICONINFORMATION);
         return;
     }
     std::wstring executable(32768, L'\0');
@@ -543,7 +543,7 @@ void SettingsWindow::runTest(SettingsTest test) {
     if (!length || length >= executable.size() ||
         reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", executable.c_str(), args.c_str(),
                                                nullptr, SW_SHOWNOACTIVATE)) <= 32) {
-        MessageBoxW(window_, L"Couldn’t start Zenith Dot to run the test.", title, MB_OK | MB_ICONWARNING);
+        MessageBoxW(window_, L"Couldn’t start Zenula to run the test.", title, MB_OK | MB_ICONWARNING);
     }
 }
 
@@ -637,7 +637,7 @@ void SettingsWindow::completeNotificationAccess(NotificationAccess access) {
     notificationRequest_ = nullptr;
     if (access != NotificationAccess::Allowed) {
         showControls();
-        MessageBoxW(window_, L"Allow Zenith Dot in Windows Settings under Privacy & security > Notifications.",
+        MessageBoxW(window_, L"Allow Zenula in Windows Settings under Privacy & security > Notifications.",
                     title, MB_OK | MB_ICONINFORMATION);
         return;
     }
@@ -786,7 +786,7 @@ void SettingsWindow::paint(HDC dc) {
     const auto rail = units(0, 0, 122, 0);
     canvas_.fill({0, 0, rail.right, client.bottom}, sidebar);
     canvas_.fill({rail.right - 1, 0, rail.right, client.bottom}, border);
-    canvas_.text(units(38, 12, 115, 34), L"Zenith Dot", canvas_.strong(), color(foreground));
+    canvas_.text(units(38, 12, 115, 34), L"Zenula", canvas_.strong(), color(foreground));
 
     const float phase = pageOpacity();
     const auto label = [&](RECT area, wchar_t const* value, IDWriteTextFormat* font, COLORREF ink) {

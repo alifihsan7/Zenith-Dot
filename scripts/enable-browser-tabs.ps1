@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string] $Executable = (Join-Path $env:LOCALAPPDATA 'Zenith Dot\ZenithDot.exe')
+    [string] $Executable = (Join-Path $env:LOCALAPPDATA 'Zenula\Zenula.exe')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,7 +10,7 @@ $hostName = 'com.zenith_dot.browser'
 $manifestPath = Join-Path $folder ($hostName + '.json')
 $manifest = @{
     name = $hostName
-    description = 'Zenith Dot browser media bridge'
+    description = 'Zenula browser media bridge'
     path = $exe
     type = 'stdio'
     allowed_origins = @('chrome-extension://achehkjcdkfodmalnalebhpafbonlccf/')
@@ -22,4 +22,4 @@ foreach ($vendor in @('Google\Chrome', 'Microsoft\Edge', 'BraveSoftware\Brave-Br
     New-Item -Path $location -Force | Out-Null
     Set-Item -Path $location -Value $manifestPath
 }
-Write-Output 'Zenith Dot browser bridge registered for this Windows user.'
+Write-Output 'Zenula browser bridge registered for this Windows user.'

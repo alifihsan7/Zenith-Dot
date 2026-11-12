@@ -9,6 +9,27 @@
 namespace zenith {
 namespace {
 
+constexpr wchar_t startupName[] = L"Zenula.lnk";
+constexpr wchar_t legacyStartupName[] = L"Zenith Dot.lnk";
+
+std::wstring legacyStartupShortcut(std::wstring const& shortcut) {
+    if (!shortcut.ends_with(startupName)) return {};
+    return shortcut.substr(0, shortcut.size() - std::size(startupName) + 1) + legacyStartupName;
+}
+
+bool shortcutExists(std::wstring const& shortcut) {
+    if (shortcut.empty()) return false;
+    const auto attributes = GetFileAttributesW(shortcut.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+bool removeShortcut(std::wstring const& shortcut) {
+    if (shortcut.empty()) return true;
+    if (DeleteFileW(shortcut.c_str())) return true;
+    const auto error = GetLastError();
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+}
+
 constexpr wchar_t settingsKey[] = L"Software\\Zenith Dot";
 constexpr wchar_t clipboardValue[] = L"ClipboardOptions";
 constexpr DWORD autoAddTextBit = 1;
@@ -154,19 +175,19 @@ std::wstring startupShortcut() {
         PWSTR value;
         ~FreePath() { CoTaskMemFree(value); }
     } path{folder};
-    return std::wstring(path.value) + L"\\Zenith Dot.lnk";
+    return std::wstring(path.value) + L"\\" + startupName;
 }
 
 bool startupEnabled(std::wstring const& shortcut) {
-    if (shortcut.empty()) return false;
-    const auto attributes = GetFileAttributesW(shortcut.c_str());
-    return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+    return shortcutExists(shortcut) || shortcutExists(legacyStartupShortcut(shortcut));
 }
 
 bool setStartupEnabled(std::wstring const& shortcut, bool enabled) {
     if (shortcut.empty()) return false;
+    const auto legacy = legacyStartupShortcut(shortcut);
     if (!enabled) {
-        return DeleteFileW(shortcut.c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND;
+        const bool removed = removeShortcut(shortcut);
+        return removeShortcut(legacy) && removed;
     }
 
     std::wstring executable(32768, L'\0');
@@ -179,9 +200,9 @@ bool setStartupEnabled(std::wstring const& shortcut, bool enabled) {
         FAILED(link->SetPath(executable.c_str())) ||
         FAILED(link->SetWorkingDirectory(folder.c_str())) ||
         FAILED(link->SetIconLocation(executable.c_str(), 0)) ||
-        FAILED(link->SetDescription(L"Zenith Dot"))) return false;
+        FAILED(link->SetDescription(L"Zenula"))) return false;
     const auto file = link.try_as<IPersistFile>();
-    return file && SUCCEEDED(file->Save(shortcut.c_str(), TRUE));
+    return file && SUCCEEDED(file->Save(shortcut.c_str(), TRUE)) && removeShortcut(legacy);
 }
 
 }

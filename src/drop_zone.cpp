@@ -319,7 +319,7 @@ bool DropZone::prepareImageFolder() {
     wchar_t suffix[40]{};
     if (!length || length >= std::size(temp) || FAILED(CoCreateGuid(&guid)) ||
         !StringFromGUID2(guid, suffix, static_cast<int>(std::size(suffix)))) return false;
-    auto folder = std::wstring(temp, length) + L"ZenithDot-" + suffix;
+    auto folder = std::wstring(temp, length) + L"Zenula-" + suffix;
     if (!CreateDirectoryW(folder.c_str(), nullptr)) return false;
     imageFolder_ = std::move(folder);
     return true;
@@ -444,7 +444,7 @@ bool DropZone::openImage(size_t index, HWND owner) {
     if (index >= items_.size() || items_[index].imagePath.empty()) return false;
     auto image = fileThumbnail(items_[index].imagePath, 1440, 1000);
     if (!image) return false;
-    const auto title = items_[index].preview.label + L" · Zenith Dot";
+    const auto title = items_[index].preview.label + L" · Zenula";
     if (previewWindow_) {
         previewImage_ = std::move(image);
         SetWindowTextW(previewWindow_, title.c_str());

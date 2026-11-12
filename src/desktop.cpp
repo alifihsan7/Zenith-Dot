@@ -466,6 +466,34 @@ void watchCaptureRegistry(HWND window, HANDLE stop) {
 
 }
 
+void restoreOverlayZOrder(HWND overlay) {
+    RECT island{};
+    if (!IsWindowVisible(overlay) || !GetWindowRect(overlay, &island)) return;
+
+    const auto topmost = [](HWND window) {
+        return (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    };
+    bool covered = !topmost(overlay);
+    const DWORD ownProcess = GetCurrentProcessId();
+    for (auto window = GetWindow(overlay, GW_HWNDPREV); window && !covered;
+         window = GetWindow(window, GW_HWNDPREV)) {
+        if (!topmost(window) || !IsWindowVisible(window) || IsIconic(window)) continue;
+        DWORD process = 0;
+        GetWindowThreadProcessId(window, &process);
+        if (process == ownProcess) continue;
+
+        RECT bounds{}, overlap{};
+        if (!GetWindowRect(window, &bounds) || !IntersectRect(&overlap, &island, &bounds)) continue;
+        DWORD cloaked = 0;
+        DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked));
+        covered = !cloaked;
+    }
+    if (covered) {
+        SetWindowPos(overlay, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+}
+
 bool fullscreenOnPrimary(HWND overlay) {
     const auto foreground = GetForegroundWindow();
     if (!foreground || foreground == overlay || foreground == GetShellWindow() || IsIconic(foreground)) return false;

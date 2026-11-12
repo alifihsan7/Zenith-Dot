@@ -21,7 +21,7 @@ namespace {
 
 using namespace std::chrono_literals;
 
-constexpr wchar_t appName[] = L"Zenith Dot";
+constexpr wchar_t appName[] = L"Zenula";
 constexpr UINT trayMessage = WM_APP + 2;
 constexpr UINT redrawMessage = WM_APP + 3;
 constexpr UINT networkChangedMessage = WM_APP + 21;
@@ -67,6 +67,7 @@ private:
     void refreshMotion();
     bool refreshFullscreen();
     void applyVisibility();
+    void maintainZOrder();
     bool suppressed() const { return fullscreen_ || hidden_; }
     void refreshCapture(bool announce = true);
     void announceBluetooth();
@@ -108,6 +109,7 @@ private:
     Island island_;
     std::optional<SettingsExample> example_;
     bool tracking_ = false;
+    bool trayMenuOpen_ = false;
     bool fullscreen_ = false;
     bool hidden_ = false;
     bool clipboardListening_ = false;
@@ -153,7 +155,7 @@ int App::run(HINSTANCE instance, std::optional<SettingsTest> test, Feature featu
     for (auto& key : lockKeys_) key.enabled = (GetKeyState(key.virtualKey) & 1) != 0;
     const RAWINPUTDEVICE keyboard{HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_KEYBOARD, RIDEV_INPUTSINK, window_};
     if (!RegisterRawInputDevices(&keyboard, 1, sizeof(keyboard))) {
-        OutputDebugStringW(L"Zenith Dot could not register lock key input.\n");
+        OutputDebugStringW(L"Zenula could not register lock key input.\n");
     }
     dropZone_.attach(window_, [this](bool hovering) {
         island_.setDropHover(hovering);
@@ -171,7 +173,7 @@ int App::run(HINSTANCE instance, std::optional<SettingsTest> test, Feature featu
             PostMessageW(window, networkChangedMessage, 0, 0);
         });
     } catch (winrt::hresult_error const&) {
-        OutputDebugStringW(L"Zenith Dot could not subscribe to network status changes.\n");
+        OutputDebugStringW(L"Zenula could not subscribe to network status changes.\n");
     }
     startNetworkRefresh();
     island_.setAudioOutput(desktop_.audioOutput());
@@ -207,7 +209,10 @@ void App::frame() {
     if (example_) {
         if (!example_->finished(now)) {
             example_->draw(window_, now);
-            if (!IsWindowVisible(window_)) ShowWindow(window_, SW_SHOWNOACTIVATE);
+            if (!IsWindowVisible(window_)) {
+                ShowWindow(window_, SW_SHOWNOACTIVATE);
+                maintainZOrder();
+            }
             scheduleFrames(example_->frameInterval(now));
             return;
         }
@@ -240,7 +245,10 @@ void App::frame() {
     if (scratchpad_.window()) {
         if (const auto bounds = island_.scratchEditorRect()) scratchpad_.place(*bounds);
     }
-    if (visible != shown) ShowWindow(window_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
+    if (visible != shown) {
+        ShowWindow(window_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
+        if (visible) maintainZOrder();
+    }
     scheduleFrames(island_.frameInterval());
 }
 
@@ -455,6 +463,10 @@ bool App::refreshFullscreen() {
     return true;
 }
 
+void App::maintainZOrder() {
+    if (!suppressed() && !trayMenuOpen_) restoreOverlayZOrder(window_);
+}
+
 void App::applyVisibility() {
     const bool hide = suppressed();
     island_.setSuppressed(hide);
@@ -520,16 +532,18 @@ void App::showMenu(POINT point) {
     AppendMenuW(menu, MF_STRING, togglePlayback, media_.playing ? L"P&ause" : L"&Play");
     AppendMenuW(menu, MF_STRING | skip, nextTrack, L"&Next track");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, toggleVisibility, hidden_ ? L"&Show Zenith Dot" : L"&Hide Zenith Dot");
+    AppendMenuW(menu, MF_STRING, toggleVisibility, hidden_ ? L"&Show Zenula" : L"&Hide Zenula");
     AppendMenuW(menu, MF_STRING | (suppressed() || !settings_.enabled(Feature::drop) ? MF_GRAYED : MF_ENABLED),
                 openDropZone, L"&Drop Zone");
     AppendMenuW(menu, MF_STRING, openSettings, L"&Settings…");
-    AppendMenuW(menu, MF_STRING, exitApp, L"E&xit Zenith Dot");
+    AppendMenuW(menu, MF_STRING, exitApp, L"E&xit Zenula");
     // TrackPopupMenu needs the owner in the foreground to dismiss correctly. Hand focus back afterwards.
     const auto previous = GetForegroundWindow();
+    trayMenuOpen_ = true;
     SetForegroundWindow(window_);
     const auto selected = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
                                          point.x, point.y, 0, window_, nullptr);
+    trayMenuOpen_ = false;
     DestroyMenu(menu);
     PostMessageW(window_, WM_NULL, 0, 0);
     if (previous && previous != window_ && IsWindow(previous)) SetForegroundWindow(previous);
@@ -548,7 +562,7 @@ void App::showMenu(POINT point) {
         if (!length || length >= executable.size() ||
             reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", executable.c_str(), L"--settings",
                                                    nullptr, SW_SHOWNORMAL)) <= 32) {
-            MessageBoxW(window_, L"Couldn’t open Zenith Dot Settings.", appName, MB_OK | MB_ICONWARNING);
+            MessageBoxW(window_, L"Couldn’t open Zenula Settings.", appName, MB_OK | MB_ICONWARNING);
         }
     } else if (selected >= previousTrack && selected <= nextTrack && monitor_) {
         control(controls[selected - previousTrack]);
@@ -717,6 +731,7 @@ LRESULT CALLBACK App::dispatch(HWND window, UINT message, WPARAM wparam, LPARAM 
 LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     if (message == taskbarCreated_ && taskbarCreated_ != 0) {
         addTray();
+        maintainZOrder();
         return 0;
     }
 
@@ -739,6 +754,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     case redrawMessage:
         refreshFullscreen();
         frame();
+        maintainZOrder();
         return 0;
     case WM_POWERBROADCAST:
         if (wparam == PBT_APMRESUMEAUTOMATIC) queueNetworkRefresh();
@@ -773,6 +789,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
             }
             if (browserTabs_.prune()) updateMedia();
             else if (changed) frame();
+            maintainZOrder();
         }
         return 0;
     case WM_COPYDATA:
@@ -784,6 +801,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         return FALSE;
     case DesktopMonitor::foregroundChanged:
         if (refreshFullscreen()) frame();
+        maintainZOrder();
         return 0;
     case DropZone::previewClosed:
         if (!dropZone_.previewWindow()) {
@@ -994,7 +1012,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         } ole;
         result = settingsRequested ? zenith::runSettingsWindow(instance) : zenith::App{}.run(instance, test, feature);
     } catch (winrt::hresult_error const& failure) {
-        MessageBoxW(nullptr, failure.message().c_str(), L"Zenith Dot could not start", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, failure.message().c_str(), L"Zenula could not start", MB_OK | MB_ICONERROR);
     }
     return result;
 }

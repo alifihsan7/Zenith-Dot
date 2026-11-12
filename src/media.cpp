@@ -132,7 +132,7 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::start() {
         currentChanged_ = manager_.CurrentSessionChanged(winrt::auto_revoke, signal(window_, playback));
         refresh(sessions);
     } catch (winrt::hresult_error const&) {
-        OutputDebugStringW(L"Zenith Dot could not start Windows media monitoring.\n");
+        OutputDebugStringW(L"Zenula could not start Windows media monitoring.\n");
     }
 }
 
@@ -281,7 +281,7 @@ void MediaMonitor::refresh(WPARAM reason) {
         if (reason != metadata || changedSession) updateState();
         if (changedSession || reason == metadata) requestMetadata();
     } catch (winrt::hresult_error const&) {
-        OutputDebugStringW(L"Zenith Dot could not refresh the current Windows media session.\n");
+        OutputDebugStringW(L"Zenula could not refresh the current Windows media session.\n");
     }
 }
 
