@@ -193,6 +193,8 @@ private:
     void drawActivityIndicator(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, D2D1_COLOR_F color);
     void drawActivityDot(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, bool interactive);
     void drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F dot);
+    void drawActivityHandoff(Clock::time_point now, D2D1_RECT_F pill);
+    void drawHandoffOutgoing(D2D1_RECT_F pill, float opacity);
     D2D1_RECT_F compactShape(Clock::time_point now, float amount) const;
     std::optional<D2D1_RECT_F> companionPrivacyShape(Clock::time_point now, D2D1_RECT_F anchor) const;
     float visibility(Clock::time_point now) const;
@@ -233,6 +235,7 @@ private:
     void clearAlerts();
     float alertValue(Clock::time_point now) const;
     MotionSample alertMotion(Clock::time_point now) const;
+    static MotionSample reverseSplitMotion(Clock::time_point start, Clock::time_point now);
     bool bubbleShowing() const;
     float inlineInset() const;
     float measure(std::wstring_view value, IDWriteTextFormat* format);
@@ -372,7 +375,6 @@ private:
         std::wstring title;
         bool retireOutgoing = false;
         bool outgoingCompleted = false;
-        bool pauseHandoff = false;
     } activitySwap_;
     std::optional<D2D1_RECT_F> lastActivityDot_;
     D2D1_RECT_F retiringDot_{};

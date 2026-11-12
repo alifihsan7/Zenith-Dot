@@ -142,6 +142,7 @@ constexpr float privacyPadding = 6;
 constexpr float privacyGap = 8;
 constexpr auto themeTime = 700ms;
 constexpr auto splitTime = 1152ms;
+constexpr auto handoffLeadTime = 90ms;
 constexpr float splitRate = 5.0f / 6.0f;
 constexpr auto bubbleHoldTime = 1200ms;
 constexpr auto shortBubbleHoldTime = 450ms;
@@ -454,6 +455,37 @@ void releasedPath(PathBuilder& path, float left, float bx, float q, float bubble
     path.move(B).arc(pt(cc, top), R, false, true).line(pt(right, top)).arc(pt(right, bottom), R, false, true)
         .line(pt(cc, bottom)).arc(flip(B), R, false, true)
         .curve(flip(hB), flip(hT2), T2).curve(hT2, hB, B).close();
+}
+
+struct LiquidSplit {
+    float left;
+    D2D1_RECT_F bubble;
+};
+
+LiquidSplit makeLiquidSplit(PathBuilder& path, float width, float target, float p, bool anchored) {
+    constexpr float neckTravel = 2 * capRadius + releaseGap;
+    const float extraWidth = std::max(0.0f, target - pillHeight);
+    const float travel = lin(0, pinchAt, p);
+    const float widen = lin(pinchAt, 1, p);
+    const float pinchSpeed = 0.8f * std::min(neckTravel / pinchAt, extraWidth / (1 - pinchAt));
+    const auto smooth = [](float t) { return t * t * (3 - 2 * t); };
+    const float distance = neckTravel * smooth(travel) + pinchSpeed * pinchAt * travel * travel * (travel - 1);
+    const float tail = 1 - widen;
+    const float bubbleWidth = pillHeight + extraWidth * smooth(widen) +
+                              pinchSpeed * (1 - pinchAt) * widen * tail * tail;
+    const float span = p < pinchAt ? width + distance : width + releaseGap + bubbleWidth;
+    const float left = anchored ? 0 : -span / 2;
+    const float cap = left + width - capRadius;
+    if (p < pinchAt) {
+        const float neck = 1 - smooth(lin(0.23f, pinchAt, p));
+        if (distance < 0.5f) capsule(path, box(left, pillTop, width, pillHeight));
+        else connectedPath(path, left, cap, distance, capRadius, neck);
+        return {left, box(cap + distance - capRadius, pillTop, pillHeight, pillHeight)};
+    }
+    const float tip = smooth(lin(pinchAt, pinchAt + 0.28f, p));
+    const auto bubble = box(left + width + releaseGap, pillTop, bubbleWidth, pillHeight);
+    releasedPath(path, left, cap, tip, bubble.left, bubbleWidth);
+    return {left, bubble};
 }
 
 std::wstring timestamp(double seconds, bool showHours = false) {
@@ -929,7 +961,8 @@ Island::PillMode Island::activityCompanion() const {
 }
 
 bool Island::activitySwapActive(Clock::time_point now) const {
-    return animate_ && now - activitySwap_.start < activitySwapTime &&
+    const auto duration = activitySwap_.retireOutgoing ? handoffLeadTime + splitTime : activitySwapTime;
+    return animate_ && now - activitySwap_.start < duration &&
            pillMode_ == activitySwap_.incoming &&
            (activitySwap_.retireOutgoing || activityCompanion() == activitySwap_.outgoing);
 }
@@ -955,7 +988,7 @@ void Island::retirePausedActivity(PillMode mode, Clock::time_point now) {
     const auto dot = lastActivityDot_.value_or(box(pill.right + activityDotGap, top,
                                                   companionWidth(now, true), activityDotSize));
     const auto start = open_ ? now + shapeTime : now;
-    activitySwap_ = {start, companion, mode, pill, dot, pillTitle_, true, false, true};
+    activitySwap_ = {start, companion, mode, pill, dot, pillTitle_, true, false};
     if (open_ && !panelPinned_) setOpen(false, now);
     if (companion != PillMode::media) quickView_ = companion == PillMode::timer;
     openAt_.reset();
@@ -2614,20 +2647,15 @@ void Island::drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT
     const float t = progress(activitySwap_.start, activitySwapTime, now);
     const float p = t * t * (3 - 2 * t);
     auto incoming = mixRect(activitySwap_.dot, pill, p);
-    const auto& original = activitySwap_.pill;
-    const auto collapse = box((original.left + original.right) / 2, (original.top + original.bottom) / 2, 0, 0);
-    const auto exit = activitySwap_.pauseHandoff ? collapse :
-        activitySwap_.retireOutgoing ? grow(dot, -14, -14) : dot;
-    auto outgoing = mixRect(activitySwap_.pill, exit, p);
+    auto outgoing = mixRect(activitySwap_.pill, dot, p);
     const float arc = std::sin(pi * p);
-    const float separation = activitySwap_.pauseHandoff ? 0 : arc * arc;
+    const float separation = arc * arc;
     const float lift = std::clamp(incoming.top - 2, 0.0f, activitySwapLift) * separation;
     incoming.top -= lift;
     incoming.bottom -= lift;
     outgoing.top += activitySwapDrop * separation;
     outgoing.bottom += activitySwapDrop * separation;
 
-    if (activitySwap_.retireOutgoing) pushLayer(nullptr, 1 - easeInOut(lin(0.15f, 0.88f, p)));
     const auto outgoingShell = rounded(outgoing, (outgoing.bottom - outgoing.top) / 2);
     fillShell(outgoingShell);
     target_->DrawRoundedRectangle(outgoingShell, ink(white(0.13f)), 1);
@@ -2635,13 +2663,10 @@ void Island::drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT
     const float iconX = std::lerp((outgoing.left + outgoing.right) / 2, outgoing.left + 18, outgoingText);
     const auto icon = D2D1::RectF(iconX - 9, outgoing.top, iconX + 9, outgoing.bottom);
     if (outgoingText > 0) {
-        if (activitySwap_.outgoingCompleted)
-            drawCountdownCheck(pt(iconX, (outgoing.top + outgoing.bottom) / 2), withAlpha(accent_, outgoingText));
-        else
-            drawScreenGlyph(activitySwap_.outgoing == PillMode::media ? Screen::media : Screen::timers,
-                            icon, withAlpha(rgb(inkColor), outgoingText));
+        drawScreenGlyph(activitySwap_.outgoing == PillMode::media ? Screen::media : Screen::timers,
+                        icon, withAlpha(rgb(inkColor), outgoingText));
     }
-    const float indicator = activitySwap_.outgoingCompleted ? 0 : easeInOut(lin(0.40f, 0.85f, p));
+    const float indicator = easeInOut(lin(0.40f, 0.85f, p));
     if (indicator > 0) {
         pushLayer(nullptr, indicator);
         drawCompanionIndicators(now, outgoing, activitySwap_.outgoing);
@@ -2649,20 +2674,12 @@ void Island::drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT
     }
     if (outgoingText > 0 && outgoing.right - outgoing.left > 40) {
         const float labelLeft = outgoing.left + 34;
-        float labelRight = outgoing.right - 6;
-        if (activitySwap_.outgoingCompleted) {
-            const float clockRight = outgoing.right - 12;
-            labelRight = clockRight - 38;
-            if (labelRight > labelLeft)
-                text(L"0:00", timerFont_.get(), D2D1::RectF(clockRight - 34, outgoing.top, clockRight, outgoing.bottom),
-                     withAlpha(accent_, outgoingText));
-        }
+        const float labelRight = outgoing.right - 6;
         if (labelRight > labelLeft)
             text(activitySwap_.title, pillTitleFont_.get(), D2D1::RectF(labelLeft, outgoing.top, labelRight, outgoing.bottom),
                  withAlpha(rgb(inkColor), outgoingText));
     }
 
-    if (activitySwap_.retireOutgoing) popLayer();
     const auto shell = rounded(incoming, (incoming.bottom - incoming.top) / 2);
     fillShell(shell);
     target_->DrawRoundedRectangle(shell, ink(white(0.13f)), 1);
@@ -2681,9 +2698,75 @@ void Island::drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT
     }
 }
 
+void Island::drawActivityHandoff(Clock::time_point now, D2D1_RECT_F pill) {
+    const auto& from = activitySwap_.pill;
+    const auto& dot = activitySwap_.dot;
+    const float p = reverseSplitMotion(activitySwap_.start + handoffLeadTime, now).value;
+    const float merge = 1 - p;
+    const auto size = mixRect(from, pill, merge);
+    const float width = size.right - size.left;
+    const float height = size.bottom - size.top;
+    const float scale = height / pillHeight;
+    const float bubbleWidth = std::max(dot.right - dot.left, height);
+    const float lead = easeInOut(progress(activitySwap_.start, handoffLeadTime, now));
+
+    PathBuilder path(graphics_.get());
+    const auto frame = makeLiquidSplit(path, width / scale, bubbleWidth / scale, p, true);
+    const float left = std::lerp(from.left, pill.left, merge);
+    const auto main = box(left, size.top, width, height);
+    const auto lobe = box(left + frame.bubble.left * scale, size.top,
+                          (frame.bubble.right - frame.bubble.left) * scale, height);
+    const auto bubble = mixRect(dot, lobe, lead);
+    if (lead < 1) {
+        drawCompanionShell(main, 0, 0.13f);
+        drawCompanionShell(bubble, 0, 0.13f);
+    } else {
+        const auto transform = D2D1::Matrix3x2F::Scale(scale, scale) *
+            D2D1::Matrix3x2F::Translation(left, size.top - pillTop * scale);
+        winrt::com_ptr<ID2D1TransformedGeometry> geometry;
+        winrt::check_hresult(graphics_->CreateTransformedGeometry(path.finish().get(), &transform, geometry.put()));
+        fillShell(geometry.get());
+        target_->DrawGeometry(geometry.get(), ink(white(0.13f)), 1);
+    }
+
+    const float newContent = easeInOut(lin(0.34f, 0.72f, merge));
+    const float oldContent = 1 - newContent;
+    drawHandoffOutgoing(main, oldContent);
+    if (newContent > 0) {
+        const auto shell = rounded(main, height / 2);
+        winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
+        winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(shell, clip.put()));
+        pushLayer(clip.get(), newContent);
+        drawCompactContent(now, main, false);
+        popLayer();
+    }
+    const float dotOpacity = 1 - easeInOut(lin(0.18f, 0.52f, merge));
+    if (dotOpacity > 0) {
+        pushLayer(nullptr, dotOpacity);
+        drawCompanionIndicators(now, bubble, activitySwap_.incoming);
+        popLayer();
+    }
+}
+
+void Island::drawHandoffOutgoing(D2D1_RECT_F pill, float opacity) {
+    if (opacity <= 0) return;
+    const float height = pill.bottom - pill.top;
+    const float width = pill.right - pill.left;
+    const auto icon = box(pill.left + 9, pill.top, 18, height);
+    if (activitySwap_.outgoingCompleted)
+        drawCountdownCheck(pt(pill.left + 18, (pill.top + pill.bottom) / 2), withAlpha(accent_, opacity));
+    else
+        drawScreenGlyph(activitySwap_.outgoing == PillMode::media ? Screen::media : Screen::timers,
+                        icon, withAlpha(rgb(inkColor), opacity));
+    text(activitySwap_.title, pillTitleFont_.get(), box(pill.left + 34, pill.top, std::max(0.0f, width - 44), height),
+         withAlpha(rgb(inkColor), opacity));
+}
+
 void Island::drawIsland(Clock::time_point now, float value, float amount, bool morphTitle) {
     const auto full = panelRect(now);
-    const auto from = compactShape(now, amount);
+    const bool pendingHandoff = !open_ && value > 0 && activitySwapActive(now) && activitySwap_.retireOutgoing;
+    const auto from = pendingHandoff ? activitySwap_.pill : compactShape(now, amount);
+    morphTitle = morphTitle && !pendingHandoff;
     const float fromRadius = std::min(from.right - from.left, from.bottom - from.top) / 2;
     auto clip = mixRect(from, full, value);
     const float breadth = value + 0.18f * value * (1 - value);
@@ -2705,7 +2788,7 @@ void Island::drawIsland(Clock::time_point now, float value, float amount, bool m
     const float compactOpacity = lin(0.55f, 1, amount) * (1 - lin(0, 0.38f, value));
     const float panelOpacity = lin(0.16f, 0.86f, value);
     const float switching = progress(screenStart_, screenFadeTime, now);
-    const bool sharedArt = screen_ == Screen::media && media_.hasSession && pillMode_ == PillMode::media &&
+    const bool sharedArt = !pendingHandoff && screen_ == Screen::media && media_.hasSession && pillMode_ == PillMode::media &&
                            !pillLyric_.layout && !previousPillLyric_.layout &&
                            (switching >= 1 || screenFrom_ == screen_) && amount >= 1 && value > 0 && value < 1;
     if (compactOpacity <= 0 && panelOpacity <= 0 && !morphTitle && !sharedArt) return;
@@ -2715,7 +2798,8 @@ void Island::drawIsland(Clock::time_point now, float value, float amount, bool m
     pushLayer(mask.get(), 1);
     if (compactOpacity > 0) {
         if (compactOpacity < 1) pushLayer(nullptr, compactOpacity);
-        drawCompactContent(now, from, morphTitle, sharedArt);
+        if (pendingHandoff) drawHandoffOutgoing(from, 1);
+        else drawCompactContent(now, from, morphTitle, sharedArt);
         if (compactOpacity < 1) popLayer();
     }
 
@@ -3946,14 +4030,16 @@ void Island::finishAlert(Clock::time_point now) {
 
 Island::MotionSample Island::alertMotion(Clock::time_point now) const {
     if (!animate_) return {alertTo_, 0};
-    if (alertFrom_ == 1 && alertTo_ == 0 && alertVelocity_ == 0) {
-        const auto duration = std::chrono::duration_cast<Clock::duration>(splitTime);
-        const auto elapsed = std::clamp(now - alertStart_, Clock::duration::zero(), duration);
-        const auto opening = sampleSpring(alertStart_, duration, alertStart_ + duration - elapsed,
-                                          0, 1, 0, Spring::split);
-        return {opening.value, -opening.velocity};
-    }
+    if (alertFrom_ == 1 && alertTo_ == 0 && alertVelocity_ == 0)
+        return reverseSplitMotion(alertStart_, now);
     return sampleSpring(alertStart_, splitTime, now, alertFrom_, alertTo_, alertVelocity_, Spring::split);
+}
+
+Island::MotionSample Island::reverseSplitMotion(Clock::time_point start, Clock::time_point now) {
+    const auto duration = std::chrono::duration_cast<Clock::duration>(splitTime);
+    const auto elapsed = std::clamp(now - start, Clock::duration::zero(), duration);
+    const auto opening = sampleSpring(start, duration, start + duration - elapsed, 0, 1, 0, Spring::split);
+    return {opening.value, -opening.velocity};
 }
 
 float Island::alertValue(Clock::time_point now) const {
@@ -4058,35 +4144,11 @@ void Island::drawSplit(Clock::time_point now, float amount, std::optional<D2D1_R
     const float shiftX = slot ? slot->left : 0;
     const float top = slot ? slot->top : pillTop;
     if (fromPill) {
-        const float width = size.width / scale;
-        // Stretch until the pinch, then widen. The whole shape stays centered and only grows.
-        constexpr float neckTravel = 2 * capRadius + releaseGap;
-        const float extraWidth = std::max(0.0f, target / scale - pillHeight);
-        const float travel = lin(0, pinchAt, p);
-        const float widen = lin(pinchAt, 1, p);
-        const float pinchSpeed = 0.8f * std::min(neckTravel / pinchAt, extraWidth / (1 - pinchAt));
-        const auto smooth = [](float t) { return t * t * (3 - 2 * t); };
-        // Match the horizontal velocity at the pinch so the two phases flow into each other.
-        const float d = neckTravel * smooth(travel) + pinchSpeed * pinchAt * travel * travel * (travel - 1);
-        const float tail = 1 - widen;
-        const float bubbleWidth = pillHeight + extraWidth * smooth(widen) +
-                                  pinchSpeed * (1 - pinchAt) * widen * tail * tail;
-        const float span = p < pinchAt ? width + d : width + releaseGap + bubbleWidth;
-        left = slot ? 0 : -span / 2;
-        const float bx = left + width - capRadius;
+        const auto frame = makeLiquidSplit(shape, size.width / scale, target / scale, p, slot.has_value());
+        left = frame.left;
+        area = frame.bubble;
         alertOpacity = lin(pinchAt - 0.1f, pinchAt + 0.12f, p);
         copyOpacity = lin(0.8f, 1, p);
-        if (p < pinchAt) {
-            // The bubble is a full-size copy of the pill's cap sliding out of it.
-            const float k = 1 - smooth(lin(0.23f, pinchAt, p));
-            area = box(bx + d - capRadius, pillTop, 2 * capRadius, pillHeight);
-            if (d < 0.5f) capsule(shape, box(left, pillTop, width, pillHeight));
-            else connectedPath(shape, left, bx, d, capRadius, k);
-        } else {
-            const float q = smooth(lin(pinchAt, pinchAt + 0.28f, p));
-            area = box(left + width + releaseGap, pillTop, bubbleWidth, pillHeight);
-            releasedPath(shape, left, bx, q, area.left, bubbleWidth);
-        }
     } else {
         // From the idle dot the bubble grows out of the dot itself.
         const float width = std::lerp(dotSize, target, p);
@@ -4375,7 +4437,11 @@ void Island::draw(HWND window) {
         bounds = unite(bounds, grow(box(compact.right + activityDotGap, top, alert_->dotOrigin->width,
                                        activityDotSize), 2, 2));
     }
-    const float slotOpacity = directClose || growsFromDot ? 0 : splitVisible ? companionSlotOpacity(now) : 1;
+    const bool handoff = !panelVisible && !splitVisible && swapping && activitySwap_.retireOutgoing;
+    const bool pendingHandoff = panelVisible && !open_ && swapping && activitySwap_.retireOutgoing;
+    if (pendingHandoff) bounds = unite(bounds, grow(unite(activitySwap_.pill, activitySwap_.dot), 2, 2));
+    const float slotOpacity = directClose || growsFromDot || handoff ? 0 :
+        splitVisible ? companionSlotOpacity(now) : 1;
     std::optional<D2D1_RECT_F> activityDot;
     if (!panelVisible && amount >= 1 && companion != PillMode::dot && slotOpacity > 0) {
         const float centerY = (compact.top + compact.bottom) / 2;
@@ -4384,7 +4450,7 @@ void Island::draw(HWND window) {
         bounds = unite(bounds, grow(*activityDot, 3, 3));
     }
     lastActivityDot_ = activityDot;
-    const bool drawSwap = !panelVisible && !splitVisible && swapping && (activityDot || activitySwap_.retireOutgoing);
+    const bool drawSwap = !panelVisible && !splitVisible && swapping && !handoff && activityDot;
     const auto swapEnd = activityDot.value_or(activitySwap_.dot);
     if (drawSwap) {
         auto outgoing = unite(activitySwap_.pill, activitySwap_.dot);
@@ -4392,7 +4458,17 @@ void Island::draw(HWND window) {
         bounds = unite(bounds, grow(outgoing, 2, 2));
         bounds.top = std::min(bounds.top, std::min(activitySwap_.dot.top, compact.top) - activitySwapLift - 2);
     }
-    const bool dotExiting = animate_ && !panelVisible && !splitVisible && !activityDot &&
+    if (handoff) {
+        const auto& start = activitySwap_.pill;
+        const auto& dot = activitySwap_.dot;
+        const float height = std::max(start.bottom - start.top, compact.bottom - compact.top);
+        const float width = std::max(start.right - start.left, compact.right - compact.left);
+        const float right = std::max(start.left, compact.left) + width + releaseGap * height / pillHeight +
+                            std::max(height, dot.right - dot.left);
+        bounds = unite(bounds, grow(unite(dot, D2D1::RectF(std::min(start.left, compact.left),
+                           std::min(start.top, compact.top), right, std::max(start.bottom, compact.bottom))), 2, 2));
+    }
+    const bool dotExiting = animate_ && !panelVisible && !splitVisible && !handoff && !activityDot &&
                             now - dotExitStart_ < activityDotExitTime;
     const auto survivingPrivacy = dotExiting ? companionPrivacyShape(now, compact) : std::nullopt;
     if (dotExiting) bounds = unite(bounds, grow(retiringDot_, 2, 2));
@@ -4436,8 +4512,14 @@ void Island::draw(HWND window) {
             drawSplit(now, amount, bubbleSlot);
         }
     } else {
-        if (drawSwap) drawActivitySwap(now, compact, swapEnd);
+        if (handoff) drawActivityHandoff(now, compact);
+        else if (drawSwap) drawActivitySwap(now, compact, swapEnd);
         else drawIsland(now, value, amount, morphTitle);
+    }
+    if (pendingHandoff && value < 0.18f) {
+        pushLayer(nullptr, 1 - easeInOut(lin(0, 0.18f, value)));
+        drawActivityDot(now, activitySwap_.dot, activitySwap_.incoming, false);
+        popLayer();
     }
     if (privacy) drawCompanionPrivacy(now, *privacy, slotOpacity);
     if (activityDot && !drawSwap) {
