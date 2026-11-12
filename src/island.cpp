@@ -1217,7 +1217,7 @@ void Island::tick() {
 
 bool Island::wantsAudioSpectrum() const {
     return animate_ && !suppressed_ && preferences_.showWaveform && preferences_.enabled(Screen::media) &&
-           media_.playing && (open_ ? screen_ == Screen::media : pillMode_ == PillMode::media && !wantsLyricPill());
+           media_.playing && (open_ ? screen_ == Screen::media : pillMode_ == PillMode::media && !pillLyric_.layout);
 }
 
 unsigned Island::frameInterval() const {
