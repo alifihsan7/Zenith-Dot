@@ -142,7 +142,6 @@ constexpr float privacyPadding = 6;
 constexpr float privacyGap = 8;
 constexpr auto themeTime = 700ms;
 constexpr auto splitTime = 1152ms;
-constexpr auto handoffLeadTime = 90ms;
 constexpr float splitRate = 5.0f / 6.0f;
 constexpr auto bubbleHoldTime = 1200ms;
 constexpr auto shortBubbleHoldTime = 450ms;
@@ -961,7 +960,7 @@ Island::PillMode Island::activityCompanion() const {
 }
 
 bool Island::activitySwapActive(Clock::time_point now) const {
-    const auto duration = activitySwap_.retireOutgoing ? handoffLeadTime + splitTime : activitySwapTime;
+    const auto duration = activitySwap_.retireOutgoing ? splitTime : activitySwapTime;
     return animate_ && now - activitySwap_.start < duration &&
            pillMode_ == activitySwap_.incoming &&
            (activitySwap_.retireOutgoing || activityCompanion() == activitySwap_.outgoing);
@@ -2699,36 +2698,21 @@ void Island::drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT
 }
 
 void Island::drawActivityHandoff(Clock::time_point now, D2D1_RECT_F pill) {
-    const auto& outgoing = activitySwap_.pill;
-    const auto& dot = activitySwap_.dot;
-    const float p = reverseSplitMotion(activitySwap_.start + handoffLeadTime, now).value;
-    const float merge = 1 - p;
-    const auto incoming = mixRect(dot, pill, merge);
-    const float width = incoming.right - incoming.left;
+    const float merge = 1 - reverseSplitMotion(activitySwap_.start, now).value;
+    const auto retiring = mixRect(activitySwap_.pill, pill, merge);
+    const auto incoming = mixRect(activitySwap_.dot, pill, merge);
     const float height = incoming.bottom - incoming.top;
-    const float scale = height / pillHeight;
-    const float outgoingWidth = std::max(outgoing.right - outgoing.left, height);
-    const float lead = easeInOut(progress(activitySwap_.start, handoffLeadTime, now));
 
-    PathBuilder path(graphics_.get());
-    const auto frame = makeLiquidSplit(path, width / scale, outgoingWidth / scale, p, true);
-    // Mirror the split so the incoming dot is the surviving body and the old pill is the retiring lobe.
-    const auto lobe = box(incoming.right - frame.bubble.right * scale, incoming.top,
-                          (frame.bubble.right - frame.bubble.left) * scale, height);
-    const auto retiring = mixRect(outgoing, lobe, lead);
-    if (lead < 1) {
+    const float oldOpacity = 1 - easeInOut(lin(0.16f, 0.62f, merge));
+    if (oldOpacity > 0) {
+        pushLayer(nullptr, oldOpacity);
         drawCompanionShell(retiring, 0, 0.13f);
-        drawCompanionShell(incoming, 0, 0.13f);
-    } else {
-        const auto transform = D2D1::Matrix3x2F::Scale(-scale, scale) *
-            D2D1::Matrix3x2F::Translation(incoming.right, incoming.top - pillTop * scale);
-        winrt::com_ptr<ID2D1TransformedGeometry> geometry;
-        winrt::check_hresult(graphics_->CreateTransformedGeometry(path.finish().get(), &transform, geometry.put()));
-        fillShell(geometry.get());
-        target_->DrawGeometry(geometry.get(), ink(white(0.13f)), 1);
+        drawHandoffOutgoing(retiring, 1 - easeInOut(lin(0.05f, 0.42f, merge)));
+        popLayer();
     }
 
-    drawHandoffOutgoing(retiring, 1 - easeInOut(lin(0.12f, 0.5f, merge)));
+    const float stretch = 0.22f * std::sin(pi * lin(0.05f, 0.72f, merge));
+    drawCompanionShell(incoming, stretch, 0.13f);
     const float content = easeInOut(lin(0.28f, 0.72f, merge));
     if (content < 1) {
         pushLayer(nullptr, 1 - content);
@@ -4456,15 +4440,7 @@ void Island::draw(HWND window) {
         bounds.top = std::min(bounds.top, std::min(activitySwap_.dot.top, compact.top) - activitySwapLift - 2);
     }
     if (handoff) {
-        const auto& start = activitySwap_.pill;
-        const auto& dot = activitySwap_.dot;
-        const float height = std::max(dot.bottom - dot.top, compact.bottom - compact.top);
-        const float width = std::max(dot.right - dot.left, compact.right - compact.left);
-        const float left = std::min(dot.right, compact.right) - width - releaseGap * height / pillHeight -
-                           std::max(height, start.right - start.left);
-        const auto mergeBounds = D2D1::RectF(left, std::min(dot.top, compact.top), std::max(dot.right, compact.right),
-                                             std::max(dot.bottom, compact.bottom));
-        bounds = unite(bounds, grow(unite(start, mergeBounds), 2, 2));
+        bounds = unite(bounds, grow(unite(activitySwap_.pill, activitySwap_.dot), 6, 2));
     }
     const bool dotExiting = animate_ && !panelVisible && !splitVisible && !handoff && !activityDot &&
                             now - dotExitStart_ < activityDotExitTime;
