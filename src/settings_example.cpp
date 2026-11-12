@@ -105,6 +105,7 @@ SettingsExample::SettingsExample(SettingsTest test, Feature feature, Settings co
         showFeature(feature, start_);
         break;
     }
+    if (island_.bubbleShowing()) end_ = start_ + 5400ms;
 }
 
 void SettingsExample::showFeature(Feature feature, Clock::time_point now) {

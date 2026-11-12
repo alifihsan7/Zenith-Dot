@@ -131,8 +131,9 @@ constexpr float privacyPadding = 6;
 constexpr float privacyGap = 8;
 constexpr float privacyTextRevealSpace = 12;
 constexpr auto themeTime = 700ms;
-constexpr auto splitTime = 960ms;
-constexpr auto inlineAlertTime = 2000ms;
+constexpr auto splitTime = 1152ms;
+constexpr float splitRate = 5.0f / 6.0f;
+constexpr auto inlineAlertTime = 2600ms;
 constexpr auto visibilityTime = 200ms;
 constexpr auto lyricScrollTime = 190ms;
 constexpr auto pillLyricTime = 250ms;
@@ -712,9 +713,9 @@ Island::MotionSample Island::sampleSpring(Clock::time_point start, Clock::durati
                                           float from, float to, float velocity, Spring spring) {
     if (now - start >= duration) return {to, 0};
     const float seconds = std::max(0.0f, std::chrono::duration<float>(now - start).count());
-    // Same spring constants as the liquid preview, evaluated in elapsed time.
-    const float damping = spring == Spring::split ? 18.0f : 25.0f;
-    const float stiffness = spring == Spring::split ? 78.0f : 190.0f;
+    // Scale the split spring's rate while preserving its damping ratio and velocity on reversal.
+    const float damping = spring == Spring::split ? 18.0f * splitRate : 25.0f;
+    const float stiffness = spring == Spring::split ? 78.0f * splitRate * splitRate : 190.0f;
     const float decayRate = damping / 2;
     const float frequency = std::sqrt(std::abs(stiffness - decayRate * decayRate));
     const float phase = frequency * seconds;
@@ -3535,7 +3536,7 @@ void Island::drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity
     const float iconProgress = easeInOut(lin(contentWidth - 24, contentWidth - 6, width));
     // Lay out the complete label once. The final stretch controls its opacity and focus.
     const float revealWidth = capture ? alertWidth_ - 1 : contentWidth - 0.5f;
-    const float reveal = textOpacity * easeInOut(lin(revealWidth - 10, revealWidth, width));
+    const float reveal = textOpacity * easeInOut(lin(revealWidth - 16, revealWidth, width));
     const float radius = std::min(width, area.bottom - area.top) / 2;
     winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
     winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(rounded(area, radius), clip.put()));

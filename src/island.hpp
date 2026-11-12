@@ -52,7 +52,7 @@ struct IslandAlert {
     std::wstring value;
     std::optional<unsigned> color;   // icon colour (0xRRGGBB); the accent when empty
     int priority = 1;                // a waiting alert is replaced only by one of equal or higher priority
-    std::chrono::milliseconds hold{1800};
+    std::chrono::milliseconds hold{2600};
     std::optional<unsigned> battery = std::nullopt;   // drawn as a battery cell before value
 };
 
