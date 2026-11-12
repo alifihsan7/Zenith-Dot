@@ -217,6 +217,7 @@ private:
     float timelineFraction(D2D1_POINT_2F point) const;
     std::wstring title() const;
     void startAlert(IslandAlert alert, Clock::time_point now, bool update);
+    void beginAlertClose(Clock::time_point now);
     void finishAlert(Clock::time_point now);
     void clearAlerts();
     float alertValue(Clock::time_point now) const;
@@ -250,7 +251,8 @@ private:
     void drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F shape);
     float companionSlotOpacity(Clock::time_point now) const;
     float companionWidth(Clock::time_point now, bool hasActivity) const;
-    void drawCompanionIndicators(Clock::time_point now, D2D1_RECT_F shape, PillMode mode);
+    void drawCompanionIndicators(Clock::time_point now, D2D1_RECT_F shape, PillMode mode,
+                                 std::optional<std::array<float, 3>> amounts = std::nullopt);
     void drawCompanionShell(D2D1_RECT_F shape, float pinch, float border);
     void drawCompanionPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity);
     void drawSystem(D2D1_RECT_F panel, bool record);
@@ -280,6 +282,8 @@ private:
     void fillShell(D2D1_ROUNDED_RECT shape);
     void fillShell(ID2D1Geometry* shape);
     void drawSplit(Clock::time_point now, float amount, std::optional<D2D1_RECT_F> slot);
+    D2D1_RECT_F closingDotShape(D2D1_RECT_F pill) const;
+    void drawBubbleToDot(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F bubble, bool fromSlot);
     void drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity);
     void drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color, float size = 15);
     void drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color, bool charging = false);
@@ -489,6 +493,12 @@ private:
     Clock::time_point alertUntil_{};
     float alertWidth_ = 52;
     bool alertUsesCompanionSlot_ = false;
+    struct AlertDot {
+        bool idle = false;
+        PillMode mode = PillMode::dot;
+        std::array<float, 3> capture{};
+    };
+    std::optional<AlertDot> closingDot_;
 
     // Last frame: hit targets in stage DIPs and where the surface sits.
     std::vector<Target> targets_;
