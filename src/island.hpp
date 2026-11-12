@@ -194,6 +194,7 @@ private:
     void drawActivityDot(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, bool interactive);
     void drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F dot);
     void drawActivityHandoff(Clock::time_point now, D2D1_RECT_F pill);
+    void drawHandoffShell(D2D1_RECT_F retiring, D2D1_RECT_F incoming, float merge);
     void drawHandoffOutgoing(D2D1_RECT_F pill, float opacity);
     D2D1_RECT_F compactShape(Clock::time_point now, float amount) const;
     std::optional<D2D1_RECT_F> companionPrivacyShape(Clock::time_point now, D2D1_RECT_F anchor) const;

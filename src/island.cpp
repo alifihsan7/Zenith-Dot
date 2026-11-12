@@ -2703,16 +2703,8 @@ void Island::drawActivityHandoff(Clock::time_point now, D2D1_RECT_F pill) {
     const auto incoming = mixRect(activitySwap_.dot, pill, merge);
     const float height = incoming.bottom - incoming.top;
 
-    const float oldOpacity = 1 - easeInOut(lin(0.16f, 0.62f, merge));
-    if (oldOpacity > 0) {
-        pushLayer(nullptr, oldOpacity);
-        drawCompanionShell(retiring, 0, 0.13f);
-        drawHandoffOutgoing(retiring, 1 - easeInOut(lin(0.05f, 0.42f, merge)));
-        popLayer();
-    }
-
-    const float stretch = 0.22f * std::sin(pi * lin(0.05f, 0.72f, merge));
-    drawCompanionShell(incoming, stretch, 0.13f);
+    drawHandoffShell(retiring, incoming, merge);
+    drawHandoffOutgoing(retiring, 1 - easeInOut(lin(0.05f, 0.42f, merge)));
     const float content = easeInOut(lin(0.28f, 0.72f, merge));
     if (content < 1) {
         pushLayer(nullptr, 1 - content);
@@ -2727,6 +2719,69 @@ void Island::drawActivityHandoff(Clock::time_point now, D2D1_RECT_F pill) {
         drawCompactContent(now, incoming, false);
         popLayer();
     }
+}
+
+void Island::drawHandoffShell(D2D1_RECT_F retiring, D2D1_RECT_F incoming, float merge) {
+    const float blend = 14 * std::sin(pi * merge);
+    const float gap = std::max(incoming.left - retiring.right, retiring.left - incoming.right);
+    if (blend <= 0.01f || gap >= blend / 2) {
+        if (merge < 0.999f) drawCompanionShell(retiring, 0, 0.13f);
+        drawCompanionShell(incoming, 0, 0.13f);
+        return;
+    }
+
+    const auto radius = [](D2D1_RECT_F rect) {
+        return std::min(rect.right - rect.left, rect.bottom - rect.top) / 2;
+    };
+    const float oldRadius = radius(retiring);
+    const float newRadius = radius(incoming);
+    const float centerY = (incoming.top + incoming.bottom) / 2;
+    const auto capsuleDistance = [](D2D1_RECT_F rect, float radius, float x, float y) {
+        const float axis = std::clamp(x, rect.left + radius, rect.right - radius);
+        return std::hypot(x - axis, y) - radius;
+    };
+    // A smooth union creates one outline and rounds the neck without changing either pill's target bounds.
+    const auto surface = [&](float x, float y) {
+        const float a = capsuleDistance(retiring, oldRadius, x, y);
+        const float b = capsuleDistance(incoming, newRadius, x, y);
+        const float influence = std::max(0.0f, 1 - std::abs(a - b) / blend);
+        return std::min(a, b) - blend * influence * influence / 4;
+    };
+    const auto extent = [&](float inner, float outer) {
+        for (int i = 0; i < 10; ++i) {
+            const float middle = (inner + outer) / 2;
+            if (surface(middle, 0) <= 0) inner = middle;
+            else outer = middle;
+        }
+        return inner;
+    };
+    const float left = std::min(retiring.left, incoming.left);
+    const float right = std::max(retiring.right, incoming.right);
+    const float xMin = extent(left, left - blend);
+    const float xMax = extent(right, right + blend);
+    const float maxDepth = std::max(oldRadius, newRadius) + blend;
+    constexpr int samples = 96;
+    std::array<Point, samples + 1> outline{};
+    for (int i = 0; i <= samples; ++i) {
+        const float t = (1 - std::cos(pi * static_cast<float>(i) / samples)) / 2;
+        const float x = std::lerp(xMin, xMax, t);
+        float inside = 0;
+        float outside = maxDepth;
+        for (int j = 0; j < 10; ++j) {
+            const float middle = (inside + outside) / 2;
+            if (surface(x, middle) <= 0) inside = middle;
+            else outside = middle;
+        }
+        outline[i] = pt(x, centerY - inside);
+    }
+
+    PathBuilder path(graphics_.get());
+    path.move(outline.front());
+    for (int i = 1; i <= samples; ++i) path.line(outline[i]);
+    for (int i = samples; i >= 0; --i) path.line(pt(outline[i].x, 2 * centerY - outline[i].y));
+    const auto shape = path.close().finish();
+    fillShell(shape.get());
+    target_->DrawGeometry(shape.get(), ink(white(0.13f)), 1);
 }
 
 void Island::drawHandoffOutgoing(D2D1_RECT_F pill, float opacity) {
@@ -4440,7 +4495,7 @@ void Island::draw(HWND window) {
         bounds.top = std::min(bounds.top, std::min(activitySwap_.dot.top, compact.top) - activitySwapLift - 2);
     }
     if (handoff) {
-        bounds = unite(bounds, grow(unite(activitySwap_.pill, activitySwap_.dot), 6, 2));
+        bounds = unite(bounds, grow(unite(unite(activitySwap_.pill, activitySwap_.dot), compact), 6, 6));
     }
     const bool dotExiting = animate_ && !panelVisible && !splitVisible && !handoff && !activityDot &&
                             now - dotExitStart_ < activityDotExitTime;
