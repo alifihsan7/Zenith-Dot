@@ -35,7 +35,7 @@ class SettingsExample;
 struct IslandCommand {
     enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, adjustLyricsDelay, editScratchpad,
                       selectAudioOutput, soundSettings, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute,
-                      autoCycle, prayerLocation };
+                      autoCycle, prayerLocation, editTimerDuration };
     Kind kind = Kind::none;
     double seconds = 0;              // seek position; appVolume: level 0..1; appMute, autoCycle: 1 = on
     std::wstring appId;
@@ -105,6 +105,9 @@ public:
     void closePanel();
     bool panelPinned() const;
     std::optional<RECT> scratchEditorRect() const;
+    std::optional<RECT> timerEditorRect() const;
+    std::wstring timerDurationText() const;
+    bool setTimerDurationText(std::wstring_view text);
     bool wantsLyrics() const;
     bool wantsLyricPill() const;
     void notify(IslandAlert alert);
@@ -131,7 +134,7 @@ private:
     friend class SettingsExample;
     enum class Hit { none, pill, activityDot, previous, toggle, next, timeline, cover, sourcePicker, sourceMenu, source, navMedia, navTimers,
                      navScratch, navSystem, navPrayer, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
-                     timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, lyricsDelay, scratchEdit,
+                     timerToggle, timerReset, quickAdjust, timerDuration, lyrics, lyricLine, retryLyrics, lyricsDelay, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
                      appVolume, appMute, autoCycle, prayerLocationPicker, prayerLocationMenu, prayerLocation,
                      audioOutputMenu, audioOutputChoice, soundSettings };
@@ -185,6 +188,7 @@ private:
     PillMode activityCompanion() const;
     bool activitySwapActive(Clock::time_point now) const;
     void swapActivities(Clock::time_point now);
+    void retirePausedActivity(PillMode mode, Clock::time_point now);
     void drawCountdownCheck(D2D1_POINT_2F center, D2D1_COLOR_F color, float scale = 1);
     void drawActivityIndicator(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, D2D1_COLOR_F color);
     void drawActivityDot(Clock::time_point now, D2D1_RECT_F shape, PillMode mode, bool interactive);
@@ -212,7 +216,9 @@ private:
     void toggleFocus(Clock::time_point now);
     void selectTimerView(size_t index);
     void selectFocusPhase(bool resting);
-    void adjustTimer(size_t index);
+    void adjustTimer(size_t index, int steps = 1);
+    void setTimerDuration(int seconds);
+    int timerDurationLimit() const;
     int phaseSeconds(bool resting) const;
     std::wstring phaseName(bool resting) const;
     void finishFocus(Clock::time_point now, bool fromCompanion);
@@ -366,10 +372,12 @@ private:
         std::wstring title;
         bool retireOutgoing = false;
         bool outgoingCompleted = false;
+        bool pauseHandoff = false;
     } activitySwap_;
     std::optional<D2D1_RECT_F> lastActivityDot_;
-    D2D1_RECT_F retiringMediaDot_{};
-    Clock::time_point mediaDotExitStart_{};
+    D2D1_RECT_F retiringDot_{};
+    PillMode retiringDotMode_ = PillMode::dot;
+    Clock::time_point dotExitStart_{};
     struct CountdownCompletion {
         Clock::time_point start{};
         Clock::time_point until{};
@@ -473,6 +481,16 @@ private:
     size_t pressedIndex_ = 0;
     bool dragging_ = false;
     float dragFraction_ = 0;
+    float timerDragY_ = 0;
+    bool timerDragged_ = false;
+    bool timerRepeated_ = false;
+    Clock::time_point timerRepeatAt_{};
+    int timerWheelRemainder_ = 0;
+    size_t timerWheelUnit_ = 0;
+    std::optional<D2D1_RECT_F> timerEditor_;
+    int timerDigitsFrom_ = 0;
+    int timerDigitsTo_ = 0;
+    Clock::time_point timerDigitsStart_{};
     bool buttonWasDown_ = false;
     int wheelRemainder_ = 0;
     Clock::time_point wheelAt_{};
@@ -481,6 +499,7 @@ private:
     // Focus timer.
     int focusSeconds_ = 25 * 60;
     int breakSeconds_ = 5 * 60;
+    std::optional<int> longBreakSeconds_;
     bool breakPhase_ = false;
     bool quickView_ = false;
     bool autoCycle_ = false;

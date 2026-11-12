@@ -35,6 +35,8 @@ constexpr float activityDotGap = 8;
 constexpr auto activitySwapTime = 440ms;
 constexpr auto activityDotExitTime = 240ms;
 constexpr auto countdownCompletionMotion = 280ms;
+constexpr auto timerDigitMotion = 170ms;
+constexpr float timerDragStep = 12;
 constexpr float activitySwapDrop = 31;
 constexpr float activitySwapLift = 7;
 constexpr float panelWidth = 369;
@@ -556,7 +558,10 @@ void Island::setPreferences(Settings const& settings) {
     const bool hideClipboardPreview = preferences_.showClipboardPreviews && !settings.showClipboardPreviews;
     preferences_ = settings;
     if (newFocus) focusSeconds_ = settings.focusMinutes() * 60;
-    if (newBreak) breakSeconds_ = settings.breakMinutes() * 60;
+    if (newBreak) {
+        breakSeconds_ = settings.breakMinutes() * 60;
+        longBreakSeconds_.reset();
+    }
     setAutoCycle(settings.autoCycle);
     if (newFocus || newBreak) selectFocusPhase(breakPhase_);
     screens_.clear();
@@ -602,27 +607,8 @@ void Island::setMedia(MediaState const& media) {
         cover_ = {};
         if (coverSource_) cover_ = {coverSource_->size, coverSource_->size, coverSource_->pixels, nullptr};
     }
-    if (media.playing) {
-        mediaDotExitStart_ = {};
-        if (activitySwap_.retireOutgoing && activitySwap_.incoming != PillMode::media) activitySwap_.start = {};
-    } else if (animate_ && media.hasSession && media_.playing && lastActivityDot_ &&
-               !suppressed_ && !open_ && panelValue(now) <= 0) {
-        const auto companion = activityCompanion();
-        if (companion == PillMode::media) {
-            activitySwap_.start = {};
-            retiringMediaDot_ = *lastActivityDot_;
-            mediaDotExitStart_ = now;
-        } else if (pillMode_ == PillMode::media && companion != PillMode::dot && !bubbleShowing()) {
-            activitySwap_ = {now, companion, PillMode::media, compactShape(now, pillAmount(now)), *lastActivityDot_,
-                             pillLyric_.layout ? pillLyric_.text : pillTitle_, true};
-            quickView_ = companion == PillMode::timer;
-            showScreen(Screen::timers, now);
-            preferredPill_ = companion;
-            openAt_.reset();
-            previousPillLyric_ = {};
-            pillLyric_ = {};
-        }
-    }
+    if (media.playing && retiringDotMode_ == PillMode::media) dotExitStart_ = {};
+    if (media_.playing && !media.playing) retirePausedActivity(PillMode::media, now);
     media_ = media;
     updatePill(now);
 }
@@ -903,8 +889,8 @@ D2D1_RECT_F Island::panelRect(Clock::time_point now) const {
 
 bool Island::moving(Clock::time_point now) const {
     if (!animate_) return false;
-    return activitySwapActive(now) || now - countdownCompletion_.start < countdownCompletionMotion ||
-           now - mediaDotExitStart_ < activityDotExitTime || now - dotHoverStart_ < dotHoverTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime ||
+    return activitySwapActive(now) || now - timerDigitsStart_ < timerDigitMotion || now - countdownCompletion_.start < countdownCompletionMotion ||
+           now - dotExitStart_ < activityDotExitTime || now - dotHoverStart_ < dotHoverTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime ||
            std::ranges::any_of(captureIndicators_, [now](auto const& item) { return now - item.start < captureTime; }) ||
            now - screenStart_ < shapeTime ||
            now - widthStart_ < shapeTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
@@ -921,8 +907,8 @@ std::wstring Island::title() const {
 Island::PillMode Island::activityCompanion() const {
     const bool media = preferences_.enabled(Screen::media) && media_.hasSession && media_.playing;
     const bool timers = preferences_.enabled(Screen::timers);
-    const bool focus = timers && (focus_.running() || focus_.paused());
-    const bool quick = timers && (quick_.running() || quick_.paused());
+    const bool focus = timers && focus_.running();
+    const bool quick = timers && quick_.running();
     switch (pillMode_) {
     case PillMode::media:
         if (focus && quick) return quickView_ ? PillMode::timer : PillMode::focus;
@@ -945,13 +931,44 @@ Island::PillMode Island::activityCompanion() const {
 bool Island::activitySwapActive(Clock::time_point now) const {
     return animate_ && now - activitySwap_.start < activitySwapTime &&
            pillMode_ == activitySwap_.incoming &&
-           (activitySwap_.retireOutgoing ? (activitySwap_.incoming == PillMode::media) == media_.playing
-                                         : activityCompanion() == activitySwap_.outgoing);
+           (activitySwap_.retireOutgoing || activityCompanion() == activitySwap_.outgoing);
+}
+
+void Island::retirePausedActivity(PillMode mode, Clock::time_point now) {
+    if (suppressed_ || bubbleShowing()) return;
+    const auto companion = activityCompanion();
+    if (companion == PillMode::dot) return;
+    if (pillMode_ != mode) {
+        if (animate_ && !open_ && lastActivityDot_ && companion == mode) {
+            activitySwap_.start = {};
+            retiringDot_ = *lastActivityDot_;
+            retiringDotMode_ = mode;
+            dotExitStart_ = now;
+        }
+        return;
+    }
+    preferredPill_ = companion;
+    if (!animate_) return;
+
+    const auto pill = compactShape(now, pillAmount(now));
+    const float top = (pill.top + pill.bottom - activityDotSize) / 2;
+    const auto dot = lastActivityDot_.value_or(box(pill.right + activityDotGap, top,
+                                                  companionWidth(now, true), activityDotSize));
+    const auto start = open_ ? now + shapeTime : now;
+    activitySwap_ = {start, companion, mode, pill, dot, pillTitle_, true, false, true};
+    if (open_ && !panelPinned_) setOpen(false, now);
+    if (companion != PillMode::media) quickView_ = companion == PillMode::timer;
+    openAt_.reset();
+    previousPillLyric_ = {};
+    pillLyric_ = {};
 }
 
 void Island::swapActivities(Clock::time_point now) {
     const auto incoming = activityCompanion();
-    if (incoming == PillMode::dot || open_ || bubbleShowing()) return;
+    const bool primaryRunning = (pillMode_ == PillMode::media && media_.playing) ||
+                                (pillMode_ == PillMode::focus && focus_.running()) ||
+                                (pillMode_ == PillMode::timer && quick_.running());
+    if (!primaryRunning || incoming == PillMode::dot || open_ || bubbleShowing()) return;
     const auto dot = std::ranges::find(targets_, Hit::activityDot, &Target::hit);
     if (dot == targets_.end() || dot->index != static_cast<size_t>(incoming)) return;
 
@@ -961,7 +978,7 @@ void Island::swapActivities(Clock::time_point now) {
         label += L"  " + timestamp(countdown.seconds(now));
     }
     const auto compact = compactShape(now, pillAmount(now));
-    activitySwap_ = {now, incoming, pillMode_, compact,
+    activitySwap_ = {animate_ ? now : Clock::time_point{}, incoming, pillMode_, compact,
                      grow(dot->rect, -2, -2), std::move(label)};
     if (incoming != PillMode::media) quickView_ = incoming == PillMode::timer;
     showScreen(incoming == PillMode::media ? Screen::media : Screen::timers, now);
@@ -977,12 +994,12 @@ void Island::swapActivities(Clock::time_point now) {
 void Island::updatePill(Clock::time_point now, bool keepActivity) {
     auto mode = PillMode::dot;
     const bool timersEnabled = preferences_.enabled(Screen::timers);
-    const bool focusActive = timersEnabled && (focus_.running() || focus_.paused() ||
+    const bool focusActive = timersEnabled && (focus_.running() ||
         (alert_ && !alert_->fromCompanion && (alert_->kind == IslandAlert::Kind::focusDone || alert_->kind == IslandAlert::Kind::breakDone)));
-    const bool timerActive = timersEnabled && (quick_.running() || quick_.paused() ||
+    const bool timerActive = timersEnabled && (quick_.running() ||
         (alert_ && !alert_->fromCompanion && alert_->kind == IslandAlert::Kind::timerDone));
-    const bool mediaActive = media_.hasSession && preferences_.enabled(Screen::media) &&
-                             (media_.playing || (!focusActive && !timerActive));
+    const bool mediaEnabled = media_.hasSession && preferences_.enabled(Screen::media);
+    const bool mediaActive = mediaEnabled && media_.playing;
     const bool currentActivity = (pillMode_ == PillMode::media && mediaActive) ||
                                  (pillMode_ == PillMode::focus && focusActive) ||
                                  (pillMode_ == PillMode::timer && timerActive);
@@ -1002,6 +1019,12 @@ void Island::updatePill(Clock::time_point now, bool keepActivity) {
         mode = PillMode::focus;
     } else if (timerActive) {
         mode = PillMode::timer;
+    } else if (timersEnabled && focus_.paused() && (preferredPill_ == PillMode::focus || !quick_.paused())) {
+        mode = PillMode::focus;
+    } else if (timersEnabled && quick_.paused()) {
+        mode = PillMode::timer;
+    } else if (mediaEnabled) {
+        mode = PillMode::media;
     } else if (std::ranges::any_of(captureIndicators_, &CaptureIndicator::shown)) {
         mode = PillMode::privacy;
     }
@@ -1264,6 +1287,7 @@ void Island::setOpen(bool open, Clock::time_point now) {
     panelStart_ = now;
     setDotHover(false, now);
     hovered_ = pressed_ = Hit::none;
+    timerRepeatAt_ = {};
     dragging_ = false;
     volumeDragId_.clear();
     buttonWasDown_ = true;
@@ -1294,8 +1318,9 @@ void Island::toggleFocus(Clock::time_point now) {
         if (autoCycle_ && breakPhase_) focusRound_ = focusRound_ % focusRounds + 1;
         selectFocusPhase(!breakPhase_);
     }
+    if (focus_.running()) retirePausedActivity(PillMode::focus, now);
+    else preferredPill_ = PillMode::focus;
     focus_.toggle(now);
-    preferredPill_ = PillMode::focus;
 }
 
 void Island::setAutoCycle(bool enabled) {
@@ -1308,7 +1333,9 @@ void Island::setAutoCycle(bool enabled) {
 
 int Island::phaseSeconds(bool resting) const {
     if (!resting) return focusSeconds_;
-    return breakSeconds_ * (autoCycle_ && focusRound_ == focusRounds ? longBreakFactor : 1);
+    if (autoCycle_ && focusRound_ == focusRounds)
+        return longBreakSeconds_.value_or(breakSeconds_ * longBreakFactor);
+    return breakSeconds_;
 }
 
 std::wstring Island::phaseName(bool resting) const {
@@ -1361,22 +1388,74 @@ void Island::selectFocusPhase(bool resting) {
     focus_.configure(phaseSeconds(resting));
 }
 
-void Island::adjustTimer(size_t index) {
+int Island::timerDurationLimit() const {
+    if (quickView_ || !breakPhase_) return timerMaxSeconds;
+    return autoCycle_ && focusRound_ == focusRounds ? breakMaxSeconds * longBreakFactor : breakMaxSeconds;
+}
+
+void Island::setTimerDuration(int seconds) {
     auto& timer = quickView_ ? quick_ : focus_;
     if (timer.running() || timer.paused()) return;
+    seconds = std::clamp(seconds, 1, timerDurationLimit());
+    if (timer.duration() == seconds && !timer.done()) return;
+    const auto now = Clock::now();
+    timerDigitsFrom_ = timer.seconds(now);
+    timerDigitsTo_ = seconds;
+    timerDigitsStart_ = now;
+    if (!quickView_) {
+        if (!breakPhase_) focusSeconds_ = seconds;
+        else if (autoCycle_ && focusRound_ == focusRounds) longBreakSeconds_ = seconds;
+        else breakSeconds_ = seconds;
+    }
+    timer.configure(seconds);
+}
+
+void Island::adjustTimer(size_t index, int steps) {
+    const auto& timer = quickView_ ? quick_ : focus_;
     const int step = index < 2 ? 60 : 1;
     const int delta = index % 2 == 0 ? -step : step;
-    if (quickView_) {
-        quick_.configure(std::clamp(quick_.duration() + delta, 1, timerMaxSeconds));
-    } else {
-        auto& seconds = breakPhase_ ? breakSeconds_ : focusSeconds_;
-        seconds = std::clamp(seconds + delta, 1, breakPhase_ ? breakMaxSeconds : timerMaxSeconds);
-        focus_.configure(phaseSeconds(breakPhase_));
+    setTimerDuration(timer.duration() + delta * steps);
+}
+
+std::wstring Island::timerDurationText() const {
+    return timestamp(quickView_ ? quick_.duration() : focus_.duration());
+}
+
+bool Island::setTimerDurationText(std::wstring_view text) {
+    int minutes = 0, seconds = 0;
+    bool colon = false;
+    size_t minuteDigits = 0, secondDigits = 0;
+    for (const auto digit : text) {
+        if (digit == L':' && !colon && minuteDigits > 0) {
+            colon = true;
+        } else if (digit >= L'0' && digit <= L'9') {
+            auto& count = colon ? secondDigits : minuteDigits;
+            if (++count > (colon ? 2u : 3u)) return false;
+            auto& value = colon ? seconds : minutes;
+            value = 10 * value + (digit - L'0');
+        } else {
+            return false;
+        }
     }
+    if (minuteDigits == 0 || (colon && (secondDigits == 0 || seconds >= 60))) return false;
+    setTimerDuration(minutes * 60 + seconds);
+    return true;
+}
+
+std::optional<RECT> Island::timerEditorRect() const {
+    if (!open_ || screen_ != Screen::timers || !timerEditor_) return std::nullopt;
+    const auto area = *timerEditor_;
+    return RECT{anchor_.x + std::lround(area.left * scale_), anchor_.y + std::lround(area.top * scale_),
+                anchor_.x + std::lround(area.right * scale_), anchor_.y + std::lround(area.bottom * scale_)};
 }
 
 void Island::tick() {
     const auto now = Clock::now();
+    if (timerRepeatAt_ != Clock::time_point{} && now >= timerRepeatAt_) {
+        adjustTimer(pressedIndex_);
+        timerRepeated_ = true;
+        timerRepeatAt_ = now + 85ms;
+    }
     if (open_ && !panelPinned_ && !dropHover_ && !popupOpen_) {
         // Hover hysteresis: entering needs the real pill, but the open panel stays while the pointer
         // is within keepOpenMargin of it. An outside click closes an unpinned panel.
@@ -1390,7 +1469,8 @@ void Island::tick() {
         }
         auto keep = panel;
         keep.bottom = std::max(keep.bottom, keep.top + keepHeight_);
-        if (inside(grow(keep, keepOpenMargin, keepOpenMargin), point) || dragging_ || scratchEditing_) {
+        const bool changingTimer = pressed_ == Hit::timerDuration || timerRepeatAt_ != Clock::time_point{};
+        if (inside(grow(keep, keepOpenMargin, keepOpenMargin), point) || dragging_ || scratchEditing_ || changingTimer) {
             closeAt_.reset();
         } else if (!closeAt_) {
             closeAt_ = now + closeDelay;
@@ -1465,7 +1545,7 @@ unsigned Island::frameInterval() const {
     const bool timerRunning = focus_.running() || quick_.running();
     if (animate_ && now - visibilityStart_ < visibilityTime) return 10;
     if (suppressed_) return timerRunning ? 1000 : 0;
-    if (moving(now) || openAt_ || closeAt_ || dragging_) return 10;
+    if (moving(now) || openAt_ || closeAt_ || dragging_ || timerRepeatAt_ != Clock::time_point{}) return 10;
     if (wantsAudioSpectrum()) return 33;
     if (now < countdownCompletion_.until) {
         const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(countdownCompletion_.until - now);
@@ -1535,6 +1615,14 @@ float Island::volumeFraction(D2D1_POINT_2F point) const {
 
 bool Island::pointerMove(POINT client) {
     const auto point = stagePoint(client);
+    if (pressed_ == Hit::timerDuration) {
+        const int steps = static_cast<int>((timerDragY_ - point.y) / timerDragStep);
+        if (steps == 0) return false;
+        timerDragY_ -= static_cast<float>(steps) * timerDragStep;
+        timerDragged_ = true;
+        adjustTimer(pressedIndex_ * 2 + 1, steps);
+        return true;
+    }
     if (dragging_ && !volumeDragId_.empty()) {
         const float value = volumeFraction(point);
         if (value != volumeDragValue_) {
@@ -1609,6 +1697,16 @@ void Island::updateLyricVisibility(bool wasVisible, Clock::time_point now) {
 
 bool Island::scroll(POINT client, int delta) {
     const auto point = stagePoint(client);
+    if (const auto target = targetAt(point); target && target->hit == Hit::timerDuration) {
+        if (timerWheelUnit_ != target->index) timerWheelRemainder_ = 0;
+        timerWheelUnit_ = target->index;
+        timerWheelRemainder_ += delta;
+        const int steps = timerWheelRemainder_ / WHEEL_DELTA;
+        timerWheelRemainder_ %= WHEEL_DELTA;
+        if (steps != 0) adjustTimer(target->index * 2 + 1, steps);
+        return steps != 0;
+    }
+    timerWheelRemainder_ = 0;
     if (audioPickerOpen_ && inside(audioOutputMenuRect_, point)) {
         if (audioOutputs_.size() <= visibleAudioOutputs) return true;
         audioOutputWheelRemainder_ += delta;
@@ -1749,6 +1847,13 @@ bool Island::pointerDown(POINT client) {
     }
     pressed_ = target->hit;
     pressedIndex_ = target->index;
+    if (pressed_ == Hit::timerDuration) {
+        timerDragY_ = point.y;
+        timerDragged_ = false;
+    } else if (pressed_ == Hit::focusAdjust || pressed_ == Hit::quickAdjust) {
+        timerRepeated_ = false;
+        timerRepeatAt_ = Clock::now() + 360ms;
+    }
     return true;
 }
 
@@ -1773,6 +1878,7 @@ IslandCommand Island::pointerUp(POINT client) {
     const auto hit = pressed_;
     const auto index = pressedIndex_;
     pressed_ = Hit::none;
+    timerRepeatAt_ = {};
     if (!target || target->hit != hit || target->index != index) return command;
     switch (hit) {
     case Hit::activityDot: swapActivities(now); break;
@@ -1849,16 +1955,22 @@ IslandCommand Island::pointerUp(POINT client) {
         break;
     case Hit::timerView: selectTimerView(index); break;
     case Hit::focusAdjust:
-    case Hit::quickAdjust: adjustTimer(index); break;
+    case Hit::quickAdjust:
+        if (!timerRepeated_) adjustTimer(index);
+        break;
+    case Hit::timerDuration:
+        if (!timerDragged_) command.kind = IslandCommand::Kind::editTimerDuration;
+        break;
     case Hit::timerPreset:
         if (index < std::size(timerPresets) && !quick_.running() && !quick_.paused()) {
-            quick_.configure(timerPresets[index] * 60);
+            setTimerDuration(timerPresets[index] * 60);
         }
         break;
     case Hit::timerToggle:
         if (countdownCompletion_.mode == PillMode::timer) countdownCompletion_ = {};
+        if (quick_.running()) retirePausedActivity(PillMode::timer, now);
+        else preferredPill_ = PillMode::timer;
         quick_.toggle(now);
-        preferredPill_ = PillMode::timer;
         break;
     case Hit::timerReset:
         if (countdownCompletion_.mode == PillMode::timer) countdownCompletion_ = {};
@@ -1907,6 +2019,7 @@ IslandCommand Island::pointerUp(POINT client) {
 }
 
 void Island::pointerCancel() {
+    timerRepeatAt_ = {};
     pressed_ = Hit::none;
     dragging_ = false;
     volumeDragId_.clear();
@@ -2501,10 +2614,13 @@ void Island::drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT
     const float t = progress(activitySwap_.start, activitySwapTime, now);
     const float p = t * t * (3 - 2 * t);
     auto incoming = mixRect(activitySwap_.dot, pill, p);
-    const auto exit = activitySwap_.retireOutgoing ? grow(dot, -14, -14) : dot;
+    const auto& original = activitySwap_.pill;
+    const auto collapse = box((original.left + original.right) / 2, (original.top + original.bottom) / 2, 0, 0);
+    const auto exit = activitySwap_.pauseHandoff ? collapse :
+        activitySwap_.retireOutgoing ? grow(dot, -14, -14) : dot;
     auto outgoing = mixRect(activitySwap_.pill, exit, p);
     const float arc = std::sin(pi * p);
-    const float separation = arc * arc;
+    const float separation = activitySwap_.pauseHandoff ? 0 : arc * arc;
     const float lift = std::clamp(incoming.top - 2, 0.0f, activitySwapLift) * separation;
     incoming.top -= lift;
     incoming.bottom -= lift;
@@ -2967,7 +3083,33 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
 
     const auto& timer = quickView_ ? quick_ : focus_;
     const bool adjustable = !timer.running() && !timer.paused();
-    text(timestamp(timer.seconds(now)), clockFont_.get(), box(x + padX, y + 77, innerWidth, 44), rgb(inkColor));
+    const auto clock = box(centerX - 79, y + 77, 158, 44);
+    const int seconds = timer.seconds(now);
+    const float roll = adjustable && animate_ && timerDigitsTo_ == seconds
+        ? easeInOut(progress(timerDigitsStart_, timerDigitMotion, now)) : 1;
+    const float direction = timerDigitsTo_ > timerDigitsFrom_ ? 1.0f : -1.0f;
+    text(L":", clockFont_.get(), box(centerX - 6, clock.top, 12, 44), rgb(mutedColor));
+    for (size_t unit = 0; unit < 2; ++unit) {
+        const auto area = box(unit == 0 ? centerX - 78 : centerX + 8, clock.top, 70, 44);
+        const auto digits = [unit](int time) {
+            const int value = unit == 0 ? time / 60 : time % 60;
+            return (value < 10 ? L"0" : L"") + std::to_wstring(value);
+        };
+        if (adjustable && (hovered(Hit::timerDuration, unit) || pressed(Hit::timerDuration, unit)))
+            target_->FillRoundedRectangle(rounded(area, 8), ink(white(0.08f)));
+        if (roll < 1 && digits(timerDigitsFrom_) != digits(seconds)) {
+            target_->PushAxisAlignedClip(area, D2D1_ANTIALIAS_MODE_ALIASED);
+            text(digits(timerDigitsFrom_), clockFont_.get(),
+                 box(area.left, area.top - direction * 34 * roll, 70, 44), white(1 - roll));
+            text(digits(seconds), clockFont_.get(),
+                 box(area.left, area.top + direction * 34 * (1 - roll), 70, 44), white(roll));
+            target_->PopAxisAlignedClip();
+        } else {
+            text(digits(seconds), clockFont_.get(), area, rgb(inkColor));
+        }
+        if (record && adjustable) addTarget(area, Hit::timerDuration, unit);
+    }
+    if (record && adjustable) timerEditor_ = clock;
     if (quickView_) {
         for (size_t i = 0; i < std::size(timerPresets); ++i) {
             const auto minutes = timerPresets[i];
@@ -2983,8 +3125,8 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     }
     if (adjustable) {
         const auto hit = quickView_ ? Hit::quickAdjust : Hit::focusAdjust;
-        const int duration = quickView_ ? quick_.duration() : breakPhase_ ? breakSeconds_ : focusSeconds_;
-        const int limit = !quickView_ && breakPhase_ ? breakMaxSeconds : timerMaxSeconds;
+        const int duration = timer.duration();
+        const int limit = timerDurationLimit();
         for (size_t unit = 0; unit < 2; ++unit) {
             const float left = centerX - 111 + 117 * static_cast<float>(unit);
             drawButton(box(left, y + 157, 28, 26), L"−", hit, record && duration > 1, 2 * unit);
@@ -4251,9 +4393,9 @@ void Island::draw(HWND window) {
         bounds.top = std::min(bounds.top, std::min(activitySwap_.dot.top, compact.top) - activitySwapLift - 2);
     }
     const bool dotExiting = animate_ && !panelVisible && !splitVisible && !activityDot &&
-                            now - mediaDotExitStart_ < activityDotExitTime;
+                            now - dotExitStart_ < activityDotExitTime;
     const auto survivingPrivacy = dotExiting ? companionPrivacyShape(now, compact) : std::nullopt;
-    if (dotExiting) bounds = unite(bounds, grow(retiringMediaDot_, 2, 2));
+    if (dotExiting) bounds = unite(bounds, grow(retiringDot_, 2, 2));
     if (survivingPrivacy) bounds = unite(bounds, grow(*survivingPrivacy, 2, 2));
     const auto privacy = !panelVisible && !activityDot && !drawSwap && !dotExiting &&
                          slotOpacity > 0 && amount >= 1 ? companionPrivacyShape(now, compact) : std::nullopt;
@@ -4270,6 +4412,7 @@ void Island::draw(HWND window) {
             D2D1::Matrix3x2F::Translation(static_cast<float>(-origin_.x), static_cast<float>(-origin_.y));
     targets_.clear();
     scratchEditor_.reset();
+    timerEditor_.reset();
     lyricViewport_ = {};
     dropViewport_ = {};
     appViewport_ = {};
@@ -4303,14 +4446,14 @@ void Island::draw(HWND window) {
         if (slotOpacity < 1) popLayer();
     }
     if (dotExiting) {
-        const float t = easeInOut(progress(mediaDotExitStart_, activityDotExitTime, now));
-        const auto& original = retiringMediaDot_;
+        const float t = easeInOut(progress(dotExitStart_, activityDotExitTime, now));
+        const auto& original = retiringDot_;
         const float middle = (original.top + original.bottom) / 2;
         const auto destination = survivingPrivacy.value_or(box(original.left, middle, 0, 0));
         const auto shape = mixRect(original, destination, t);
         drawCompanionShell(shape, std::sin(pi * t) * 0.85f, 0.16f);
         pushLayer(nullptr, 1 - t);
-        drawCompanionIndicators(now, shape, PillMode::media);
+        drawCompanionIndicators(now, shape, retiringDotMode_);
         popLayer();
         if (survivingPrivacy) {
             pushLayer(nullptr, t);
