@@ -1116,8 +1116,9 @@ void Island::updatePill(Clock::time_point now, bool keepActivity) {
         else pillTitle_ = screenLabel(screen_);
         pillPlaying_ = media_.playing;
     }
-    if (bubbleShowing()) return;   // never reshape while a bubble is split off
-    const float target = mode == PillMode::dot ? 0.0f : 1.0f;
+    const bool compact = pillOccluded_ && mode != PillMode::preview;
+    if (bubbleShowing() && !compact) return;
+    const float target = mode == PillMode::dot || compact ? 0.0f : 1.0f;
     if (target != pillTarget_) {
         const auto motion = pillMotion(now);
         pillFrom_ = motion.value;
@@ -1278,6 +1279,26 @@ void Island::setSuppressed(bool suppressed) {
     setDotHover(false, Clock::now());
     hovered_ = Hit::none;
     pointerCancel();
+}
+
+bool Island::setPillOccluded(bool occluded) {
+    if (pillOccluded_ == occluded) return false;
+    pillOccluded_ = occluded;
+    if (occluded) openAt_.reset();
+    updatePill(Clock::now());
+    return true;
+}
+
+std::optional<RECT> Island::pillFootprint() const {
+    if (pillMode_ == PillMode::dot || pillMode_ == PillMode::preview || pillSizeTarget_.width <= 0)
+        return std::nullopt;
+    const auto now = Clock::now();
+    const float halfWidth = (pillSizeTarget_.width + privacyBadgeWidth(now)) / 2;
+    const auto companion = activityCompanion();
+    const float extra = companion == PillMode::dot ? 0 : activityDotGap + activityWidth(companion, now);
+    return RECT{anchor_.x - std::lround(halfWidth * scale_), anchor_.y + std::lround(pillTop * scale_),
+                anchor_.x + std::lround((halfWidth + extra) * scale_),
+                anchor_.y + std::lround((pillTop + pillSizeTarget_.height) * scale_)};
 }
 
 bool Island::setCaptureActivity(CaptureActivity const& activity) {
@@ -1606,9 +1627,11 @@ void Island::tick() {
 }
 
 bool Island::wantsAudioSpectrum() const {
-    return animate_ && !suppressed_ && preferences_.showWaveform && preferences_.enabled(Screen::media) &&
-           media_.playing && (open_ ? screen_ == Screen::media :
-                              (pillMode_ == PillMode::media && !pillLyric_.layout) || activityCompanion() == PillMode::media);
+    if (!animate_ || suppressed_ || !preferences_.showWaveform ||
+        !preferences_.enabled(Screen::media) || !media_.playing) return false;
+    if (open_) return screen_ == Screen::media;
+    return !pillOccluded_ && ((pillMode_ == PillMode::media && !pillLyric_.layout) ||
+                             activityCompanion() == PillMode::media);
 }
 
 unsigned Island::frameInterval() const {
@@ -1630,6 +1653,7 @@ unsigned Island::frameInterval() const {
         return screen_ == Screen::system || scratchEditing_ || timerRunning ? 1000 : 0;
     }
     if (open_ || alert_) return 50;
+    if (pillOccluded_ && pillMode_ != PillMode::preview) return timerRunning ? 1000 : 0;
     if (pillMode_ == PillMode::preview) return 50;
     if (wantsLyricPill()) return 50;
     if (pillMode_ == PillMode::media) {
@@ -2411,7 +2435,8 @@ void Island::drawArt(D2D1_RECT_F rect, float opacity) {
 
 // ---- Compact: dot and pill -----------------------------------------------------------------------
 
-static D2D1_RECT_F compactHit(D2D1_RECT_F shape, float amount) {
+static D2D1_RECT_F compactHit(D2D1_RECT_F shape, float amount, bool occluded) {
+    if (occluded) return shape;
     return amount >= 1 ? grow(shape, 0, 3) : box(-22, pillTop - 3, 44, 46);
 }
 
@@ -2852,7 +2877,7 @@ void Island::drawHandoffOutgoing(D2D1_RECT_F pill, float opacity) {
 
 void Island::drawIsland(Clock::time_point now, float value, float amount, bool morphTitle) {
     const auto full = panelRect(now);
-    const bool pendingHandoff = !open_ && value > 0 && activitySwapActive(now) && activitySwap_.retireOutgoing;
+    const bool pendingHandoff = !pillOccluded_ && !open_ && value > 0 && activitySwapActive(now) && activitySwap_.retireOutgoing;
     const auto from = pendingHandoff ? activitySwap_.pill : compactShape(now, amount);
     morphTitle = morphTitle && !pendingHandoff;
     const float fromRadius = std::min(from.right - from.left, from.bottom - from.top) / 2;
@@ -2866,7 +2891,7 @@ void Island::drawIsland(Clock::time_point now, float value, float amount, bool m
 
     if (!open_) {
         // Layered windows receive pointer input only where pixels have nonzero alpha.
-        const auto hit = compactHit(from, amount);
+        const auto hit = compactHit(from, amount, pillOccluded_);
         target_->FillRectangle(hit, ink(D2D1::ColorF(0, 0, 0, 1.0f / 255)));
         addTarget(hit, Hit::pill);
     }
@@ -4059,7 +4084,7 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
         !alert_->dotOrigin && (alert_->fromCompanion || hasCompanion);
     privacyDetailsOpen_ = false;
     const bool closing = !open_ && panelValue(now) > 0;
-    if (!closing) {
+    if (!closing && !pillOccluded_) {
         // The split starts from a settled dot or pill.
         pillFrom_ = pillTarget_;
         pillVelocity_ = 0;
@@ -4486,7 +4511,8 @@ void Island::draw(HWND window) {
     anchor_ = {work.left + (work.right - work.left) / 2, work.top - std::lround((1 - opacity) * 14 * scale_)};
     prepareText();
     updatePillLayout(now, workWidth);
-    const bool swapping = activitySwapActive(now);
+    const bool compactForControls = pillOccluded_ && pillMode_ != PillMode::preview;
+    const bool swapping = !compactForControls && activitySwapActive(now);
     if (swapping) {
         pillTransitionStart_ = {};
         previousPillLyric_ = {};
@@ -4504,9 +4530,9 @@ void Island::draw(HWND window) {
 
     // The surface only covers what is drawn this frame.
     const auto compact = compactShape(now, amount);
-    auto bounds = unite(grow(compact, 2, 2), compactHit(compact, amount));
+    auto bounds = unite(grow(compact, 2, 2), compactHit(compact, amount, compactForControls));
     if (panelVisible) bounds = unite(bounds, grow(panelRect(now), 2, 2));
-    const bool splitVisible = !panelVisible && bubbleShowing();
+    const bool splitVisible = !compactForControls && !panelVisible && bubbleShowing();
     const auto companion = activityCompanion();
     const bool slotBubble = splitVisible && amount >= 1 && alertUsesCompanionSlot_;
     const bool directClose = splitVisible && closingDot_.has_value();
@@ -4562,7 +4588,7 @@ void Island::draw(HWND window) {
     if (handoff) {
         bounds = unite(bounds, grow(unite(unite(activitySwap_.pill, activitySwap_.dot), compact), 6, 6));
     }
-    const bool dotExiting = animate_ && !panelVisible && !splitVisible && !handoff && !activityDot &&
+    const bool dotExiting = !compactForControls && animate_ && !panelVisible && !splitVisible && !handoff && !activityDot &&
                             now - dotExitStart_ < activityDotExitTime;
     if (dotExiting) bounds = unite(bounds, grow(retiringDot_, 2, 2));
     const auto badge = privacyBadgeRect(now, compact);

@@ -72,6 +72,8 @@ private:
     bool refreshPrayers();
     void refreshMotion();
     bool refreshFullscreen();
+    void refreshPillOverlap();
+    winrt::Windows::Foundation::IAsyncAction checkPillOverlap(HWND behind, RECT footprint);
     void applyVisibility();
     void maintainZOrder();
     bool suppressed() const { return fullscreen_ || hidden_; }
@@ -108,6 +110,8 @@ private:
     std::optional<bool> lastOnline_;
     winrt::Windows::Networking::Connectivity::NetworkInformation::NetworkStatusChanged_revoker networkChanged_;
     winrt::Windows::Foundation::IAsyncAction networkRequest_{nullptr};
+    winrt::Windows::Foundation::IAsyncAction overlapRequest_{nullptr};
+    Island::Clock::time_point nextOverlapCheck_{};
     Scratchpad scratchpad_;
     DropZone dropZone_;
     Settings settings_;
@@ -270,6 +274,7 @@ void App::frame() {
         if (visible) maintainZOrder();
     }
     scheduleFrames(island_.frameInterval());
+    refreshPillOverlap();
 }
 
 void App::scheduleFrames(UINT interval) {
@@ -535,6 +540,35 @@ bool App::refreshFullscreen() {
     fullscreen_ = fullscreen;
     applyVisibility();
     return true;
+}
+
+void App::refreshPillOverlap() {
+    if (suppressed() || example_) return;
+    const auto now = Island::Clock::now();
+    if (now < nextOverlapCheck_ ||
+        (overlapRequest_ && overlapRequest_.Status() == winrt::Windows::Foundation::AsyncStatus::Started)) return;
+    const auto footprint = island_.pillFootprint();
+    if (!footprint) {
+        if (island_.setPillOccluded(false)) frame();
+        return;
+    }
+    nextOverlapCheck_ = now + 1500ms;
+    if (const auto behind = windowBehindPill(window_, *footprint)) overlapRequest_ = checkPillOverlap(behind, *footprint);
+    else if (island_.setPillOccluded(false)) frame();
+}
+
+winrt::Windows::Foundation::IAsyncAction App::checkPillOverlap(HWND behind, RECT footprint) {
+    const auto cancellation = co_await winrt::get_cancellation_token();
+    const winrt::apartment_context ui;
+    co_await winrt::resume_background();
+    const bool occluded = windowControlsOverlap(behind, footprint);
+    if (cancellation()) co_return;
+    co_await ui;
+    if (cancellation() || suppressed() || example_) co_return;
+
+    const auto current = island_.pillFootprint();
+    if (current && EqualRect(&*current, &footprint) && windowBehindPill(window_, *current) == behind &&
+        island_.setPillOccluded(occluded)) frame();
 }
 
 void App::maintainZOrder() {
@@ -857,6 +891,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
             }
             if (browserTabs_.prune()) updateMedia();
             else if (changed) frame();
+            refreshPillOverlap();
             maintainZOrder();
         }
         return 0;
@@ -868,7 +903,9 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         }
         return FALSE;
     case DesktopMonitor::foregroundChanged:
+        nextOverlapCheck_ = {};
         if (refreshFullscreen()) frame();
+        else refreshPillOverlap();
         maintainZOrder();
         return 0;
     case DropZone::previewClosed:
@@ -1034,6 +1071,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         KillTimer(window_, networkTimer);
         networkChanged_.revoke();
         if (networkRequest_) networkRequest_.Cancel();
+        if (overlapRequest_) overlapRequest_.Cancel();
         desktop_.stop();
         notifications_.stop();
         bluetooth_.stop();
