@@ -142,7 +142,7 @@ void SettingsExample::draw(HWND window, Clock::time_point now) {
         island_.setMedia(media_);
         playing_ = false;
     } else if (test_ == SettingsTest::cycle && island_.focus_.expire(now)) {
-        island_.finishFocus(now);
+        island_.finishFocus(now, false);
     } else if (test_ == SettingsTest::copied || test_ == SettingsTest::camera ||
                test_ == SettingsTest::microphone || test_ == SettingsTest::notification) {
         island_.tick();

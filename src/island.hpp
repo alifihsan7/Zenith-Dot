@@ -54,6 +54,8 @@ struct IslandAlert {
     int priority = 1;                // a waiting alert is replaced only by one of equal or higher priority
     std::chrono::milliseconds hold{2600};
     std::optional<unsigned> battery = std::nullopt;   // drawn as a battery cell before value
+    bool fromCompanion = false;
+    bool captureEnded = false;
 };
 
 // The island UI from preview V7: an idle dot, a pill while something is going on, and a panel on hover.
@@ -206,10 +208,10 @@ private:
     void toggleFocus(Clock::time_point now);
     void selectTimerView(size_t index);
     void selectFocusPhase(bool resting);
-    void adjustFocus(int direction);
-    int phaseMinutes(bool resting) const;
+    void adjustTimer(size_t index);
+    int phaseSeconds(bool resting) const;
     std::wstring phaseName(bool resting) const;
-    void finishFocus(Clock::time_point now);
+    void finishFocus(Clock::time_point now, bool fromCompanion);
     void completeCountdown(Clock::time_point now, PillMode mode, IslandAlert alert);
     D2D1_POINT_2F stagePoint(POINT client) const;
     std::optional<Target> targetAt(D2D1_POINT_2F point) const;
@@ -249,7 +251,7 @@ private:
     void drawCaptureHandoff(Clock::time_point now, float amount);
     void drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F shape);
     float companionSlotOpacity(Clock::time_point now) const;
-    void drawPrivacyBadges(Clock::time_point now, D2D1_RECT_F pill, float opacity = 1);
+    void drawDotCaptureIndicators(Clock::time_point now, D2D1_RECT_F dot, bool sharesActivity);
     void drawCompanionPrivacy(Clock::time_point now, D2D1_RECT_F shape, float opacity);
     void drawSystem(D2D1_RECT_F panel, bool record);
     void drawPrayerSchedule(D2D1_RECT_F panel, bool record);
@@ -278,6 +280,7 @@ private:
     void fillShell(D2D1_ROUNDED_RECT shape);
     void fillShell(ID2D1Geometry* shape);
     void drawSplit(Clock::time_point now, float amount);
+    D2D1_RECT_F companionBubbleShape(Clock::time_point now, D2D1_RECT_F pill) const;
     void drawAlertContent(D2D1_RECT_F area, float opacity, float textOpacity);
     void drawAlertIcon(IslandAlert::Kind kind, D2D1_POINT_2F origin, D2D1_COLOR_F color, float size = 15);
     void drawBatteryCell(float left, float middle, unsigned level, D2D1_COLOR_F color, bool charging = false);
@@ -288,6 +291,8 @@ private:
     void text(std::wstring_view value, IDWriteTextFormat* format, D2D1_RECT_F rect, D2D1_COLOR_F color);
     void addTarget(D2D1_RECT_F rect, Hit hit, size_t index = 0);
     bool hovered(Hit hit, size_t index = 0) const;
+    void setDotHover(bool hot, Clock::time_point now);
+    float dotHover(Clock::time_point now) const;
     bool pressed(Hit hit, size_t index = 0) const;
     ID2D1SolidColorBrush* ink(D2D1_COLOR_F color);
     ID2D1Bitmap* bitmap(Image& image);
@@ -322,6 +327,7 @@ private:
     bool suppressed_ = false;
     float visibilityFrom_ = 1;
     Clock::time_point visibilityStart_{};
+    bool captureRecording_ = false;
     std::array<CaptureIndicator, 3> captureIndicators_{{
         {IslandAlert::Kind::screenCapture, 0xbdabff, {}},
         {IslandAlert::Kind::camera, 0x30d158, {}},
@@ -448,6 +454,9 @@ private:
     std::optional<Clock::time_point> openAt_;
     std::optional<Clock::time_point> closeAt_;
     Hit hovered_ = Hit::none;
+    Clock::time_point dotHoverStart_{};
+    float dotHoverFrom_ = 0;
+    bool dotHot_ = false;
     size_t hoveredIndex_ = 0;
     Hit pressed_ = Hit::none;
     size_t pressedIndex_ = 0;
@@ -459,8 +468,8 @@ private:
     D2D1_RECT_F panelWheel_{};
 
     // Focus timer.
-    int focusMinutes_ = 25;
-    int breakMinutes_ = 5;
+    int focusSeconds_ = 25 * 60;
+    int breakSeconds_ = 5 * 60;
     bool breakPhase_ = false;
     bool quickView_ = false;
     bool autoCycle_ = false;
