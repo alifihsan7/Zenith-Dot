@@ -532,6 +532,7 @@ private:
     Clock::time_point alertUntil_{};
     float alertWidth_ = 52;
     bool alertUsesCompanionSlot_ = false;
+    bool alertFromOccludedDot_ = false;
     struct AlertDot {
         bool idle = false;
         PillMode mode = PillMode::dot;
