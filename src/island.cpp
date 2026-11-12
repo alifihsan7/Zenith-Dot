@@ -3058,11 +3058,13 @@ void Island::drawNav(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     drawCaptureIndicators(pt(panel.left + padX + captureRight, top + height / 2), amounts);
     const auto count = screens_.size();
     const float available = std::max(0.0f, panel.right - panel.left - 124);
-    const float step = count ? std::min(36.0f, available / static_cast<float>(count)) : 0;
-    const float start = (panel.left + panel.right - static_cast<float>(count) * step) / 2;
-    const auto hoverArea = box(start, panel.top, static_cast<float>(count) * step, navHeight + 3);
-    if (record && count) navHoverRect_ = hoverArea;
+    const float expandedStep = count ? std::min(36.0f, available / static_cast<float>(count)) : 0;
+    const float expandedWidth = expandedStep * static_cast<float>(count);
+    const float centerX = (panel.left + panel.right) / 2;
+    if (record && count) navHoverRect_ = box(centerX - expandedWidth / 2, panel.top, expandedWidth, navHeight + 3);
     const float reveal = navExpansion(now);
+    const float step = std::lerp(std::min(12.0f, expandedStep), expandedStep, reveal);
+    const float start = centerX - static_cast<float>(count) * step / 2;
     constexpr Hit hits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem,
                          Hit::navConnection, Hit::navPrayer};
     for (size_t i = 0; i < count; ++i) {
@@ -3080,11 +3082,14 @@ void Island::drawNav(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         if (reveal > 0) drawScreenGlyph(screen, rect, withAlpha(color, reveal));
         if (record) addTarget(cell, hit);
     }
-    const auto pin = box(panel.right - padX - 34, top + 1, 34, height - 2);
-    drawButton(pin, L"", Hit::panelPin, record);
+    const auto pin = box(panel.right - padX - 26, top, 26, 24);
+    if (hovered(Hit::panelPin) || pressed(Hit::panelPin)) {
+        target_->FillRoundedRectangle(rounded(pin, 6), ink(white(pressed(Hit::panelPin) ? 0.14f : 0.09f)));
+    }
+    if (record) addTarget(pin, Hit::panelPin);
     const bool pinned = panelPinned();
     const auto color = pinned ? accent_ : rgb(inkColor);
-    const float x = pin.left + 17, y = (pin.top + pin.bottom) / 2;
+    const float x = (pin.left + pin.right) / 2, y = (pin.top + pin.bottom) / 2;
     PathBuilder glyph(graphics_.get());
     glyph.move(pt(x - 4.5f, y - 7), pinned).line(pt(x + 4.5f, y - 7)).line(pt(x + 2.5f, y - 4))
         .line(pt(x + 2.5f, y - 1)).line(pt(x + 5, y + 2)).line(pt(x - 5, y + 2))
