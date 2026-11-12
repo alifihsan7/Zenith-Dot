@@ -3015,7 +3015,17 @@ std::wstring_view Island::screenLabel(Screen screen) {
 void Island::drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color) {
     const auto center = pt((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
     switch (screen) {
-    case Screen::media: text(L"♫", glyphFont_.get(), rect, color); break;
+    case Screen::media: {
+        const auto x = center.x, y = center.y;
+        const auto brush = ink(color);
+        target_->FillEllipse(D2D1::Ellipse(pt(x - 4.3f, y + 4.5f), 2.4f, 1.7f), brush);
+        target_->FillEllipse(D2D1::Ellipse(pt(x + 3.3f, y + 2.5f), 2.4f, 1.7f), brush);
+        PathBuilder notes(graphics_.get());
+        notes.move(pt(x - 2.4f, y + 4.4f), false).line(pt(x - 2.4f, y - 4.4f))
+            .line(pt(x + 5.2f, y - 6.5f)).line(pt(x + 5.2f, y + 2.4f));
+        target_->DrawGeometry(notes.finish().get(), brush, 1.35f, roundStroke_.get());
+        break;
+    }
     case Screen::timers: drawTimerGlyph(center, color); break;
     case Screen::scratch: text(L"✎", glyphFont_.get(), rect, color); break;
     case Screen::drop:
@@ -3057,13 +3067,12 @@ void Island::drawNav(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     const float captureRight = std::lerp(26.0f, 38.0f, lin(2, 3, sharing + camera + mic));
     drawCaptureIndicators(pt(panel.left + padX + captureRight, top + height / 2), amounts);
     const auto count = screens_.size();
-    const float available = std::max(0.0f, panel.right - panel.left - 124);
-    const float expandedStep = count ? std::min(36.0f, available / static_cast<float>(count)) : 0;
+    constexpr float expandedStep = 31;
     const float expandedWidth = expandedStep * static_cast<float>(count);
     const float centerX = (panel.left + panel.right) / 2;
     if (record && count) navHoverRect_ = box(centerX - expandedWidth / 2, panel.top, expandedWidth, navHeight + 3);
     const float reveal = navExpansion(now);
-    const float step = std::lerp(std::min(12.0f, expandedStep), expandedStep, reveal);
+    const float step = std::lerp(12.0f, expandedStep, reveal);
     const float start = centerX - static_cast<float>(count) * step / 2;
     constexpr Hit hits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem,
                          Hit::navConnection, Hit::navPrayer};
