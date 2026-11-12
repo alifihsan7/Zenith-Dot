@@ -488,6 +488,7 @@ private:
     std::optional<Clock::time_point> alertHoldUntil_;
     Clock::time_point alertUntil_{};
     float alertWidth_ = 52;
+    bool alertUsesCompanionSlot_ = false;
 
     // Last frame: hit targets in stage DIPs and where the surface sits.
     std::vector<Target> targets_;

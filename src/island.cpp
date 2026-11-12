@@ -1179,7 +1179,7 @@ bool Island::setCaptureActivity(CaptureActivity const& activity, bool announce) 
         item.app = apps[i];
         if (stopped && showEnded) {
             IslandAlert alert{item.kind, endedTitles[i], L"", item.color, 2};
-            alert.fromCompanion = true;
+            alert.fromCompanion = item.shown;
             alert.captureEnded = true;
             notify(std::move(alert));
         }
@@ -3696,10 +3696,12 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
     if (!alert.value.empty()) width += 7 + measure(alert.value, alertValueFont_.get());
     if (alert.battery) width += batteryCellWidth;
     alertWidth_ = std::clamp(width + 1, 52.0f, maxBubble);
-    if (isCaptureAlert(alert.kind) && pillMode_ != PillMode::dot && pillMode_ != PillMode::privacy)
-        alert.fromCompanion = true;
     alert_ = std::move(alert);
     if (update) return;
+    const bool hasPrimaryPill = pillMode_ != PillMode::dot && pillMode_ != PillMode::privacy;
+    const bool hasCompanion = activityCompanion() != PillMode::dot ||
+        std::ranges::any_of(captureIndicators_, &CaptureIndicator::shown);
+    alertUsesCompanionSlot_ = hasPrimaryPill && (alert_->fromCompanion || hasCompanion);
     const bool closing = !open_ && panelValue(now) > 0;
     if (!closing) {
         // The split starts from a settled dot or pill.
@@ -4070,8 +4072,7 @@ void Island::draw(HWND window) {
     if (panelVisible) bounds = unite(bounds, grow(panelRect(now), 2, 2));
     const bool splitVisible = !panelVisible && bubbleShowing();
     const auto companion = activityCompanion();
-    const bool slotBubble = splitVisible && amount >= 1 && pillMode_ != PillMode::dot &&
-        (alert_->fromCompanion || companion != PillMode::dot || companionPrivacyShape(now, compact).has_value());
+    const bool slotBubble = splitVisible && amount >= 1 && alertUsesCompanionSlot_;
     std::optional<D2D1_RECT_F> bubbleSlot;
     if (slotBubble) {
         const float top = (compact.top + compact.bottom - activityDotSize) / 2;
