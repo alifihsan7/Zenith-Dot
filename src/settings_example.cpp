@@ -92,7 +92,8 @@ SettingsExample::SettingsExample(SettingsTest test, Feature feature, Settings co
             island_.setScratchpad(scratch_);
         }
         if (feature == Feature::system) {
-            island_.setSystem({12, 45, 8, {{L'C', 3}, {L'D', 1}}});
+            island_.setSystem({12, 45, 8, {{L'C', DiskSpace{480'000'000'000, 114'000'000'000}},
+                                          {L'D', DiskSpace{1'000'000'000'000, 850'000'000'000}}}});
             island_.setPower({true, true, true, true, 81, {}});
             island_.setAudioOutput(L"Headphones");
             island_.setAudioOutputs({{L"headphones", L"Headphones", true, true},

@@ -113,8 +113,6 @@ void SystemMonitor::stopExtended() {
     if (query_) PdhCloseQuery(query_);
     query_ = nullptr;
     gpu_ = nullptr;
-    disks_.fill(nullptr);
-    driveMask_ = 0;
 }
 
 SystemStats SystemMonitor::sample(bool extended) {
@@ -138,40 +136,19 @@ SystemStats SystemMonitor::sample(bool extended) {
         PdhAddEnglishCounterW(query_, LR"(\GPU Engine(*)\Utilization Percentage)", 0, &gpu_);
 
     const DWORD drives = GetLogicalDrives();
-    DWORD fixedDrives = 0;
-    for (size_t i = 0; i < disks_.size(); ++i) {
-        const DWORD bit = 1u << i;
+    for (unsigned i = 0; i < 26; ++i) {
+        if (!(drives & (1u << i))) continue;
         const auto letter = static_cast<wchar_t>(L'A' + i);
-        if (!(drives & bit)) {
-            if (disks_[i]) PdhRemoveCounter(disks_[i]);
-            disks_[i] = nullptr;
-            continue;
-        }
         const wchar_t root[]{letter, L':', L'\\', L'\0'};
-        if (GetDriveTypeW(root) != DRIVE_FIXED) {
-            if (disks_[i]) PdhRemoveCounter(disks_[i]);
-            disks_[i] = nullptr;
-            continue;
-        }
-        fixedDrives |= bit;
-        if (query_ && !(driveMask_ & bit)) {
-            const auto path = std::wstring(LR"(\LogicalDisk()") + letter + LR"(:)\% Idle Time)";
-            PdhAddEnglishCounterW(query_, path.c_str(), 0, &disks_[i]);
-        }
-        stats.disks.push_back({letter, {}});
+        if (GetDriveTypeW(root) != DRIVE_FIXED) continue;
+
+        DiskCapacity disk{letter, std::nullopt};
+        ULARGE_INTEGER free{}, total{};
+        if (GetDiskFreeSpaceExW(root, &free, &total, nullptr) && total.QuadPart > 0)
+            disk.space = DiskSpace{total.QuadPart, std::min(free.QuadPart, total.QuadPart)};
+        stats.disks.push_back(disk);
     }
-    driveMask_ = query_ ? fixedDrives : 0;
-    if (query_ && PdhCollectQueryData(query_) == ERROR_SUCCESS) {
-        stats.gpu = gpuActivity(gpu_);
-        for (auto& disk : stats.disks) {
-            const auto counter = disks_[disk.letter - L'A'];
-            PDH_FMT_COUNTERVALUE value{};
-            if (counter && PdhGetFormattedCounterValue(counter, PDH_FMT_DOUBLE, nullptr, &value) == ERROR_SUCCESS &&
-                validCounter(value.CStatus) && std::isfinite(value.doubleValue)) {
-                disk.usage = percent(100.0 - value.doubleValue);
-            }
-        }
-    }
+    if (query_ && PdhCollectQueryData(query_) == ERROR_SUCCESS) stats.gpu = gpuActivity(gpu_);
     return stats;
 }
 

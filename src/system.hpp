@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <optional>
 #include <string>
-#include <array>
 #include <vector>
 #include <windows.h>
 #include <pdh.h>
@@ -25,10 +24,16 @@ NetworkStatus readNetwork();
 // A missing result means the status was unknown, unchanged, or the first known sample.
 std::optional<bool> updateInternetStatus(std::optional<bool>& lastOnline, NetworkAccess access);
 
-struct DiskActivity {
+struct DiskSpace {
+    uint64_t totalBytes;
+    uint64_t freeBytes;
+    bool operator==(DiskSpace const&) const = default;
+};
+
+struct DiskCapacity {
     wchar_t letter;
-    std::optional<unsigned> usage;
-    bool operator==(DiskActivity const&) const = default;
+    std::optional<DiskSpace> space;
+    bool operator==(DiskCapacity const&) const = default;
 };
 
 struct SystemStats {
@@ -36,7 +41,7 @@ struct SystemStats {
     unsigned memory = 0;
 
     std::optional<unsigned> gpu;
-    std::vector<DiskActivity> disks;
+    std::vector<DiskCapacity> disks;
 
     bool operator==(SystemStats const&) const = default;
 };
@@ -55,8 +60,6 @@ public:
 private:
     PDH_HQUERY query_ = nullptr;
     PDH_HCOUNTER gpu_ = nullptr;
-    std::array<PDH_HCOUNTER, 26> disks_{};
-    DWORD driveMask_ = 0;
     uint64_t idle_ = 0;
     uint64_t total_ = 0;
 };

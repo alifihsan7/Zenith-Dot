@@ -31,11 +31,15 @@ constexpr float dotSize = 12;
 constexpr float panelWidth = 369;
 constexpr float mediaPanelWidth = 344;
 constexpr float systemPanelWidth = 530;
-constexpr size_t systemMetricColumns = 6;
-constexpr float systemMetricPitch = 43;
+constexpr float systemStatsBottom = 75;
+constexpr float storageCardsTop = systemStatsBottom + 21;
+constexpr size_t storageColumns = 4;
+constexpr float storageCardPitch = 58;
+constexpr float batteryCardHeight = 41;
+constexpr float connectionTop = batteryCardHeight + 8;
 constexpr float systemRightGap = 19;
 constexpr float systemColumnWidth = (systemPanelWidth - 28 - systemRightGap) / 2;
-constexpr float systemAudioTop = 68;
+constexpr float systemAudioTop = 20;
 constexpr float systemAudioHeight = 29;
 constexpr float systemAudioMenuTop = systemAudioTop + systemAudioHeight + 4;
 constexpr float pickerRowHeight = 25;
@@ -46,7 +50,7 @@ constexpr float prayerMenuTop = prayerPickerTop + prayerPickerHeight + 4;
 constexpr float prayerPanelHeight = 176;
 constexpr float prayerPanelWidth = 570;
 constexpr float prayerInfoWidth = 176;
-constexpr float appRowsTop = 121;
+constexpr float appRowsTop = 73;
 constexpr float appRowHeight = 28;
 constexpr float bluetoothRowsTop = 73;
 constexpr float bluetoothRowHeight = 33;
@@ -70,8 +74,21 @@ constexpr size_t visibleSources = 2 * sourceColumns;
 constexpr float sourceMenuStep = 34;
 
 float systemSectionTop(SystemStats const& system) {
-    const auto rows = (system.disks.size() + 3 + systemMetricColumns - 1) / systemMetricColumns;
-    return 32 + static_cast<float>(rows) * systemMetricPitch;
+    if (system.disks.empty()) return systemStatsBottom;
+    const auto rows = (system.disks.size() + storageColumns - 1) / storageColumns;
+    return storageCardsTop + static_cast<float>(rows) * storageCardPitch;
+}
+
+std::wstring freeSpaceLabel(uint64_t bytes) {
+    constexpr uint64_t gb = 1'000'000'000;
+    constexpr uint64_t tb = 1'000 * gb;
+    if (bytes >= tb) {
+        const auto tenths = (bytes / (tb / 100) + 5) / 10;
+        return std::to_wstring(tenths / 10) + L"." + std::to_wstring(tenths % 10) + L" TB free";
+    }
+    if (bytes >= gb) return std::to_wstring(bytes / gb) + L" GB free";
+    if (bytes > 0 && bytes < 1'000'000) return L"<1 MB free";
+    return std::to_wstring(bytes / 1'000'000) + L" MB free";
 }
 
 float pickerHeight(size_t rows) { return 2 * pickerInset + pickerRowHeight * static_cast<float>(rows); }
@@ -812,7 +829,7 @@ float Island::screenHeight(Screen screen) const {
         const auto appRows = std::clamp<size_t>(appVolumes_.size(), 1, visibleAppRows);
         const auto devices = std::clamp<size_t>(bluetoothDevices_.size(), 1, visibleBluetoothRows);
         const float mixer = appRowsTop + static_cast<float>(appRows) * appRowHeight;
-        const float connection = bluetoothRowsTop + static_cast<float>(devices) * bluetoothRowHeight + 29;
+        const float connection = connectionTop + bluetoothRowsTop + static_cast<float>(devices) * bluetoothRowHeight + 29;
         const auto outputs = std::clamp<size_t>(audioOutputs_.size(), 1, visibleAudioOutputs);
         const float menu = audioPickerOpen_ ? systemAudioMenuTop + pickerHeight(outputs + 1) : 0;
         return navHeight + systemSectionTop(system_) + std::max({mixer, connection, menu}) + padBottom;
@@ -2725,19 +2742,8 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
     constexpr float fullWidth = width * 2 + systemRightGap;
     text(L"System", titleFont_.get(), box(x, y + 3, fullWidth, 23), rgb(inkColor));
 
-    const auto metrics = system_.disks.size() + 3;
-    const auto columns = std::min(metrics, systemMetricColumns);
     constexpr float gap = 6;
-    const float metricWidth = (fullWidth + gap) / static_cast<float>(columns) - gap;
-    const auto metric = [&](size_t index, std::wstring_view label, std::optional<unsigned> usage) {
-        const float left = x + static_cast<float>(index % columns) * (metricWidth + gap);
-        const float top = y + 30 + static_cast<float>(index / columns) * systemMetricPitch;
-        const auto rect = box(left, top, metricWidth, 37);
-        target_->FillRoundedRectangle(rounded(rect, 7), ink(white(0.055f)));
-        text(label, bodyFont_.get(), box(left + 6, top + 3, metricWidth - 30, 17), rgb(inkColor));
-        text(usage ? std::to_wstring(*usage) + L"%" : L"—", bodyEndFont_.get(),
-             box(left + 6, top + 3, metricWidth - 12, 17), rgb(usage ? inkColor : mutedColor));
-        const auto bar = box(left + 7, top + 25, metricWidth - 14, 4);
+    const auto drawUsage = [&](D2D1_RECT_F bar, std::optional<unsigned> usage) {
         target_->FillRoundedRectangle(rounded(bar, 2), ink(white(0.12f)));
         if (usage && *usage) {
             auto fill = bar;
@@ -2745,18 +2751,47 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
             target_->FillRoundedRectangle(rounded(fill, 2), ink(accent_));
         }
     };
+    constexpr float metricWidth = (fullWidth - 2 * gap) / 3;
+    const auto metric = [&](size_t index, std::wstring_view label, std::optional<unsigned> usage) {
+        const float left = x + static_cast<float>(index) * (metricWidth + gap);
+        const float top = y + 30;
+        target_->FillRoundedRectangle(rounded(box(left, top, metricWidth, 37), 7), ink(white(0.055f)));
+        text(label, bodyFont_.get(), box(left + 6, top + 3, metricWidth - 30, 17), rgb(inkColor));
+        text(usage ? std::to_wstring(*usage) + L"%" : L"—", bodyEndFont_.get(),
+             box(left + 6, top + 3, metricWidth - 12, 17), rgb(usage ? inkColor : mutedColor));
+        drawUsage(box(left + 7, top + 25, metricWidth - 14, 4), usage);
+    };
     metric(0, L"CPU", system_.cpu);
     metric(1, L"RAM", system_.memory);
     metric(2, L"GPU", system_.gpu);
+
+    if (!system_.disks.empty())
+        text(L"Storage", bodyFont_.get(), box(x, y + systemStatsBottom, fullWidth, 18), rgb(inkColor));
+    const auto columns = std::min(system_.disks.size(), storageColumns);
     for (size_t i = 0; i < system_.disks.size(); ++i) {
         const auto& disk = system_.disks[i];
-        metric(i + 3, std::wstring(L"Disk ") + disk.letter + L":", disk.usage);
+        const float cardWidth = (fullWidth + gap) / static_cast<float>(columns) - gap;
+        const float left = x + static_cast<float>(i % columns) * (cardWidth + gap);
+        const float top = y + storageCardsTop + static_cast<float>(i / columns) * storageCardPitch;
+        const auto usage = disk.space ? std::optional{static_cast<unsigned>(std::lround(
+            100.0 * (disk.space->totalBytes - disk.space->freeBytes) / disk.space->totalBytes))} : std::nullopt;
+        target_->FillRoundedRectangle(rounded(box(left, top, cardWidth, 51), 7), ink(white(0.055f)));
+        text(std::wstring(L"Disk ") + disk.letter + L":", bodyFont_.get(),
+             box(left + 8, top + 3, cardWidth - 64, 18), rgb(inkColor));
+        if (usage) {
+            text(std::to_wstring(*usage) + L"% used", bodyEndFont_.get(),
+                 box(left + 8, top + 3, cardWidth - 16, 18), rgb(inkColor));
+        }
+        text(disk.space ? freeSpaceLabel(disk.space->freeBytes) : L"Unavailable",
+             bodyFont_.get(), box(left + 8, top + 21, cardWidth - 16, 16), rgb(mutedColor));
+        drawUsage(box(left + 8, top + 41, cardWidth - 16, 4), usage);
     }
 
     const float top = y + systemSectionTop(system_);
-    const auto battery = box(x, top, width, 41);
+    const float right = x + width + systemRightGap;
+    const auto battery = box(right, top, width, batteryCardHeight);
     target_->FillRoundedRectangle(rounded(battery, 8), ink(white(0.055f)));
-    text(L"Battery", bodyFont_.get(), box(x + 8, top + 3, 100, 18), rgb(inkColor));
+    text(L"Battery", bodyFont_.get(), box(right + 8, top + 3, 100, 18), rgb(inkColor));
     std::wstring status = L"Power status unavailable";
     if (power_.available) {
         status = !power_.hasBattery ? L"No battery" :
@@ -2769,16 +2804,16 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
         if (minutes >= 60) status += std::to_wstring(minutes / 60) + L"h ";
         status += std::to_wstring(minutes % 60) + L"m left";
     }
-    text(status, bodyFont_.get(), box(x + 8, top + 20, width - 81, 16), rgb(mutedColor));
+    text(status, bodyFont_.get(), box(right + 8, top + 20, width - 81, 16), rgb(mutedColor));
     if (power_.percent || power_.charging) {
         const auto level = power_.percent ? std::to_wstring(*power_.percent) + L"%" : std::wstring{};
         const float levelWidth = level.empty() ? 0 : std::ceil(measure(level, strongEndFont_.get())) + 2;
         const float levelX = battery.right - 8 - levelWidth;
         drawBatteryCell(levelX - 26, top + 20, power_.percent.value_or(0), accent_, power_.charging);
-        text(level, strongEndFont_.get(), box(levelX, top, levelWidth, 41), accent_);
+        text(level, strongEndFont_.get(), box(levelX, top, levelWidth, batteryCardHeight), accent_);
     }
 
-    text(L"Audio Output", bodyFont_.get(), box(x, top + 48, width, 18), rgb(inkColor));
+    text(L"Audio Output", bodyFont_.get(), box(x, top, width, 18), rgb(inkColor));
     const auto output = std::ranges::find(audioOutputs_, true, &AudioOutput::active);
     const auto outputName = output == audioOutputs_.end() ? std::wstring_view(audioOutput_) :
                                                            std::wstring_view(output->name);
@@ -2786,12 +2821,12 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
                      outputName.empty() ? L"Choose output" : outputName, Hit::audioPicker, record,
                      audioPickerOpen_, output != audioOutputs_.end() && output->headphones);
 
-    text(L"App Volume", bodyFont_.get(), box(x, top + 101, width, 18), rgb(inkColor));
+    text(L"App Volume", bodyFont_.get(), box(x, top + appRowsTop - 20, width, 18), rgb(inkColor));
     const auto count = appVolumes_.size();
     const auto end = std::min(count, appOffset_ + visibleAppRows);
     if (count > visibleAppRows) {
         text(std::to_wstring(appOffset_ + 1) + L"–" + std::to_wstring(end) + L" of " + std::to_wstring(count),
-             bodyEndFont_.get(), box(x, top + 101, width, 18), rgb(mutedColor));
+             bodyEndFont_.get(), box(x, top + appRowsTop - 20, width, 18), rgb(mutedColor));
     }
     const auto rows = box(x, top + appRowsTop, width, appRowHeight * visibleAppRows);
     if (record) appViewport_ = rows;
@@ -2804,13 +2839,12 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
     }
 
     const float divider = x + width + systemRightGap / 2;
-    const float right = x + width + systemRightGap;
     const auto devices = std::clamp<size_t>(bluetoothDevices_.size(), 1, visibleBluetoothRows);
     const auto appRows = std::clamp<size_t>(count, 1, visibleAppRows);
     const float height = std::max(appRowsTop + static_cast<float>(appRows) * appRowHeight,
-                                  bluetoothRowsTop + static_cast<float>(devices) * bluetoothRowHeight + 29);
+                                  connectionTop + bluetoothRowsTop + static_cast<float>(devices) * bluetoothRowHeight + 29);
     target_->FillRectangle(box(divider, top + 1, 1, height - 2), ink(white(0.08f)));
-    drawConnection(box(right, top, width, height), record);
+    drawConnection(box(right, top + connectionTop, width, height - connectionTop), record);
 }
 
 void Island::drawAudioGlyph(D2D1_POINT_2F center, bool headphones, D2D1_COLOR_F color) {
