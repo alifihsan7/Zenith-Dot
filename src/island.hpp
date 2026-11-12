@@ -236,6 +236,7 @@ private:
     void finishAlert(Clock::time_point now);
     void clearAlerts();
     float alertValue(Clock::time_point now) const;
+    std::chrono::milliseconds alertDuration() const;
     MotionSample alertMotion(Clock::time_point now) const;
     static MotionSample reverseSplitMotion(Clock::time_point start, Clock::time_point now);
     bool bubbleShowing() const;
@@ -264,7 +265,7 @@ private:
     void drawScratchpad(D2D1_RECT_F panel, bool record);
     void drawDropZone(D2D1_RECT_F panel, bool record);
     void drawCaptureIndicators(D2D1_POINT_2F right, std::array<float, 3> const& amounts);
-    void drawCenteredCaptureIndicators(Clock::time_point now, D2D1_RECT_F shape);
+    void drawCenteredCaptureIndicators(D2D1_RECT_F shape, std::array<float, 3> const& amounts);
     float companionSlotOpacity(Clock::time_point now) const;
     void drawPrivacyBadge(Clock::time_point now, D2D1_RECT_F badge);
     void drawPrivacyDetails(D2D1_RECT_F details);
@@ -296,6 +297,8 @@ private:
     void fillShell(D2D1_ROUNDED_RECT shape);
     void fillShell(ID2D1Geometry* shape);
     void drawSplit(Clock::time_point now, float amount, std::optional<D2D1_RECT_F> slot);
+    D2D1_RECT_F centeredPrivacyBubble() const;
+    void drawCenteredPrivacyAlert(Clock::time_point now, D2D1_RECT_F bubble);
     D2D1_RECT_F closingDotShape(D2D1_RECT_F pill) const;
     void drawBubbleToDot(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F bubble, bool fromSlot);
     void drawBubbleFromDot(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F bubble);
@@ -531,6 +534,13 @@ private:
         PillMode mode = PillMode::dot;
     };
     std::optional<AlertDot> closingDot_;
+    struct CenteredPrivacyAlert {
+        D2D1_RECT_F source{};
+        std::array<float, 3> sourceIcons{};
+        D2D1_RECT_F destination{};
+        std::array<float, 3> destinationIcons{};
+    };
+    std::optional<CenteredPrivacyAlert> centeredPrivacy_;
 
     // Last frame: hit targets in stage DIPs and where the surface sits.
     std::vector<Target> targets_;
