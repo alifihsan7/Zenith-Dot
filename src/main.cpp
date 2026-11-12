@@ -37,8 +37,7 @@ static_assert(clipboardTimer != MediaMonitor::artworkTimer);
 constexpr UINT clipboardRetryInterval = 40;
 constexpr unsigned clipboardRetryLimit = 25;
 
-enum Menu { previousTrack = 1, togglePlayback, nextTrack, toggleVisibility, openDropZone, openSettings, exitApp };
-constexpr MediaCommand controls[] = {MediaCommand::previous, MediaCommand::toggle, MediaCommand::next};
+enum Menu { openSettings = 1, toggleVisibility, openDropZone, exitApp };
 
 struct LockKey {
     USHORT virtualKey;
@@ -602,15 +601,11 @@ void App::addTray() {
 void App::showMenu(POINT point) {
     const auto menu = CreatePopupMenu();
     if (!menu) return;
-    const auto skip = media_.hasSession && media_.canSkip ? MF_ENABLED : MF_GRAYED;
-    AppendMenuW(menu, MF_STRING | skip, previousTrack, L"&Previous track");
-    AppendMenuW(menu, MF_STRING, togglePlayback, media_.playing ? L"P&ause" : L"&Play");
-    AppendMenuW(menu, MF_STRING | skip, nextTrack, L"&Next track");
+    AppendMenuW(menu, MF_STRING, openSettings, L"&Settings…");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, toggleVisibility, hidden_ ? L"&Show Zenula" : L"&Hide Zenula");
     AppendMenuW(menu, MF_STRING | (suppressed() || !settings_.enabled(Feature::drop) ? MF_GRAYED : MF_ENABLED),
                 openDropZone, L"&Drop Zone");
-    AppendMenuW(menu, MF_STRING, openSettings, L"&Settings…");
     AppendMenuW(menu, MF_STRING, exitApp, L"E&xit Zenula");
     // TrackPopupMenu needs the owner in the foreground to dismiss correctly. Hand focus back afterwards.
     const auto previous = GetForegroundWindow();
@@ -639,8 +634,6 @@ void App::showMenu(POINT point) {
                                                    nullptr, SW_SHOWNORMAL)) <= 32) {
             MessageBoxW(window_, L"Couldn’t open Zenula Settings.", appName, MB_OK | MB_ICONWARNING);
         }
-    } else if (selected >= previousTrack && selected <= nextTrack && monitor_) {
-        control(controls[selected - previousTrack]);
     }
 }
 
