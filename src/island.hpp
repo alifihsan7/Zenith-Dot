@@ -122,7 +122,7 @@ public:
 
 private:
     friend class SettingsExample;
-    enum class Hit { none, pill, previous, toggle, next, timeline, cover, sourcePicker, sourceMenu, source, navMedia, navTimers,
+    enum class Hit { none, pill, activityDot, previous, toggle, next, timeline, cover, sourcePicker, sourceMenu, source, navMedia, navTimers,
                      navScratch, navSystem, navPrayer, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
                      timerToggle, timerReset, quickAdjust, lyrics, lyricLine, retryLyrics, lyricsDelay, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
@@ -176,6 +176,11 @@ private:
     float captureProgress(Clock::time_point now, CaptureIndicator const& indicator) const;
     std::array<float, 3> captureAmounts(Clock::time_point now) const;
     CaptureIndicator const* captureHandoff() const;
+    PillMode activityCompanion() const;
+    bool activitySwapActive(Clock::time_point now) const;
+    void swapActivities(Clock::time_point now);
+    void drawActivityDot(D2D1_RECT_F shape, PillMode mode, bool interactive);
+    void drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F dot);
     D2D1_RECT_F compactShape(Clock::time_point now, float amount) const;
     std::optional<D2D1_RECT_F> companionPrivacyShape(Clock::time_point now, D2D1_RECT_F anchor) const;
     float visibility(Clock::time_point now) const;
@@ -190,7 +195,7 @@ private:
     float screenHeight(Screen screen) const;
     D2D1_RECT_F panelRect(Clock::time_point now) const;
     bool moving(Clock::time_point now) const;
-    void updatePill(Clock::time_point now);
+    void updatePill(Clock::time_point now, bool keepActivity = true);
     void updatePillLayout(Clock::time_point now, float workWidth);
     void updateTheme(Clock::time_point now);
     bool alertAllowed(IslandAlert::Kind kind) const;
@@ -329,6 +334,14 @@ private:
     PillMode pillMode_ = PillMode::dot;
     PillMode pillContent_ = PillMode::media;
     PillMode preferredPill_ = PillMode::media;
+    struct ActivitySwap {
+        Clock::time_point start{};
+        PillMode incoming = PillMode::dot;
+        PillMode outgoing = PillMode::dot;
+        D2D1_RECT_F pill{};
+        D2D1_RECT_F dot{};
+        std::wstring title;
+    } activitySwap_;
     std::wstring pillTitle_;
     bool pillPlaying_ = false;
     Spectrum spectrum_{};
