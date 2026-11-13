@@ -1,6 +1,7 @@
 #include <initguid.h>
 
 #include "bluetooth.hpp"
+#include "calendar.hpp"
 #include "browser_tabs.hpp"
 #include "desktop.hpp"
 #include "drop_zone.hpp"
@@ -108,6 +109,7 @@ private:
     DesktopMonitor desktop_;
     Notifications notifications_;
     BluetoothMonitor bluetooth_;
+    CalendarMonitor calendar_;
     SystemMonitor system_;
     NetworkStatus network_;
     std::optional<bool> lastOnline_;
@@ -190,6 +192,7 @@ int App::run(HINSTANCE instance, std::optional<SettingsTest> test, Feature featu
     desktop_.start(window_);
     notifications_.refresh(window_, settings_.showAppNotifications);
     bluetooth_.start(window_);
+    calendar_.start(window_);
     try {
         using winrt::Windows::Networking::Connectivity::NetworkInformation;
         networkChanged_ = NetworkInformation::NetworkStatusChanged(winrt::auto_revoke, [window = window_](auto const&) {
@@ -412,6 +415,9 @@ void App::run(IslandCommand const& command) {
         if (lyrics_) lyrics_->adjustDelay(command.index == 0 ? -1 : 1);
         break;
     case IslandCommand::Kind::editTimerDuration: openTimerEdit(); break;
+    case IslandCommand::Kind::toggleScratchCheck:
+        if (scratchpad_.toggleCheck(command.index)) island_.setScratchpad(scratchpad_.view());
+        break;
     case IslandCommand::Kind::editScratchpad:
         if (const auto bounds = island_.scratchEditorRect()) {
             island_.setScratchEditing(scratchpad_.open(window_, *bounds));
@@ -1007,6 +1013,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
             if (changed || prayerChanged) frame();
         }
         if (wparam == frameTimer) frame();
+        if (wparam == CalendarMonitor::refreshTimer) calendar_.refresh();
         if (wparam == clipboardTimer) refreshClipboard();
         if (wparam == fullscreenTimer) {
             const bool changed = refreshFullscreen();
@@ -1047,6 +1054,10 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     case BluetoothMonitor::changed:
         announceBluetooth();
+        return 0;
+    case CalendarMonitor::changed:
+        island_.setAgenda(calendar_.next());
+        frame();
         return 0;
     case DesktopMonitor::audioDeviceChanged:
         systemSampled_ = {};
@@ -1202,6 +1213,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         desktop_.stop();
         notifications_.stop();
         bluetooth_.stop();
+        calendar_.stop();
         if (lyrics_) lyrics_->stop();
         RemoveClipboardFormatListener(window_);
         if (monitor_) monitor_->stop();

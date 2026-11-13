@@ -2,6 +2,7 @@
 
 #include "desktop.hpp"
 #include "bluetooth.hpp"
+#include "calendar.hpp"
 #include "audio_spectrum.hpp"
 #include "media.hpp"
 #include "lyrics.hpp"
@@ -35,7 +36,7 @@ class SettingsExample;
 struct IslandCommand {
     enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, adjustLyricsDelay, editScratchpad,
                       selectAudioOutput, soundSettings, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute,
-                      autoCycle, prayerLocation, editTimerDuration, openSettings, overlapMode };
+                      autoCycle, prayerLocation, editTimerDuration, openSettings, overlapMode, toggleScratchCheck };
     Kind kind = Kind::none;
     double seconds = 0;              // seek position; appVolume: level 0..1; appMute, autoCycle: 1 = on
     std::wstring appId;
@@ -82,6 +83,7 @@ public:
     void setSystem(SystemStats const& stats);
     void setNetwork(NetworkStatus const& status);
     void setBluetoothDevices(std::vector<ConnectedBluetoothDevice> devices);
+    void setAgenda(std::optional<CalendarEvent> event);
     void setPrayerSchedule(std::optional<PrayerSchedule> const& schedule);
     void setPrayerLoad(PrayerLoad state) { prayerLoad_ = state; }
     void setAudioOutput(std::wstring const& output);
@@ -139,7 +141,7 @@ private:
                      timerToggle, timerReset, quickAdjust, timerDuration, lyrics, lyricLine, retryLyrics, lyricsDelay, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
                      appVolume, appMute, autoCycle, prayerLocationPicker,
-                     audioOutputMenu, audioOutputChoice, soundSettings, navHome, homeSettings, homeStartTimer, homeOverlapMode };
+                     audioOutputMenu, audioOutputChoice, soundSettings, navHome, homeSettings, homeStartTimer, homeOverlapMode, scratchCheck };
     using Screen = Feature;
     Settings preferences_;
     std::vector<Screen> screens_{Screen::home, Screen::media, Screen::timers, Screen::scratch, Screen::drop, Screen::system};
@@ -221,7 +223,9 @@ private:
     void setOpen(bool open, Clock::time_point now);
     void openFromCompact(Clock::time_point now);
     PillMode homeTimer() const;
-    std::array<Screen, 4> homeRows() const;
+    std::array<Screen, 5> homeRows() const;
+    bool agendaShown() const;
+    void drawAgendaGlyph(D2D1_RECT_F rect, D2D1_COLOR_F color);
     void showScreen(Screen screen, Clock::time_point now);
     void toggleFocus(Clock::time_point now);
     void selectTimerView(size_t index);
@@ -492,6 +496,14 @@ private:
     std::optional<D2D1_RECT_F> scratchEditor_;
     winrt::com_ptr<IDWriteTextLayout> scratchLayout_;
     std::wstring scratchLayoutText_;
+    // Checklist lines in the note: where the mark sits in the saved text and in the displayed layout.
+    struct ScratchCheck {
+        size_t source = 0;
+        UINT32 display = 0;
+        bool done = false;
+    };
+    std::vector<ScratchCheck> scratchChecks_;
+    std::optional<CalendarEvent> agenda_;
     float scratchScroll_ = 0;
     float scratchScrollLimit_ = 0;
     LyricsView const* lyrics_ = nullptr;

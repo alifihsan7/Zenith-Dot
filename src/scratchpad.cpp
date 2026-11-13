@@ -100,6 +100,19 @@ void Scratchpad::save() {
     std::wstring text(static_cast<size_t>(count) + 1, L'\0');
     text.resize(GetWindowTextW(edit_, text.data(), count + 1));
     view_.text = std::move(text);
+    write();
+}
+
+bool Scratchpad::toggleCheck(size_t offset) {
+    auto& text = view_.text;
+    if (window_ || offset + 3 >= text.size() || text[offset] != L'[' || text[offset + 2] != L']') return false;
+    auto& mark = text[offset + 1];
+    mark = mark == L' ' ? L'x' : L' ';
+    write();
+    return true;
+}
+
+void Scratchpad::write() {
     view_.saveFailed = true;
     if (file_.empty()) return;
 
