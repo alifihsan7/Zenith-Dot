@@ -275,7 +275,7 @@ private:
     float companionSlotOpacity(Clock::time_point now) const;
     void drawPrivacyBadge(Clock::time_point now, D2D1_RECT_F badge);
     void drawPrivacyDetails(D2D1_RECT_F details);
-    void drawCompanionShell(D2D1_RECT_F shape, float pinch, float border);
+    void drawCompanionShell(D2D1_RECT_F shape, float pinch);
     void drawSystem(D2D1_RECT_F panel, bool record);
     void drawPrayerSchedule(D2D1_RECT_F panel, bool record);
     void drawAppVolume(size_t index, D2D1_RECT_F row, bool record);
@@ -554,7 +554,6 @@ private:
     winrt::com_ptr<ID2D1DCRenderTarget> target_;
     winrt::com_ptr<ID2D1SolidColorBrush> brush_;
     winrt::com_ptr<ID2D1StrokeStyle> roundStroke_;
-    winrt::com_ptr<ID2D1StrokeStyle> dropDash_;
     std::array<winrt::com_ptr<ID2D1Layer>, 4> layers_;
     size_t layerDepth_ = 0;
     D2D1_MATRIX_3X2_F base_ = D2D1::Matrix3x2F::Identity();

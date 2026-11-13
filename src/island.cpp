@@ -2225,10 +2225,6 @@ void Island::prepareSurface(int width, int height, bool animating) {
         const auto round = D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
                                                        D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND);
         winrt::check_hresult(graphics_->CreateStrokeStyle(round, nullptr, 0, roundStroke_.put()));
-        auto dashed = D2D1::StrokeStyleProperties();
-        dashed.dashStyle = D2D1_DASH_STYLE_CUSTOM;
-        constexpr float dashes[]{4, 4};
-        winrt::check_hresult(graphics_->CreateStrokeStyle(dashed, dashes, std::size(dashes), dropDash_.put()));
     }
     if (!target_) {
         const auto properties = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE,
@@ -2429,7 +2425,6 @@ void Island::drawChipGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color) {
 void Island::drawButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record, size_t index, bool selected) {
     const float fill = pressed(hit, index) ? 0.14f : hovered(hit, index) ? 0.08f : 0.04f;
     target_->FillRoundedRectangle(rounded(rect, 8), ink(selected ? withAlpha(accent_, 0.16f) : white(fill)));
-    target_->DrawRoundedRectangle(rounded(grow(rect, -0.5f, -0.5f), 7.5f), ink(white(0.12f)), 1);
     text(label, buttonFont_.get(), rect, selected ? accent_ : rgb(inkColor));
     if (record) addTarget(rect, hit, index);
 }
@@ -2568,7 +2563,6 @@ void Island::drawPrivacyBadge(Clock::time_point now, D2D1_RECT_F badge) {
 void Island::drawPrivacyDetails(D2D1_RECT_F details) {
     const auto shell = rounded(details, 9);
     target_->FillRoundedRectangle(shell, ink(rgb(0x13171a)));
-    target_->DrawRoundedRectangle(shell, ink(white(0.18f)), 1);
     float top = details.top + 6;
     for (const auto i : privacyIconOrder) {
         const auto& indicator = captureIndicators_[i];
@@ -2583,13 +2577,12 @@ void Island::drawPrivacyDetails(D2D1_RECT_F details) {
     }
 }
 
-void Island::drawCompanionShell(D2D1_RECT_F shape, float pinch, float border) {
+void Island::drawCompanionShell(D2D1_RECT_F shape, float pinch) {
     const float height = shape.bottom - shape.top;
     if (height <= 0.1f) return;
     if (pinch <= 0) {
         const auto shell = rounded(shape, height / 2);
         fillShell(shell);
-        target_->DrawRoundedRectangle(shell, ink(white(border)), 1);
         return;
     }
     const float scale = height / pillHeight;
@@ -2600,7 +2593,6 @@ void Island::drawCompanionShell(D2D1_RECT_F shape, float pinch, float border) {
     winrt::com_ptr<ID2D1TransformedGeometry> geometry;
     winrt::check_hresult(graphics_->CreateTransformedGeometry(path.finish().get(), &transform, geometry.put()));
     fillShell(geometry.get());
-    target_->DrawGeometry(geometry.get(), ink(white(border)), 1);
 }
 
 void Island::drawLyricsGlyph(D2D1_POINT_2F origin, D2D1_COLOR_F color) {
@@ -2732,7 +2724,7 @@ void Island::drawActivityDot(Clock::time_point now, D2D1_RECT_F shape, PillMode 
     const auto shell = rounded(shape, (shape.bottom - shape.top) / 2);
     fillShell(shell);
     const float hover = interactive ? dotHover(now) : 0;
-    target_->DrawRoundedRectangle(shell, ink(white(std::lerp(0.16f, 0.42f, hover))), 1);
+    if (hover > 0) target_->FillRoundedRectangle(shell, ink(white(0.14f * hover)));
     drawActivityIndicator(now, shape, mode, rgb(inkColor));
     if (interactive) {
         const auto hit = grow(shape, 2, 2);
@@ -2756,7 +2748,6 @@ void Island::drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT
 
     const auto outgoingShell = rounded(outgoing, (outgoing.bottom - outgoing.top) / 2);
     fillShell(outgoingShell);
-    target_->DrawRoundedRectangle(outgoingShell, ink(white(0.13f)), 1);
     const float outgoingText = 1 - easeInOut(lin(0.06f, 0.45f, p));
     const float iconX = std::lerp((outgoing.left + outgoing.right) / 2, outgoing.left + 18, outgoingText);
     const auto icon = D2D1::RectF(iconX - 9, outgoing.top, iconX + 9, outgoing.bottom);
@@ -2780,7 +2771,6 @@ void Island::drawActivitySwap(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT
 
     const auto shell = rounded(incoming, (incoming.bottom - incoming.top) / 2);
     fillShell(shell);
-    target_->DrawRoundedRectangle(shell, ink(white(0.13f)), 1);
     const float content = easeInOut(lin(0.38f, 0.88f, p));
     if (content < 1) {
         pushLayer(nullptr, 1 - content);
@@ -2839,8 +2829,8 @@ void Island::drawHandoffShell(D2D1_RECT_F retiring, D2D1_RECT_F incoming, float 
     const float blend = 14 * std::sin(pi * merge);
     const float gap = std::max(incoming.left - retiring.right, retiring.left - incoming.right);
     if (blend <= 0.01f || gap >= blend / 2) {
-        if (merge < 0.999f) drawCompanionShell(retiring, 0, 0.13f);
-        drawCompanionShell(incoming, 0, 0.13f);
+        if (merge < 0.999f) drawCompanionShell(retiring, 0);
+        drawCompanionShell(incoming, 0);
         return;
     }
 
@@ -2895,7 +2885,6 @@ void Island::drawHandoffShell(D2D1_RECT_F retiring, D2D1_RECT_F incoming, float 
     for (int i = samples; i >= 0; --i) path.line(pt(outline[i].x, 2 * centerY - outline[i].y));
     const auto shape = path.close().finish();
     fillShell(shape.get());
-    target_->DrawGeometry(shape.get(), ink(white(0.13f)), 1);
 }
 
 void Island::drawHandoffOutgoing(D2D1_RECT_F pill, float opacity) {
@@ -2932,9 +2921,10 @@ void Island::drawIsland(Clock::time_point now, float value, float amount, bool m
         target_->FillRectangle(hit, ink(D2D1::ColorF(0, 0, 0, 1.0f / 255)));
         addTarget(hit, Hit::pill);
     }
-    fillShell(rounded(clip, radius));
-    target_->DrawRoundedRectangle(rounded(grow(clip, -0.5f, -0.5f), radius - 0.5f),
-                                  ink(white(std::lerp(0.13f + 0.23f * dotHover(now) * (1 - clamp01(amount)), 0.12f, value))), 1);
+    const auto shell = rounded(clip, radius);
+    fillShell(shell);
+    const float hover = dotHover(now) * (1 - clamp01(amount)) * (1 - clamp01(value));
+    if (hover > 0) target_->FillRoundedRectangle(shell, ink(white(0.18f * hover)));
     const float compactOpacity = lin(0.55f, 1, amount) * (1 - lin(0, 0.38f, value));
     const float panelOpacity = lin(0.16f, 0.86f, value);
     const float switching = progress(screenStart_, screenFadeTime, now);
@@ -3039,7 +3029,6 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     const bool shrink = preferences_.shrinkOverControls;
     const auto toggle = box(right - 36, modeTop + 4, 36, 19);
     target_->FillRoundedRectangle(rounded(toggle, 9.5f), ink(shrink ? accent_ : white(0.14f)));
-    target_->DrawRoundedRectangle(rounded(toggle, 9.5f), ink(white(0.18f)), 1);
     const auto thumb = pt(shrink ? toggle.right - 9.5f : toggle.left + 9.5f, modeTop + 13.5f);
     target_->FillEllipse(D2D1::Ellipse(thumb, 6, 6), ink(shrink ? rgb(0x101318) : rgb(inkColor)));
     if (record) addTarget(modeRow, Hit::homeOverlapMode);
@@ -3136,7 +3125,7 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
     }
     if (hasMedia && !media_.appId.empty()) {
         if (hovered(Hit::cover) || pressed(Hit::cover))
-            target_->DrawRoundedRectangle(rounded(cover, 8), ink(accent_), 1);
+            target_->FillRoundedRectangle(rounded(cover, 8), ink(withAlpha(accent_, 0.19f)));
         if (record) addTarget(cover, Hit::cover);
     }
     if (!hideTitle)
@@ -3528,9 +3517,9 @@ void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
         text(L"Couldn’t save", bodyEndFont_.get(), box(x + 160, y, innerWidth - 160, 22), rgb(mutedColor));
     }
     const auto field = box(x, y + 32, innerWidth, 116);
-    const auto edge = scratchEditing_ || hovered(Hit::scratchEdit) ? accent_ : rgb(0x737e8c);
-    target_->FillRoundedRectangle(rounded(field, 6), ink(rgb(0x161c24)));
-    target_->DrawRoundedRectangle(rounded(field, 6), ink(edge), 1);
+    const bool active = scratchEditing_ || hovered(Hit::scratchEdit);
+    const auto fill = active ? mixColor(rgb(0x161c24), accent_, 0.15f) : rgb(0x161c24);
+    target_->FillRoundedRectangle(rounded(field, 6), ink(fill));
     const auto editor = grow(field, -3, -3);
     if (!scratchEditing_) {
         const auto viewport = grow(editor, -7, -4);
@@ -3571,8 +3560,7 @@ void Island::drawDropZone(D2D1_RECT_F panel, bool record) {
     const bool empty = dropItems_.empty();
     const auto field = box(x, panel.top + 44, innerWidth, empty ? 112.0f : 36.0f);
     const auto blue = rgb(0x9ccfff);
-    target_->FillRoundedRectangle(rounded(field, 9), ink(withAlpha(blue, dropHover_ ? 0.11f : 0.03f)));
-    target_->DrawRoundedRectangle(rounded(field, 9), ink(dropHover_ ? blue : rgb(0x657b94)), 1, dropDash_.get());
+    target_->FillRoundedRectangle(rounded(field, 9), ink(withAlpha(blue, dropHover_ ? 0.21f : 0.09f)));
     if (empty) {
         drawScreenGlyph(Screen::drop, box(x, field.top + 22, innerWidth, 24), blue);
         text(dropHover_ ? L"Release to add" : L"Drop files or text here", headingCenterFont_.get(),
@@ -3614,7 +3602,7 @@ void Island::drawDropZone(D2D1_RECT_F panel, bool record) {
                     width, height), 1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
             }
             const bool active = hovered(Hit::dropImage, index) || pressed(Hit::dropImage, index);
-            target_->DrawRoundedRectangle(rounded(tile, 5), ink(active ? blue : white(0.16f)), 1);
+            if (active) target_->FillRoundedRectangle(rounded(tile, 5), ink(withAlpha(blue, 0.20f)));
             if (record) addTarget(tile, Hit::dropImage, index);
         } else {
             const auto color = ink(rgb(0xa8c4e2));
@@ -3768,7 +3756,6 @@ void Island::drawAudioGlyph(D2D1_POINT_2F center, bool headphones, D2D1_COLOR_F 
 
 void Island::drawPickerSurface(D2D1_RECT_F rect, Hit hit) {
     target_->FillRoundedRectangle(rounded(rect, 9), ink(mixColor(rgb(0x17191c), accent_, 0.075f)));
-    target_->DrawRoundedRectangle(rounded(rect, 9), ink(white(0.15f)), 1);
     addTarget(rect, hit);
 }
 
@@ -3971,14 +3958,12 @@ void Island::drawPrayerSchedule(D2D1_RECT_F panel, bool record) {
         const bool upcoming = !timing.tomorrow && i == timing.nextIndex;
         if (upcoming) {
             const auto ring = D2D1::Ellipse(point, 5.5f, 5.5f);
-            target_->FillEllipse(ring, ink(rgb(0x10161e)));
-            target_->DrawEllipse(ring, ink(accent_), 1.4f);
+            target_->FillEllipse(ring, ink(mixColor(rgb(0x10161e), accent_, 0.36f)));
         }
         target_->FillEllipse(D2D1::Ellipse(point, 2.6f, 2.6f), ink(upcoming ? accent_ : rgb(inkColor)));
         const auto row = box(scheduleLeft + static_cast<float>(i) * labelStep + 2, y + 77, labelStep - 4, 38);
         if (upcoming) {
             target_->FillRoundedRectangle(rounded(row, 7), ink(withAlpha(accent_, 0.14f)));
-            target_->DrawRoundedRectangle(rounded(row, 7), ink(withAlpha(accent_, 0.35f)), 1);
         }
         text(prayerNames[i], buttonFont_.get(), box(row.left, row.top + 3, row.right - row.left, 14),
              upcoming ? accent_ : rgb(mutedColor));
@@ -4384,7 +4369,7 @@ void Island::drawBubbleToDot(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_
     }
     const auto shape = mixRect(bubble, closingDotShape(now, pill), progress);
     const float pinch = std::sin(pi * progress) * 0.28f;
-    drawCompanionShell(shape, pinch, 0.13f);
+    drawCompanionShell(shape, pinch);
     drawAlertContent(shape, 1 - easeInOut(lin(0.05f, 0.45f, progress)), 1);
     if (!closingDot_->idle && progress > 0.3f) {
         pushLayer(nullptr, easeInOut(lin(0.3f, 0.9f, progress)));
@@ -4402,7 +4387,6 @@ void Island::drawBubblePrimary(Clock::time_point now, D2D1_RECT_F pill, float op
     fillShell(shell);
     drawCompactContent(now, pill, false);
     popLayer();
-    target_->DrawRoundedRectangle(shell, ink(white(0.13f * opacity)), 1);
 }
 
 void Island::drawBubbleFromDot(Clock::time_point now, D2D1_RECT_F pill, D2D1_RECT_F bubble) {
@@ -4419,7 +4403,7 @@ void Island::drawBubbleFromDot(Clock::time_point now, D2D1_RECT_F pill, D2D1_REC
     auto shape = mixRect(dot, bubble, expansion);
     if (animate_ && isCountdownAlert(alert_->kind))
         shape = countdownShake(shape, progress(alertStart_, countdownCompletionMotion, now));
-    drawCompanionShell(shape, 0, 0.13f);
+    drawCompanionShell(shape, 0);
     const float textOpacity = easeInOut(lin(0.55f, 1, expansion));
     const float notice = isCountdownAlert(alert_->kind) ? easeInOut(lin(0, 0.35f, expansion)) : 1;
     if (notice < 1) {
@@ -4479,7 +4463,6 @@ void Island::drawSplit(Clock::time_point now, float amount, std::optional<D2D1_R
                                                  slot->bottom + 1), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     }
     fillShell(visible);
-    target_->DrawGeometry(visible, ink(white(0.13f)), 1);
     if (!drawsWholePill) target_->PopAxisAlignedClip();
 
     if (fromPill && drawsWholePill) {
@@ -4840,7 +4823,7 @@ void Island::draw(HWND window) {
         const float middle = (original.top + original.bottom) / 2;
         const auto destination = box(original.left, middle, 0, 0);
         const auto shape = mixRect(original, destination, t);
-        drawCompanionShell(shape, std::sin(pi * t) * 0.85f, 0.16f);
+        drawCompanionShell(shape, std::sin(pi * t) * 0.85f);
         pushLayer(nullptr, 1 - t);
         drawActivityIndicator(now, shape, retiringDotMode_, rgb(inkColor));
         popLayer();

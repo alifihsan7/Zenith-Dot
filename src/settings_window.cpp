@@ -215,7 +215,6 @@ public:
     void end();
     void fill(RECT area, COLORREF value);
     void rounded(D2D1_RECT_F area, float radius, D2D1_COLOR_F value);
-    void focus(RECT area, float radius, COLORREF value);
     void text(RECT area, wchar_t const* value, IDWriteTextFormat* font, D2D1_COLOR_F ink);
     IDWriteTextFormat* body() const { return body_.get(); }
     IDWriteTextFormat* strong() const { return strong_.get(); }
@@ -283,11 +282,6 @@ void Canvas::fill(RECT area, COLORREF value) {
 void Canvas::rounded(D2D1_RECT_F area, float radius, D2D1_COLOR_F value) {
     brush_->SetColor(value);
     target_->FillRoundedRectangle(D2D1::RoundedRect(area, radius, radius), brush_.get());
-}
-
-void Canvas::focus(RECT area, float radius, COLORREF value) {
-    brush_->SetColor(color(value));
-    target_->DrawRoundedRectangle(D2D1::RoundedRect(rect(area), radius, radius), brush_.get());
 }
 
 void Canvas::text(RECT area, wchar_t const* value, IDWriteTextFormat* font, D2D1_COLOR_F ink) {
@@ -818,7 +812,6 @@ void SettingsWindow::paint(HDC dc) {
     if (!canvas_.begin(dc, client, background)) return;
     const auto rail = units(0, 0, 122, 0);
     canvas_.fill({0, 0, rail.right, client.bottom}, sidebar);
-    canvas_.fill({rail.right - 1, 0, rail.right, client.bottom}, border);
     canvas_.text(units(38, 12, 115, 34), L"Zenula", canvas_.strong(), color(foreground));
 
     const float phase = pageOpacity();
@@ -863,7 +856,9 @@ void SettingsWindow::drawOption(HWND control, HDC dc, Option const& option) {
     GetClientRect(control, &row);
     if (!canvas_.begin(dc, row, background)) return;
     const float phase = std::lerp(0.72f, 1.0f, pageOpacity());
-    canvas_.rounded(rect(row), static_cast<float>(px(8)), blend(background, hovered(control) ? selected : surface, phase));
+    const bool focused = GetFocus() == control;
+    const auto face = focused ? RGB(57, 83, 111) : hovered(control) ? selected : surface;
+    canvas_.rounded(rect(row), static_cast<float>(px(8)), blend(background, face, phase));
     const bool enabled = IsWindowEnabled(control) != FALSE;
     const float checked = animate_ ? toggles_[&option - options].value(Clock::now()) : toggles_[&option - options].to;
     const bool listToggle = isFeatureSwitch(option.id);
@@ -889,10 +884,6 @@ void SettingsWindow::drawOption(HWND control, HDC dc, Option const& option) {
             : option.description;
         canvas_.text({left, middle, textRight, row.bottom - px(6)}, description, canvas_.body(),
                      blend(surface, muted, phase));
-    }
-    if (GetFocus() == control) {
-        InflateRect(&row, -px(2), -px(2));
-        canvas_.focus(row, static_cast<float>(px(7)), accent);
     }
     canvas_.end();
 }
@@ -923,9 +914,7 @@ void SettingsWindow::drawButton(DRAWITEMSTRUCT const& item) {
                             : blend(base, active || hot || (item.itemState & ODS_SELECTED) ? selected : surface, phase));
     }
     if (item.itemState & ODS_FOCUS) {
-        auto focus = area;
-        InflateRect(&focus, -px(2), -px(2));
-        canvas_.focus(focus, static_cast<float>(px(5)), accent);
+        canvas_.rounded(rect(area), static_cast<float>(px(6)), blend(selected, accent, 0.23f));
     }
     wchar_t text[96]{};
     GetWindowTextW(item.hwndItem, text, ARRAYSIZE(text));
@@ -1018,6 +1007,16 @@ INT_PTR CALLBACK SettingsWindow::dialog(HWND window, UINT message, WPARAM wparam
         if (wparam == motionTimer) {
             self->redrawMotion();
             return TRUE;
+        }
+        break;
+    case WM_CTLCOLOREDIT:
+        if (GetDlgCtrlID(reinterpret_cast<HWND>(lparam)) == IDC_PRAYER_LEAD) {
+            const auto dc = reinterpret_cast<HDC>(wparam);
+            const auto fill = GetFocus() == reinterpret_cast<HWND>(lparam) ? selected : surface;
+            SetTextColor(dc, foreground);
+            SetBkColor(dc, fill);
+            SetDCBrushColor(dc, fill);
+            return reinterpret_cast<INT_PTR>(GetStockObject(DC_BRUSH));
         }
         break;
     case WM_ERASEBKGND:

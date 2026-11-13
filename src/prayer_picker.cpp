@@ -11,7 +11,7 @@ namespace {
 
 constexpr COLORREF backgroundColor = RGB(15, 18, 24);
 constexpr COLORREF fieldColor = RGB(24, 29, 38);
-constexpr COLORREF borderColor = RGB(47, 57, 72);
+constexpr COLORREF focusColor = RGB(43, 65, 89);
 constexpr COLORREF foregroundColor = RGB(240, 244, 250);
 constexpr COLORREF mutedColor = RGB(165, 178, 196);
 constexpr COLORREF accentColor = RGB(145, 202, 255);
@@ -22,10 +22,12 @@ struct Picker {
     std::vector<unsigned> order;
     HBRUSH background = CreateSolidBrush(backgroundColor);
     HBRUSH field = CreateSolidBrush(fieldColor);
+    HBRUSH focusedField = CreateSolidBrush(selectedColor);
 
     ~Picker() {
         DeleteObject(background);
         DeleteObject(field);
+        DeleteObject(focusedField);
     }
 };
 
@@ -33,11 +35,10 @@ int px(HWND window, int value) {
     return MulDiv(value, GetDpiForWindow(window), 96);
 }
 
-void rounded(HDC dc, RECT rect, int radius, COLORREF fill, COLORREF stroke) {
+void rounded(HDC dc, RECT rect, int radius, COLORREF fill) {
     const auto brush = SelectObject(dc, GetStockObject(DC_BRUSH));
-    const auto pen = SelectObject(dc, GetStockObject(DC_PEN));
+    const auto pen = SelectObject(dc, GetStockObject(NULL_PEN));
     SetDCBrushColor(dc, fill);
-    SetDCPenColor(dc, stroke);
     RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius, radius);
     SelectObject(dc, pen);
     SelectObject(dc, brush);
@@ -52,7 +53,7 @@ void drawSearch(HWND window, HDC dc) {
     bounds.right += px(window, 10);
     InflateRect(&bounds, 0, px(window, 6));
     const bool focused = GetFocus() == edit;
-    rounded(dc, bounds, px(window, 14), fieldColor, focused ? accentColor : borderColor);
+    rounded(dc, bounds, px(window, 14), focused ? selectedColor : fieldColor);
 
     const int x = bounds.left + px(window, 16);
     const int y = (bounds.top + bounds.bottom) / 2 - px(window, 1);
@@ -77,8 +78,9 @@ void drawAction(HWND window, DRAWITEMSTRUCT const& item, HBRUSH background) {
     GetCursorPos(&pointer);
     const bool hot = enabled && WindowFromPoint(pointer) == item.hwndItem;
     const auto fill = primary && enabled ? pressed ? RGB(119, 170, 220) : accentColor
-                                        : hot || pressed ? selectedColor : fieldColor;
-    rounded(item.hDC, item.rcItem, px(window, 13), fill, focused ? foregroundColor : enabled && primary ? fill : borderColor);
+                                        : focused ? focusColor : hot || pressed ? selectedColor : fieldColor;
+    const auto face = focused && primary && enabled ? foregroundColor : fill;
+    rounded(item.hDC, item.rcItem, px(window, 13), face);
     SetBkMode(item.hDC, TRANSPARENT);
     SetTextColor(item.hDC, primary && enabled ? backgroundColor : enabled ? foregroundColor : mutedColor);
     RECT label = item.rcItem;
@@ -157,8 +159,9 @@ INT_PTR CALLBACK pickerDialog(HWND window, UINT message, WPARAM wparam, LPARAM l
             const auto control = reinterpret_cast<HWND>(lparam);
             const bool results = message == WM_CTLCOLORLISTBOX;
             SetTextColor(dc, label && GetDlgCtrlID(control) >= IDC_PRAYER_STATUS ? mutedColor : foregroundColor);
-            SetBkColor(dc, label || results ? backgroundColor : fieldColor);
-            return reinterpret_cast<INT_PTR>(label || results ? picker->background : picker->field);
+            const bool focused = !label && !results && GetFocus() == control;
+            SetBkColor(dc, label || results ? backgroundColor : focused ? selectedColor : fieldColor);
+            return reinterpret_cast<INT_PTR>(label || results ? picker->background : focused ? picker->focusedField : picker->field);
         }
         break;
     case WM_MEASUREITEM:
@@ -180,7 +183,8 @@ INT_PTR CALLBACK pickerDialog(HWND window, UINT message, WPARAM wparam, LPARAM l
         FillRect(item.hDC, &item.rcItem, picker->background);
         auto tile = item.rcItem;
         InflateRect(&tile, -px(window, 2), -px(window, 2));
-        if (selected) rounded(item.hDC, tile, px(window, 12), selectedColor, selectedColor);
+        const bool focused = (item.itemState & ODS_FOCUS) != 0;
+        if (selected || focused) rounded(item.hDC, tile, px(window, 12), focused ? focusColor : selectedColor);
         SetBkMode(item.hDC, TRANSPARENT);
         auto label = item.rcItem;
         InflateRect(&label, -MulDiv(10, GetDpiForWindow(window), 96), 0);
@@ -210,12 +214,13 @@ INT_PTR CALLBACK pickerDialog(HWND window, UINT message, WPARAM wparam, LPARAM l
             DrawTextW(item.hDC, prayerLocations[index - 1].province, -1, &city,
                       DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
-        if (item.itemState & ODS_FOCUS) DrawFocusRect(item.hDC, &tile);
         return TRUE;
     }
     case WM_COMMAND:
-        if (LOWORD(wparam) == IDC_PRAYER_SEARCH && (HIWORD(wparam) == EN_SETFOCUS || HIWORD(wparam) == EN_KILLFOCUS))
+        if (LOWORD(wparam) == IDC_PRAYER_SEARCH && (HIWORD(wparam) == EN_SETFOCUS || HIWORD(wparam) == EN_KILLFOCUS)) {
             InvalidateRect(window, nullptr, FALSE);
+            InvalidateRect(GetDlgItem(window, IDC_PRAYER_SEARCH), nullptr, TRUE);
+        }
         if (LOWORD(wparam) == IDC_PRAYER_SEARCH && HIWORD(wparam) == EN_CHANGE && picker) {
             updateList(window, *picker);
             return TRUE;

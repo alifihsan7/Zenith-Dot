@@ -321,7 +321,7 @@ void App::openTimerEdit() {
     timerPreviousFocus_ = GetForegroundWindow();
     const int height = bounds->bottom - bounds->top;
     timerEdit_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"EDIT", island_.timerDurationText().c_str(),
-        WS_POPUP | WS_BORDER | ES_CENTER | ES_AUTOHSCROLL, bounds->left, bounds->top,
+        WS_POPUP | ES_CENTER | ES_AUTOHSCROLL, bounds->left, bounds->top,
         bounds->right - bounds->left, height, window_, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!timerEdit_) return;
     if (!SetWindowSubclass(timerEdit_, timerEditInput, 1, reinterpret_cast<DWORD_PTR>(window_))) {
