@@ -3416,23 +3416,44 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     const size_t selected = quickView_ ? 2 : phase;
     const bool focusBusy = focus_.running() || focus_.paused();
 
+    const auto control = [&](D2D1_RECT_F rect, std::wstring_view label, Hit hit, size_t index = 0,
+                             bool enabled = true, bool active = false, bool primary = false, bool quiet = false) {
+        const bool down = enabled && pressed(hit, index);
+        const bool hot = enabled && hovered(hit, index);
+        const auto foreground = primary ? rgb(0x101318) : active ? accent_ : rgb(enabled ? inkColor : mutedColor);
+        if (primary) {
+            const auto fill = down ? mixColor(accent_, rgb(0x101318), 0.15f)
+                : hot ? mixColor(accent_, white(1), 0.12f) : accent_;
+            target_->FillRoundedRectangle(rounded(rect, 8), ink(fill));
+        } else if (active || hot || down || !quiet) {
+            const auto fill = active ? withAlpha(accent_, down ? 0.26f : hot ? 0.23f : 0.18f)
+                : white(down ? 0.16f : hot ? 0.11f : enabled ? 0.065f : 0.035f);
+            target_->FillRoundedRectangle(rounded(rect, 8), ink(fill));
+        }
+        text(label, buttonFont_.get(), rect, foreground);
+        if (record && enabled) addTarget(rect, hit, index);
+    };
+
+
     // Auto toggle at the top right; with it on, four dots show the round (filled = Focus finished).
     const auto autoButton = box(x + panelWidth - padX - 46, y + 11, 46, 25);
-    drawButton(autoButton, L"Auto", Hit::autoCycle, record, 0, autoCycle_);
+    control(autoButton, L"Auto", Hit::autoCycle, 0, true, autoCycle_);
     if (autoCycle_) {
         for (int i = 0; i < focusRounds; ++i) {
             const auto center = pt(autoButton.left - 12 - 12.0f * static_cast<float>(focusRounds - 1 - i),
                                    (autoButton.top + autoButton.bottom) / 2);
             const bool finished = i < focusRound_ - (breakPhase_ ? 0 : 1);
             const bool current = i == focusRound_ - 1 && focusBusy && !finished;
-            if (finished) target_->FillEllipse(D2D1::Ellipse(center, 3.5f, 3.5f), ink(accent_));
-            else target_->DrawEllipse(D2D1::Ellipse(center, 3, 3), ink(current ? accent_ : white(0.35f)), 1.2f);
+            const float radius = finished || current ? 3.5f : 2.5f;
+            target_->FillEllipse(D2D1::Ellipse(center, radius, radius),
+                                 ink(finished ? accent_ : current ? withAlpha(accent_, 0.62f) : white(0.32f)));
         }
     }
+    target_->FillRoundedRectangle(rounded(box(centerX - 120, y + 39, 240, 36), 11), ink(white(0.045f)));
     for (size_t i = 0; i < std::size(labels); ++i) {
         const bool selectable = i == 2 || !focusBusy || i == phase;
-        drawButton(box(centerX - 116 + 80 * static_cast<float>(i), y + 43, 72, 28),
-                   labels[i], Hit::timerView, record && selectable, i, i == selected);
+        control(box(centerX - 116 + 79 * static_cast<float>(i), y + 43, 74, 28),
+                labels[i], Hit::timerView, i, selectable, i == selected, false, true);
     }
 
     const auto& timer = quickView_ ? quick_ : focus_;
@@ -3467,9 +3488,9 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     if (quickView_) {
         for (size_t i = 0; i < std::size(timerPresets); ++i) {
             const auto minutes = timerPresets[i];
-            drawButton(box(centerX - 88 + 60 * static_cast<float>(i), y + 126, 56, 26),
-                       std::to_wstring(minutes) + L" min", Hit::timerPreset, record && adjustable, i,
-                       quick_.duration() == minutes * 60);
+            control(box(centerX - 88 + 60 * static_cast<float>(i), y + 126, 56, 26),
+                    std::to_wstring(minutes) + L" min", Hit::timerPreset, i, adjustable,
+                    quick_.duration() == minutes * 60);
         }
     } else {
         const auto detail = autoCycle_
@@ -3483,20 +3504,20 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         const int limit = timerDurationLimit();
         for (size_t unit = 0; unit < 2; ++unit) {
             const float left = centerX - 111 + 117 * static_cast<float>(unit);
-            drawButton(box(left, y + 157, 28, 26), L"−", hit, record && duration > 1, 2 * unit);
+            control(box(left, y + 157, 28, 26), L"−", hit, 2 * unit, duration > 1);
             text(unit == 0 ? L"min" : L"sec", buttonFont_.get(),
                  box(left + 30, y + 157, 45, 26), rgb(mutedColor));
-            drawButton(box(left + 77, y + 157, 28, 26), L"+", hit, record && duration < limit, 2 * unit + 1);
+            control(box(left + 77, y + 157, 28, 26), L"+", hit, 2 * unit + 1, duration < limit);
         }
     }
     auto action = L"Start";
     if (timer.running()) action = L"Pause";
     else if (timer.paused()) action = L"Resume";
     else if (timer.done()) action = quickView_ ? L"Restart" : (breakPhase_ ? L"Start Focus" : L"Start Break");
-    drawButton(box(centerX - 93, y + 191, 106, 29), action,
-               quickView_ ? Hit::timerToggle : Hit::focusToggle, record);
-    drawButton(box(centerX + 21, y + 191, 72, 29), L"Reset",
-               quickView_ ? Hit::timerReset : Hit::focusReset, record);
+    control(box(centerX - 93, y + 191, 106, 29), action,
+            quickView_ ? Hit::timerToggle : Hit::focusToggle, 0, true, false, true);
+    control(box(centerX + 21, y + 191, 72, 29), L"Reset",
+            quickView_ ? Hit::timerReset : Hit::focusReset, 0, true, false, false, true);
 }
 
 void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
