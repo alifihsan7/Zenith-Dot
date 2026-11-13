@@ -15,7 +15,6 @@ namespace {
 constexpr wchar_t editorClass[] = L"ZenithDot.Scratchpad";
 constexpr UINT_PTR saveTimer = 1;
 constexpr UINT noteLimit = 32'768;
-constexpr COLORREF editorBackground = RGB(22, 28, 36);
 
 }
 
@@ -53,7 +52,7 @@ bool Scratchpad::open(HWND owner, RECT bounds) {
     const auto dpi = GetDpiForWindow(owner);
     font_ = CreateFontW(-MulDiv(14, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    background_ = CreateSolidBrush(editorBackground);
+    background_ = CreateSolidBrush(backgroundColor_);
     window_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, editorClass, L"Scratchpad", WS_POPUP,
                               bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
                               owner, nullptr, instance, this);
@@ -85,6 +84,16 @@ bool Scratchpad::open(HWND owner, RECT bounds) {
     }
     SendMessageW(edit_, EM_SETSEL, caret, caret);
     return true;
+}
+
+void Scratchpad::setBackground(COLORREF color) {
+    if (color == backgroundColor_) return;
+    backgroundColor_ = color;
+    if (!window_) return;
+    if (background_) DeleteObject(background_);
+    background_ = CreateSolidBrush(color);
+    InvalidateRect(window_, nullptr, TRUE);
+    if (edit_) InvalidateRect(edit_, nullptr, TRUE);
 }
 
 void Scratchpad::place(RECT bounds) {
@@ -184,7 +193,7 @@ LRESULT CALLBACK Scratchpad::dispatch(HWND window, UINT message, WPARAM wparam, 
         return 0;
     case WM_CTLCOLOREDIT:
         SetTextColor(reinterpret_cast<HDC>(wparam), RGB(245, 246, 248));
-        SetBkColor(reinterpret_cast<HDC>(wparam), editorBackground);
+        SetBkColor(reinterpret_cast<HDC>(wparam), self->backgroundColor_);
         return reinterpret_cast<LRESULT>(self->background_);
     case WM_ERASEBKGND: {
         RECT rect{};

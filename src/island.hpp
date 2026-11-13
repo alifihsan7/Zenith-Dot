@@ -112,6 +112,10 @@ public:
     bool panelPinned() const;
     std::optional<RECT> scratchEditorRect() const;
     std::optional<RECT> taskInputRect() const;
+    // Scratchpad surfaces follow the active session's accent; the Win32 inputs on top use the same colors.
+    COLORREF scratchEditorColor() const;
+    COLORREF taskInputColor() const;
+    D2D1_COLOR_F scratchSurface() const;
     std::optional<RECT> timerEditorRect() const;
     std::wstring timerDurationText() const;
     bool setTimerDurationText(std::wstring_view text);

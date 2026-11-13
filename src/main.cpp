@@ -102,6 +102,7 @@ private:
     HWND taskPreviousFocus_ = nullptr;
     HFONT taskEditFont_ = nullptr;
     HBRUSH taskEditBrush_ = nullptr;
+    COLORREF taskEditColor_ = 0;
     HPOWERNOTIFY powerNotification_ = nullptr;
     UINT taskbarCreated_ = 0;
     UINT frameInterval_ = 0;
@@ -290,6 +291,13 @@ void App::frame() {
     }
     if (scratchpad_.window()) {
         if (const auto bounds = island_.scratchEditorRect()) scratchpad_.place(*bounds);
+        scratchpad_.setBackground(island_.scratchEditorColor());
+    }
+    if (taskEdit_ && island_.taskInputColor() != taskEditColor_) {
+        taskEditColor_ = island_.taskInputColor();
+        if (taskEditBrush_) DeleteObject(taskEditBrush_);
+        taskEditBrush_ = CreateSolidBrush(taskEditColor_);
+        InvalidateRect(taskEdit_, nullptr, TRUE);
     }
     if (taskEdit_) {
         if (const auto bounds = island_.taskInputRect(); visible && bounds) {
@@ -396,7 +404,8 @@ void App::openTaskEdit() {
     taskEditFont_ = CreateFontW(-std::min(MulDiv(14, static_cast<int>(dpi), 96), height * 3 / 5), 0, 0, 0, FW_NORMAL,
                                 FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                 CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    taskEditBrush_ = CreateSolidBrush(RGB(0x24, 0x2a, 0x33));
+    taskEditColor_ = island_.taskInputColor();
+    taskEditBrush_ = CreateSolidBrush(taskEditColor_);
     SendMessageW(taskEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(taskEditFont_), FALSE);
     SendMessageW(taskEdit_, EM_SETLIMITTEXT, TaskList::maxLength, 0);
     const int margin = MulDiv(10, static_cast<int>(dpi), 96);
@@ -504,6 +513,7 @@ void App::run(IslandCommand const& command) {
         if (tasks_.clearDone()) island_.setTasks(tasks_.view());
         break;
     case IslandCommand::Kind::editScratchpad:
+        scratchpad_.setBackground(island_.scratchEditorColor());
         if (const auto bounds = island_.scratchEditorRect()) {
             island_.setScratchEditing(scratchpad_.open(window_, *bounds));
         }
@@ -1258,7 +1268,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         if (taskEdit_ && reinterpret_cast<HWND>(lparam) == taskEdit_) {
             const auto dc = reinterpret_cast<HDC>(wparam);
             SetTextColor(dc, RGB(0xf2, 0xf5, 0xf8));
-            SetBkColor(dc, RGB(0x24, 0x2a, 0x33));
+            SetBkColor(dc, taskEditColor_);
             return reinterpret_cast<LRESULT>(taskEditBrush_);
         }
         break;

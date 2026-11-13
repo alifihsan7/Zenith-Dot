@@ -867,6 +867,25 @@ void Island::closePanel() { setOpen(false, Clock::now()); }
 
 bool Island::panelPinned() const { return open_ && panelPinned_; }
 
+D2D1_COLOR_F Island::scratchSurface() const {
+    return mixColor(rgb(0x17191c), accent_, 0.075f);
+}
+
+namespace {
+COLORREF colorRef(D2D1_COLOR_F color) {
+    const auto channel = [](float value) { return static_cast<BYTE>(std::lround(std::clamp(value, 0.0f, 1.0f) * 255)); };
+    return RGB(channel(color.r), channel(color.g), channel(color.b));
+}
+}
+
+COLORREF Island::scratchEditorColor() const {
+    return colorRef(scratchSurface());
+}
+
+COLORREF Island::taskInputColor() const {
+    return colorRef(mixColor(scratchSurface(), rgb(0xffffff), 0.085f));
+}
+
 std::optional<RECT> Island::taskInputRect() const {
     if (!open_ || screen_ != Screen::scratch || !scratchTasks_ || !taskInput_) return std::nullopt;
     const auto box = *taskInput_;
@@ -3776,7 +3795,7 @@ void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
     }
     const auto field = box(x, y + 32, innerWidth, 116);
     const bool active = scratchEditing_ || hovered(Hit::scratchEdit);
-    const auto fill = active ? mixColor(rgb(0x161c24), accent_, 0.15f) : rgb(0x161c24);
+    const auto fill = active ? mixColor(scratchSurface(), accent_, 0.15f) : scratchSurface();
     target_->FillRoundedRectangle(rounded(field, 6), ink(fill));
     const auto editor = grow(field, -3, -3);
     if (!scratchEditing_) {
@@ -3813,7 +3832,7 @@ void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
 
 void Island::drawTasks(float x, float top, float headerY, float statusLeft, float statusRight, bool record) {
     const auto field = box(x, top, innerWidth, taskFieldHeight);
-    target_->FillRoundedRectangle(rounded(field, 6), ink(rgb(0x161c24)));
+    target_->FillRoundedRectangle(rounded(field, 6), ink(scratchSurface()));
     static const std::vector<Task> none;
     const auto& items = tasks_ ? tasks_->items : none;
     const auto done = static_cast<size_t>(std::ranges::count_if(items, &Task::done));
