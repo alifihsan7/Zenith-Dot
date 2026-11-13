@@ -472,6 +472,14 @@ private:
     std::vector<DropGhost> dropGhosts_;
     Clock::time_point dropMotionStart_{};
     float dropRowsFrom_ = 0;   // visible rows before the last change
+    // Home: activity rows slide to new places and new ones fade in; clock digits roll on change.
+    std::vector<Screen> homeRowsShown_;
+    std::vector<Screen> homeRowsFrom_;
+    Clock::time_point homeRowsStart_{};
+    std::wstring homeClock_;
+    std::wstring homeClockFrom_;
+    Clock::time_point homeClockStart_{};
+    Clock::time_point homeDrawnAt_{};
     float dropFieldFrom_ = 1;
     Clock::time_point dropFieldStart_{};
     void drawDropRow(DropPreview const& item, size_t index, float rowY, float x, bool record);

@@ -184,6 +184,8 @@ constexpr float dropRowHeight = 43;
 constexpr float dropEmptyHeight = 222;
 constexpr float dropFilledBaseHeight = 154;
 constexpr auto dropMotionTime = 260ms;
+constexpr auto homeRowTime = 280ms;
+constexpr auto homeClockTime = 320ms;
 constexpr float dropEmptyField = 112;
 constexpr float dropFilledField = 36;
 
@@ -1034,7 +1036,8 @@ bool Island::moving(Clock::time_point now) const {
     return activitySwapActive(now) || now - timerDigitsStart_ < timerDigitMotion || now - countdownCompletion_.start < countdownCompletionMotion ||
            now - dotExitStart_ < activityDotExitTime || now - dotHoverStart_ < dotHoverTime ||
            now - hoverStart_ < hoverFadeTime || now - shrinkStart_ < toggleTime ||
-           now - dropMotionStart_ < dropMotionTime || now - dropFieldStart_ < dropMotionTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
+           now - dropMotionStart_ < dropMotionTime || now - dropFieldStart_ < dropMotionTime ||
+           now - homeRowsStart_ < homeRowTime || now - homeClockStart_ < homeClockTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
            std::ranges::any_of(captureIndicators_, [now](auto const& item) { return now - item.start < captureTime; }) ||
            now - screenStart_ < shapeTime ||
            now - widthStart_ < shapeTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
@@ -3137,7 +3140,35 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     SYSTEMTIME local{};
     GetLocalTime(&local);
     const auto time = prayerTimeText(local.wHour * 60 + local.wMinute);
-    text(time, timerFont_.get(), box(settings.left - 66, top, 57, 29), rgb(inkColor));
+    // Only animate changes seen while Home stays on screen; reopening shows the current state at once.
+    const bool continuing = animate_ && homeDrawnAt_ != Clock::time_point{} && now - homeDrawnAt_ < 1500ms;
+    homeDrawnAt_ = now;
+    if (time != homeClock_) {
+        homeClockFrom_ = homeClock_;
+        homeClock_ = time;
+        homeClockStart_ = continuing && homeClockFrom_.size() == time.size() ? now : Clock::time_point{};
+    }
+    const auto clockBox = box(settings.left - 66, top, 57, 29);
+    const float roll = easeInOut(progress(homeClockStart_, homeClockTime, now));
+    if (roll < 1) {
+        // Monospaced and right aligned: each character has a fixed slot, and only changed ones roll up.
+        target_->PushAxisAlignedClip(clockBox, D2D1_ANTIALIAS_MODE_ALIASED);
+        const size_t count = time.size();
+        for (size_t i = 0; i < count; ++i) {
+            const auto slot = box(clockBox.right - timerDigitWidth_ * static_cast<float>(count - i), top,
+                                  timerDigitWidth_, 29);
+            const std::wstring now_(1, time[i]), was(1, homeClockFrom_[i]);
+            if (now_ == was) {
+                text(now_, timerFont_.get(), slot, rgb(inkColor));
+                continue;
+            }
+            text(was, timerFont_.get(), box(slot.left, slot.top - 12 * roll, timerDigitWidth_, 29), rgb(inkColor, 1 - roll));
+            text(now_, timerFont_.get(), box(slot.left, slot.top + 12 * (1 - roll), timerDigitWidth_, 29), rgb(inkColor, roll));
+        }
+        target_->PopAxisAlignedClip();
+    } else {
+        text(time, timerFont_.get(), clockBox, rgb(inkColor));
+    }
     drawButton(settings, L"", Hit::homeSettings, record);
     const auto gear = pt(settings.left + 14.5f, settings.top + 14.5f);
     const auto color = rgb(inkColor);
@@ -3164,11 +3195,34 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     target_->FillEllipse(D2D1::Ellipse(thumb, 6, 6), ink(mixColor(rgb(inkColor), rgb(0x101318), shrink)));
     if (record) addTarget(modeRow, Hit::homeOverlapMode);
 
-    float y = modeTop + homeModeRowHeight;
-    unsigned shown = 0;
+    const float rowsTop = modeTop + homeModeRowHeight;
+    std::vector<Screen> rows;
     for (const auto feature : homeRows()) {
-        if (feature == Screen::home) continue;
-        if (shown == 3) break;
+        if (feature != Screen::home && rows.size() < 3) rows.push_back(feature);
+    }
+    if (rows != homeRowsShown_) {
+        homeRowsFrom_ = std::move(homeRowsShown_);
+        homeRowsShown_ = rows;
+        homeRowsStart_ = continuing ? now : Clock::time_point{};
+    }
+    const float slide = easeInOut(progress(homeRowsStart_, homeRowTime, now));
+    for (size_t index = 0; index < rows.size(); ++index) {
+        const auto feature = rows[index];
+        float y = rowsTop + homeRowHeight * static_cast<float>(index);
+        float opacity = 1;
+        if (slide < 1) {
+            const auto previous = std::ranges::find(homeRowsFrom_, feature);
+            if (previous != homeRowsFrom_.end()) {
+                const auto from = static_cast<float>(previous - homeRowsFrom_.begin());
+                y += (from - static_cast<float>(index)) * homeRowHeight * (1 - slide);
+            } else {
+                // Wait for rows moving out of this slot before fading in.
+                const float reveal = easeInOut(lin(0.45f, 1, slide));
+                opacity = reveal;
+                y += 6 * (1 - reveal);
+            }
+        }
+        if (opacity < 1) pushLayer(nullptr, opacity);
         const auto row = box(left, y, innerWidth, homeRowHeight);
         const auto leading = box(left + 3, y + 5, 32, 32);
         const auto button = box(right - 34, y + 6, 32, 31);
@@ -3228,11 +3282,13 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
                 fillPolygon({pt(center.x - 3, center.y - 5), pt(center.x + 5, center.y), pt(center.x - 3, center.y + 5)}, color);
             }
         }
-        ++shown;
-        y += homeRowHeight;
+        if (opacity < 1) popLayer();
     }
-    if (shown) return;
+    if (!rows.empty()) return;
 
+    const float y = rowsTop;
+    const float emptyOpacity = homeRowsFrom_.empty() ? 1 : slide;
+    if (emptyOpacity < 1) pushLayer(nullptr, emptyOpacity);
     text(L"No active sessions", bodyFont_.get(), box(left, y, innerWidth, 22), rgb(mutedColor));
     float actionLeft = left;
     if (preferences_.enabled(Screen::timers)) {
@@ -3241,6 +3297,7 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     }
     if (preferences_.enabled(Screen::scratch))
         drawButton(box(actionLeft, y + 28, 132, 29), L"Open scratchpad", Hit::navScratch, record);
+    if (emptyOpacity < 1) popLayer();
 }
 
 void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record) {
