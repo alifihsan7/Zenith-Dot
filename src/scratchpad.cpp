@@ -84,6 +84,7 @@ bool Scratchpad::open(HWND owner, RECT bounds) {
         caret = LOWORD(SendMessageW(edit_, EM_CHARFROMPOS, 0, MAKELPARAM(pointer.x, pointer.y)));
     }
     SendMessageW(edit_, EM_SETSEL, caret, caret);
+    SendMessageW(edit_, EM_SCROLLCARET, 0, 0);
     return true;
 }
 
@@ -108,6 +109,40 @@ bool Scratchpad::toggleCheck(size_t offset) {
     if (window_ || offset + 3 >= text.size() || text[offset] != L'[' || text[offset + 2] != L']') return false;
     auto& mark = text[offset + 1];
     mark = mark == L' ' ? L'x' : L' ';
+    write();
+    return true;
+}
+
+bool Scratchpad::addItem() {
+    auto& text = view_.text;
+    if (window_ || text.size() + 6 > noteLimit) return false;
+    if (!text.empty() && text.back() != L'\n') text += L"\r\n";
+    text += L"[ ] ";
+    write();
+    return true;
+}
+
+bool Scratchpad::clearDone() {
+    if (window_) return false;
+    const auto& text = view_.text;
+    std::wstring kept;
+    kept.reserve(text.size());
+    bool changed = false;
+    for (size_t start = 0; start < text.size();) {
+        const auto newline = text.find(L'\n', start);
+        const size_t end = newline == std::wstring::npos ? text.size() : newline + 1;
+        const bool done = end - start >= 4 && text[start] == L'[' && (text[start + 1] == L'x' || text[start + 1] == L'X') &&
+                          text[start + 2] == L']' && text[start + 3] == L' ';
+        if (done) changed = true;
+        else kept.append(text, start, end - start);
+        start = end;
+    }
+    if (!changed) return false;
+    // A note that ended on a removed line should not keep a dangling line break.
+    if (!text.ends_with(L'\n')) {
+        while (!kept.empty() && (kept.back() == L'\n' || kept.back() == L'\r')) kept.pop_back();
+    }
+    view_.text = std::move(kept);
     write();
     return true;
 }

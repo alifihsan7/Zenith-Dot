@@ -2121,6 +2121,8 @@ IslandCommand Island::pointerUp(POINT client) {
         lyricFollowAt_ = {};
         break;
     case Hit::scratchEdit: command.kind = IslandCommand::Kind::editScratchpad; break;
+    case Hit::scratchAdd: command.kind = IslandCommand::Kind::addScratchItem; break;
+    case Hit::scratchClearDone: command.kind = IslandCommand::Kind::clearScratchDone; break;
     case Hit::scratchCheck:
         if (index < scratchChecks_.size()) {
             command.kind = IslandCommand::Kind::toggleScratchCheck;
@@ -3710,8 +3712,34 @@ void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
     const float x = panel.left + padX;
     const float y = panel.top + padTop;
     text(L"Scratchpad", titleFont_.get(), box(x, y, innerWidth, 22), rgb(inkColor));
+    // Checklist tools on the right of the title; hidden while the editor covers the note.
+    size_t items = 0, done = 0;
+    if (scratchpad_) {
+        const auto& note = scratchpad_->text;
+        for (size_t i = 0; i + 3 < note.size(); ++i) {
+            if ((i == 0 || note[i - 1] == L'\n') && note[i] == L'[' && note[i + 2] == L']' && note[i + 3] == L' ') {
+                if (note[i + 1] == L' ') ++items;
+                else if (note[i + 1] == L'x' || note[i + 1] == L'X') ++items, ++done;
+            }
+        }
+    }
+    float toolsLeft = x + innerWidth;
+    if (!scratchEditing_) {
+        const auto add = box(toolsLeft - 62, y - 1, 62, 25);
+        drawButton(add, L"+ Item", Hit::scratchAdd, record);
+        toolsLeft = add.left - 6;
+        if (done) {
+            const auto clear = box(toolsLeft - 84, y - 1, 84, 25);
+            drawButton(clear, L"Clear done", Hit::scratchClearDone, record);
+            toolsLeft = clear.left - 6;
+        }
+    }
+    const float statusLeft = x + 110;
     if (scratchpad_ && scratchpad_->saveFailed) {
-        text(L"Couldn’t save", bodyEndFont_.get(), box(x + 160, y, innerWidth - 160, 22), rgb(mutedColor));
+        text(L"Couldn’t save", bodyEndFont_.get(), box(statusLeft, y, toolsLeft - 4 - statusLeft, 22), rgb(mutedColor));
+    } else if (items) {
+        text(std::to_wstring(done) + L"/" + std::to_wstring(items) + L" done", bodyEndFont_.get(),
+             box(statusLeft, y, toolsLeft - 4 - statusLeft, 22), done == items ? accent_ : rgb(mutedColor));
     }
     const auto field = box(x, y + 32, innerWidth, 116);
     std::vector<std::pair<D2D1_RECT_F, size_t>> checkTargets;

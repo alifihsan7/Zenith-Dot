@@ -412,6 +412,17 @@ void App::run(IslandCommand const& command) {
         if (lyrics_) lyrics_->adjustDelay(command.index == 0 ? -1 : 1);
         break;
     case IslandCommand::Kind::editTimerDuration: openTimerEdit(); break;
+    case IslandCommand::Kind::addScratchItem:
+        if (scratchpad_.addItem()) {
+            island_.setScratchpad(scratchpad_.view());
+            if (const auto bounds = island_.scratchEditorRect()) {
+                island_.setScratchEditing(scratchpad_.open(window_, *bounds));
+            }
+        }
+        break;
+    case IslandCommand::Kind::clearScratchDone:
+        if (scratchpad_.clearDone()) island_.setScratchpad(scratchpad_.view());
+        break;
     case IslandCommand::Kind::toggleScratchCheck:
         if (scratchpad_.toggleCheck(command.index)) island_.setScratchpad(scratchpad_.view());
         break;
