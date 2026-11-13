@@ -120,6 +120,8 @@ private:
     Settings settings_;
     unsigned prayerCity_ = 0;
     unsigned announcedPrayers_ = 0;
+    unsigned announcedEarlyPrayers_ = 0;
+    bool announcedTomorrowSubuh_ = false;
     std::optional<PrayerSchedule> prayers_;
     PrayerMonth prayerMonth_, nextPrayerMonth_;
     winrt::Windows::Foundation::IAsyncAction prayerRequest_{nullptr};
@@ -557,12 +559,15 @@ bool App::refreshPrayers() {
         prayerCity_ = settings_.prayerCity;
         prayerMonth_ = nextPrayerMonth_ = {};
         prayerReminderDate_ = {};
+        announcedTomorrowSubuh_ = false;
         prayerRetryAt_ = {};
         cancelPrayerRequest();
     }
     if (prayerReminderDate_ != date) {
+        announcedEarlyPrayers_ = announcedTomorrowSubuh_ && prayerReminderDate_ + days{1} == date ? 1u : 0u;
         prayerReminderDate_ = date;
         announcedPrayers_ = 0;
+        announcedTomorrowSubuh_ = false;
     }
     if (prayerCity_) {
         const year_month_day today{date};
@@ -589,17 +594,32 @@ bool App::refreshPrayers() {
     }
     if (!prayers_) return changed;
     const auto local = now + std::chrono::hours(prayers_->utcOffset);
-    const auto minute = std::chrono::duration_cast<std::chrono::minutes>(local - date).count();
+    const auto minute = duration_cast<minutes>(local - date).count();
+    const int lead = static_cast<int>(settings_.prayerLeadMinutes);
+    bool notified = false;
+    const auto notify = [&](size_t index, std::wstring detail) {
+        if (suppressed()) return;
+        island_.notify({IslandAlert::Kind::prayer, prayerNames[index], std::move(detail), std::nullopt, 3});
+        notified = true;
+    };
     for (size_t i = 0; i < prayers_->times.size(); ++i) {
         const unsigned bit = 1u << i;
-        if (minute != prayers_->times[i] || (announcedPrayers_ & bit)) continue;
-        announcedPrayers_ |= bit;
-        if (settings_.prayerReminders && !suppressed()) {
-            island_.notify({IslandAlert::Kind::prayer, prayerNames[i], prayers_->city, std::nullopt, 3});
-            return true;
+        const int time = prayers_->times[i];
+        if (settings_.prayerReminders && minute == time && !(announcedPrayers_ & bit)) {
+            announcedPrayers_ |= bit;
+            notify(i, prayers_->city);
+        }
+        if (lead && minute == time - lead && !(announcedEarlyPrayers_ & bit)) {
+            announcedEarlyPrayers_ |= bit;
+            notify(i, L"In " + std::to_wstring(lead) + L" min · " + prayerTimeText(time));
         }
     }
-    return changed;
+    if (lead && prayers_->tomorrowSubuh && !announcedTomorrowSubuh_ &&
+        minute == 24 * 60 + *prayers_->tomorrowSubuh - lead) {
+        announcedTomorrowSubuh_ = true;
+        notify(0, L"In " + std::to_wstring(lead) + L" min · " + prayerTimeText(*prayers_->tomorrowSubuh));
+    }
+    return changed || notified;
 }
 
 void App::refreshMotion() {

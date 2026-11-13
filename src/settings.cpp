@@ -50,6 +50,7 @@ constexpr wchar_t featuresValue[] = L"FeatureOrder";
 constexpr wchar_t featuresV2Value[] = L"FeatureOrderV2";
 constexpr wchar_t featuresV3Value[] = L"FeatureOrderV3";
 constexpr wchar_t notificationsValue[] = L"NotificationOptions";
+static_assert(prayerLocations.size() <= 1023 && maxPrayerLeadMinutes <= 127);
 constexpr wchar_t accentValue[] = L"CustomAccent";
 
 std::optional<DWORD> read(wchar_t const* name) {
@@ -101,8 +102,10 @@ Settings Settings::load() {
     if (const auto value = read(notificationsValue)) {
         const auto quiet = *value & 3u;
         if (quiet <= static_cast<unsigned>(QuietMode::on)) settings.quietMode = static_cast<QuietMode>(quiet);
-        const auto city = (*value & (1u << 6)) ? *value >> 7 : (*value >> 2) & 3u;
+        const auto city = (*value & (1u << 6)) ? (*value >> 7) & 1023u : (*value >> 2) & 3u;
         if (city <= prayerLocations.size()) settings.prayerCity = city;
+        const auto lead = (*value >> 17) & 127u;
+        if (lead <= maxPrayerLeadMinutes) settings.prayerLeadMinutes = lead;
         settings.prayerReminders = (*value & 16u) == 0;
         settings.showAppNotifications = (*value & 32u) != 0;
     }
@@ -169,7 +172,7 @@ bool Settings::saveAccent() const {
 }
 
 bool Settings::saveNotifications() const {
-    return write(notificationsValue, static_cast<DWORD>(quietMode) | (1u << 6) | (prayerCity << 7) |
+    return write(notificationsValue, static_cast<DWORD>(quietMode) | (1u << 6) | (prayerCity << 7) | (prayerLeadMinutes << 17) |
                                      (prayerReminders ? 0u : 16u) | (showAppNotifications ? 32u : 0u));
 }
 

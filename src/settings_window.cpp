@@ -361,6 +361,7 @@ void SettingsWindow::initialize(HWND window) {
     DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
     icon_ = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_ZENITH_DOT));
     if (icon_) SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon_));
+    SendDlgItemMessageW(window_, IDC_PRAYER_LEAD, EM_SETLIMITTEXT, 3, 0);
     startup_ = startupShortcut();
     EnableWindow(GetDlgItem(window, IDC_START_WITH_WINDOWS), !startup_.empty());
     for (const auto& option : options) {
@@ -370,7 +371,7 @@ void SettingsWindow::initialize(HWND window) {
         SetWindowSubclass(GetDlgItem(window, page.id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
     for (const int id : choiceControls)
         SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
-    for (const int id : {IDC_PRAYER_CITY, IDC_APP_NOTIFICATIONS, IDC_TEST_NOTIFICATION, IDC_SETTINGS_GITHUB, IDC_FEATURE_BACK, IDC_FEATURE_UP, IDC_FEATURE_DOWN,
+    for (const int id : {IDC_PRAYER_CITY, IDC_PRAYER_LEAD_SAVE, IDC_APP_NOTIFICATIONS, IDC_TEST_NOTIFICATION, IDC_SETTINGS_GITHUB, IDC_FEATURE_BACK, IDC_FEATURE_UP, IDC_FEATURE_DOWN,
                         IDC_FEATURE_MEDIA, IDC_FEATURE_TIMERS, IDC_FEATURE_SCRATCH, IDC_FEATURE_DROP, IDC_FEATURE_SYSTEM}) {
         SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
     }
@@ -503,6 +504,10 @@ void SettingsWindow::showControls() {
                                : L"Choose prayer location";
     SetDlgItemTextW(window_, IDC_PRAYER_CITY, location.c_str());
     show(IDC_PRAYER_CITY, page_ == IDC_SETTINGS_NOTIFICATIONS);
+    show(IDC_PRAYER_LEAD, page_ == IDC_SETTINGS_NOTIFICATIONS);
+    show(IDC_PRAYER_LEAD_SAVE, page_ == IDC_SETTINGS_NOTIFICATIONS);
+    EnableWindow(GetDlgItem(window_, IDC_PRAYER_LEAD), city != 0);
+    EnableWindow(GetDlgItem(window_, IDC_PRAYER_LEAD_SAVE), city != 0);
     show(IDC_TEST_NOTIFICATION, page_ == IDC_SETTINGS_NOTIFICATIONS);
     show(IDC_SETTINGS_GITHUB, page_ == IDC_SETTINGS_ABOUT);
     EnableWindow(GetDlgItem(window_, IDC_PRAYER_REMINDERS), settings_.prayerCity != 0);
@@ -555,6 +560,8 @@ void SettingsWindow::runTest(SettingsTest test) {
 
 void SettingsWindow::sync() {
     settings_ = Settings::load();
+    if (GetFocus() != GetDlgItem(window_, IDC_PRAYER_LEAD))
+        SetDlgItemInt(window_, IDC_PRAYER_LEAD, settings_.prayerLeadMinutes, FALSE);
     for (size_t row = 0; row < std::size(choiceControls); ++row) {
         const auto id = choiceControls[row];
         for (size_t i = 0; i < choices(id).size(); ++i) {
@@ -653,6 +660,22 @@ void SettingsWindow::completeNotificationAccess(NotificationAccess access) {
 }
 
 bool SettingsWindow::command(int id) {
+    if (id == IDC_PRAYER_LEAD_SAVE) {
+        BOOL valid = FALSE;
+        const auto minutes = GetDlgItemInt(window_, IDC_PRAYER_LEAD, &valid, FALSE);
+        if (!valid || minutes > maxPrayerLeadMinutes) {
+            MessageBoxW(window_, L"Enter 0 to 120 minutes. Use 0 to turn the advance reminder off.",
+                        title, MB_OK | MB_ICONINFORMATION);
+            SetFocus(GetDlgItem(window_, IDC_PRAYER_LEAD));
+            return true;
+        }
+        auto updated = Settings::load();
+        updated.prayerLeadMinutes = minutes;
+        if (updated.saveNotifications()) notifyOverlay();
+        else MessageBoxW(window_, L"Could not save the advance reminder.", title, MB_OK | MB_ICONWARNING);
+        sync();
+        return true;
+    }
     if (id == IDC_PRAYER_CITY) {
         const auto city = choosePrayerLocation(window_, settings_.prayerCity);
         if (city && *city != settings_.prayerCity) {
@@ -822,7 +845,10 @@ void SettingsWindow::paint(HDC dc) {
         if (page.group) label(units(145, 61, 456, 75), page.group, canvas_.strong(), foreground);
     }
     if (page_ == IDC_SETTINGS_NOTIFICATIONS) {
-        label(units(145, 211, 456, 226),
+        label(units(145, 198, 331, 214), L"Advance prayer reminder", canvas_.strong(), foreground);
+        label(units(145, 214, 331, 227), L"0 turns it off", canvas_.body(), muted);
+        label(units(380, 204, 399, 223), L"min", canvas_.body(), muted);
+        label(units(145, 235, 456, 249),
               packaged_ ? L"Windows apps · Show the app name and notification title."
                         : L"Windows app alerts require the MSIX build.",
               canvas_.body(), muted);

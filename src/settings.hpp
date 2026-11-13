@@ -26,11 +26,13 @@ inline constexpr std::array featureOrder{Feature::media, Feature::timers, Featur
 inline constexpr unsigned featureMask = (1u << featureOrder.size()) - 1;
 
 enum class QuietMode : unsigned { off, followWindows, on };
+inline constexpr unsigned maxPrayerLeadMinutes = 120;
 
 struct Settings {
     QuietMode quietMode = QuietMode::off;
     unsigned prayerCity = 0;
     bool prayerReminders = true;
+    unsigned prayerLeadMinutes = 0;
     bool showAppNotifications = false;
     bool autoAddText = false;
     bool autoAddScreenshots = true;
