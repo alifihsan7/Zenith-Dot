@@ -43,6 +43,7 @@ constexpr wchar_t timerValue[] = L"TimerOptions";
 constexpr DWORD autoCycleBit = 1;
 constexpr wchar_t displayValue[] = L"DisplayOptions";
 constexpr DWORD hideInFullscreenBit = 2;
+constexpr DWORD keepPillOverControlsBit = 4;
 constexpr wchar_t islandValue[] = L"IslandOptions";
 constexpr wchar_t featuresValue[] = L"FeatureOrder";
 constexpr wchar_t featuresV2Value[] = L"FeatureOrderV2";
@@ -80,6 +81,7 @@ Settings Settings::load() {
     if (const auto value = read(timerValue)) settings.autoCycle = (*value & autoCycleBit) != 0;
     if (const auto value = read(displayValue)) {
         settings.hideInFullscreen = (*value & hideInFullscreenBit) != 0;
+        settings.shrinkOverControls = (*value & keepPillOverControlsBit) == 0;
     }
     if (const auto value = read(islandValue)) {
         const auto choice = [bits = *value](unsigned shift, unsigned fallback, unsigned count = 3) {
@@ -141,7 +143,8 @@ bool Settings::saveTimer() const {
 }
 
 bool Settings::saveDisplay() const {
-    const DWORD display = hideInFullscreen ? hideInFullscreenBit : 0;
+    const DWORD display = (hideInFullscreen ? hideInFullscreenBit : 0) |
+                          (shrinkOverControls ? 0 : keepPillOverControlsBit);
     return write(displayValue, display);
 }
 

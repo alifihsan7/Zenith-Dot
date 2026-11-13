@@ -81,6 +81,7 @@ private:
     void announceBluetooth();
     void addTray();
     void showMenu(POINT point);
+    void launchSettings();
     void queueClipboard(bool listenerEvent = false);
     void refreshClipboard();
     void updateLockKey(RAWKEYBOARD const& keyboard, HANDLE device);
@@ -360,6 +361,7 @@ LRESULT CALLBACK App::timerEditInput(HWND edit, UINT message, WPARAM wparam, LPA
 
 void App::run(IslandCommand const& command) {
     switch (command.kind) {
+    case IslandCommand::Kind::openSettings: launchSettings(); break;
     case IslandCommand::Kind::previous: control(MediaCommand::previous); break;
     case IslandCommand::Kind::toggle: control(MediaCommand::toggle); break;
     case IslandCommand::Kind::next: control(MediaCommand::next); break;
@@ -543,6 +545,10 @@ bool App::refreshFullscreen() {
 }
 
 void App::refreshPillOverlap() {
+    if (!settings_.shrinkOverControls) {
+        if (island_.setPillOccluded(false)) frame();
+        return;
+    }
     if (suppressed() || example_) return;
     const auto now = Island::Clock::now();
     if (now < nextOverlapCheck_ ||
@@ -564,7 +570,7 @@ winrt::Windows::Foundation::IAsyncAction App::checkPillOverlap(HWND behind, RECT
     const bool occluded = windowControlsOverlap(behind, footprint);
     if (cancellation()) co_return;
     co_await ui;
-    if (cancellation() || suppressed() || example_) co_return;
+    if (cancellation() || !settings_.shrinkOverControls || suppressed() || example_) co_return;
 
     const auto current = island_.pillFootprint();
     if (current && EqualRect(&*current, &footprint) && windowBehindPill(window_, *current) == behind &&
@@ -661,13 +667,17 @@ void App::showMenu(POINT point) {
         island_.showDropZone();
         frame();
     } else if (selected == openSettings) {
-        std::wstring executable(32768, L'\0');
-        const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
-        if (!length || length >= executable.size() ||
-            reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", executable.c_str(), L"--settings",
-                                                   nullptr, SW_SHOWNORMAL)) <= 32) {
-            MessageBoxW(window_, L"Couldn’t open Zenula Settings.", appName, MB_OK | MB_ICONWARNING);
-        }
+        launchSettings();
+    }
+}
+
+void App::launchSettings() {
+    std::wstring executable(32768, L'\0');
+    const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    if (!length || length >= executable.size() ||
+        reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", executable.c_str(), L"--settings",
+                                               nullptr, SW_SHOWNORMAL)) <= 32) {
+        MessageBoxW(window_, L"Couldn’t open Zenula Settings.", appName, MB_OK | MB_ICONWARNING);
     }
 }
 

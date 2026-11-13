@@ -35,7 +35,7 @@ class SettingsExample;
 struct IslandCommand {
     enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, adjustLyricsDelay, editScratchpad,
                       selectAudioOutput, soundSettings, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute,
-                      autoCycle, prayerLocation, editTimerDuration };
+                      autoCycle, prayerLocation, editTimerDuration, openSettings };
     Kind kind = Kind::none;
     double seconds = 0;              // seek position; appVolume: level 0..1; appMute, autoCycle: 1 = on
     std::wstring appId;
@@ -138,10 +138,10 @@ private:
                      timerToggle, timerReset, quickAdjust, timerDuration, lyrics, lyricLine, retryLyrics, lyricsDelay, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
                      appVolume, appMute, autoCycle, prayerLocationPicker, prayerLocationMenu, prayerLocation,
-                     audioOutputMenu, audioOutputChoice, soundSettings };
+                     audioOutputMenu, audioOutputChoice, soundSettings, navHome, homeSettings, homeStartTimer };
     using Screen = Feature;
     Settings preferences_;
-    std::vector<Screen> screens_{featureOrder.begin(), featureOrder.end()};
+    std::vector<Screen> screens_{Screen::home, Screen::media, Screen::timers, Screen::scratch, Screen::drop, Screen::system};
     enum class PillMode { dot, media, focus, timer, preview, privacy };
     struct Target {
         D2D1_RECT_F rect;
@@ -218,6 +218,9 @@ private:
     void updateTheme(Clock::time_point now);
     bool alertAllowed(IslandAlert::Kind kind) const;
     void setOpen(bool open, Clock::time_point now);
+    void openFromCompact(Clock::time_point now);
+    PillMode homeTimer() const;
+    std::array<Screen, 4> homeRows() const;
     void showScreen(Screen screen, Clock::time_point now);
     void toggleFocus(Clock::time_point now);
     void selectTimerView(size_t index);
@@ -252,6 +255,7 @@ private:
     void drawSpectrumBars(D2D1_POINT_2F center, float spacing, float barWidth, float maxHeight, D2D1_COLOR_F color);
     void drawPillContent(Clock::time_point now, float width, bool hideTitle);
     void drawIsland(Clock::time_point now, float value, float amount, bool morphTitle);
+    void drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record);
     void drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record);
     void drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record);
     void drawSourceIcon(MediaSource const& source, D2D1_POINT_2F center);

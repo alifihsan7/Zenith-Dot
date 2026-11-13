@@ -46,6 +46,7 @@ constexpr float timerDragStep = 12;
 constexpr float activitySwapDrop = 31;
 constexpr float activitySwapLift = 7;
 constexpr float panelWidth = 369;
+constexpr float homeRowHeight = 43;
 constexpr float mediaPanelWidth = 344;
 constexpr float systemPanelWidth = 530;
 constexpr float systemStatsBottom = 75;
@@ -618,6 +619,7 @@ void Island::setPreferences(Settings const& settings) {
     setAutoCycle(settings.autoCycle);
     if (newFocus || newBreak) selectFocusPhase(breakPhase_);
     screens_.clear();
+    screens_.push_back(Screen::home);
     for (const auto feature : settings.features) {
         if (settings.enabled(feature)) screens_.push_back(feature);
     }
@@ -916,9 +918,33 @@ float Island::panelValue(Clock::time_point now) const {
     return panelMotion(now).value;
 }
 
+Island::PillMode Island::homeTimer() const {
+    if (!preferences_.enabled(Screen::timers)) return PillMode::dot;
+    if (countdownCompletion_.mode != PillMode::dot) return countdownCompletion_.mode;
+    if (quick_.running()) return PillMode::timer;
+    if (focus_.running()) return PillMode::focus;
+    if (quick_.paused()) return PillMode::timer;
+    if (focus_.paused()) return PillMode::focus;
+    return PillMode::dot;
+}
+
+std::array<Island::Screen, 4> Island::homeRows() const {
+    return {
+        preferences_.enabled(Screen::media) && media_.hasSession ? Screen::media : Screen::home,
+        homeTimer() != PillMode::dot ? Screen::timers : Screen::home,
+        preferences_.enabled(Screen::drop) && !dropItems_.empty() ? Screen::drop : Screen::home,
+        preferences_.enabled(Screen::prayer) && prayerSchedule_ ? Screen::prayer : Screen::home
+    };
+}
+
 float Island::screenHeight(Screen screen) const {
     if (screens_.empty()) return mediaIdleHeight;
     switch (screen) {
+    case Screen::home: {
+        const auto rows = homeRows();
+        const auto count = std::min<std::ptrdiff_t>(3, 4 - std::ranges::count(rows, Screen::home));
+        return navHeight + 39 + (count ? homeRowHeight * static_cast<float>(count) : 62) + padBottom;
+    }
     case Screen::media:
         if (sourcePickerOpen_) return std::max(mediaPanelHeight,
             navHeight + sourceMenuTop + sourcePickerHeight(std::min(media_.sources.size(), visibleSources)) + padBottom);
@@ -1328,6 +1354,20 @@ void Island::updateCaptureIndicators(Clock::time_point now) {
     }
 }
 
+void Island::openFromCompact(Clock::time_point now) {
+    if (open_ || suppressed_ || bubbleShowing()) return;
+    if (pillMode_ == PillMode::media && media_.playing) {
+        showScreen(Screen::media, now);
+    } else if ((pillMode_ == PillMode::timer && quick_.running()) ||
+               (pillMode_ == PillMode::focus && focus_.running())) {
+        quickView_ = pillMode_ == PillMode::timer;
+        showScreen(Screen::timers, now);
+    } else if (pillMode_ != PillMode::preview) {
+        showScreen(Screen::home, now);
+    }
+    setOpen(true, now);
+}
+
 void Island::setOpen(bool open, Clock::time_point now) {
     openAt_.reset();
     closeAt_.reset();
@@ -1564,7 +1604,7 @@ void Island::tick() {
             const auto point = pt((cursor.x - anchor_.x) / scale_, (cursor.y - anchor_.y) / scale_);
             if (!inside(grow(compactShape(now, 1), 0, 3), point)) openAt_.reset();
         }
-        if (openAt_) setOpen(true, now);
+        if (openAt_) openFromCompact(now);
     }
     if (!openAt_ && now >= previewUntil_) previewUntil_ = {};
     if (closeAt_ && now >= *closeAt_) setOpen(false, now);
@@ -1647,6 +1687,7 @@ unsigned Island::frameInterval() const {
         return static_cast<unsigned>(std::clamp(remaining, 1ms, 1000ms).count());
     }
     if (wantsPrayerClock() && !alert_) return 1000;
+    if (open_ && screen_ == Screen::home && !alert_) return 1000;
     if (panelPinned() && !alert_) {
         if (screen_ == Screen::media && (media_.playing || (wantsLyrics() && now < lyricFollowAt_) ||
             (animate_ && preferences_.showWaveform && now - pausedAt_ < 350ms))) return 50;
@@ -1668,7 +1709,7 @@ unsigned Island::frameInterval() const {
 }
 
 bool Island::wantsPrayerClock() const {
-    return open_ && screen_ == Screen::prayer && prayerSchedule_.has_value();
+    return open_ && (screen_ == Screen::prayer || screen_ == Screen::home) && prayerSchedule_.has_value();
 }
 
 bool Island::wantsSystemStats() const {
@@ -1923,7 +1964,7 @@ bool Island::pointerDown(POINT client) {
         target->hit != Hit::audioOutputChoice && target->hit != Hit::soundSettings))) audioPickerOpen_ = false;
     if (!target) return false;
     if (target->hit == Hit::pill) {
-        setOpen(true, Clock::now());
+        openFromCompact(Clock::now());
         return false;
     }
     if (target->hit == Hit::timeline) {
@@ -2008,8 +2049,18 @@ IslandCommand Island::pointerUp(POINT client) {
             command.index = index;
         }
         break;
+    case Hit::navHome: showScreen(Screen::home, now); break;
+    case Hit::homeSettings: command.kind = IslandCommand::Kind::openSettings; break;
+    case Hit::homeStartTimer:
+        selectTimerView(0);
+        showScreen(Screen::timers, now);
+        if (!focus_.running()) toggleFocus(now);
+        break;
     case Hit::navMedia: showScreen(Screen::media, now); break;
-    case Hit::navTimers: showScreen(Screen::timers, now); break;
+    case Hit::navTimers:
+        if (screen_ == Screen::home && index == 1) quickView_ = homeTimer() == PillMode::timer;
+        showScreen(Screen::timers, now);
+        break;
     case Hit::navScratch: showScreen(Screen::scratch, now); break;
     case Hit::navDrop: showScreen(Screen::drop, now); break;
     case Hit::navSystem: showScreen(Screen::system, now); break;
@@ -2960,6 +3011,7 @@ void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now,
         return;
     }
     switch (screen) {
+    case Screen::home: drawHome(panel, now, record); break;
     case Screen::media: drawMedia(panel, now, artOpacity, hideTitle, record); break;
     case Screen::timers: drawTimers(panel, now, record); break;
     case Screen::scratch: drawScratchpad(panel, record); break;
@@ -2967,6 +3019,108 @@ void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now,
     case Screen::system: drawSystem(panel, record); break;
     case Screen::prayer: drawPrayerSchedule(panel, record); break;
     }
+}
+
+void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
+    const float left = (panel.left + panel.right - panelWidth) / 2 + padX;
+    const float right = left + innerWidth;
+    const float top = panel.top + 6;
+    const auto settings = box(right - 29, top, 29, 29);
+    text(L"Home", titleFont_.get(), box(left, top, 110, 29), rgb(inkColor));
+
+    SYSTEMTIME local{};
+    GetLocalTime(&local);
+    const auto time = prayerTimeText(local.wHour * 60 + local.wMinute);
+    text(time, timerFont_.get(), box(settings.left - 66, top, 57, 29), rgb(inkColor));
+    drawButton(settings, L"", Hit::homeSettings, record);
+    const auto gear = pt(settings.left + 14.5f, settings.top + 14.5f);
+    const auto color = rgb(inkColor);
+    target_->DrawEllipse(D2D1::Ellipse(gear, 5.2f, 5.2f), ink(color), 1.25f);
+    target_->DrawEllipse(D2D1::Ellipse(gear, 1.8f, 1.8f), ink(color), 1.15f);
+    for (int tooth = 0; tooth < 8; ++tooth) {
+        const float angle = tooth * pi / 4;
+        const float x = std::cos(angle), y = std::sin(angle);
+        target_->DrawLine(pt(gear.x + 5 * x, gear.y + 5 * y), pt(gear.x + 7 * x, gear.y + 7 * y),
+                          ink(color), 1.25f, roundStroke_.get());
+    }
+
+    constexpr Hit rowHits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem,
+                            Hit::navPrayer, Hit::navHome};
+    float y = panel.top + 39;
+    unsigned shown = 0;
+    for (const auto feature : homeRows()) {
+        if (feature == Screen::home) continue;
+        if (shown == 3) break;
+        const auto row = box(left, y, innerWidth, homeRowHeight);
+        const auto leading = box(left + 3, y + 5, 32, 32);
+        const auto button = box(right - 34, y + 6, 32, 31);
+        std::wstring label(screenLabel(feature)), detail;
+        auto action = Hit::none;
+        bool playing = false;
+        bool done = false;
+        if (feature == Screen::media) {
+            label = title();
+            detail = media_.playing ? L"Playing" : L"Paused";
+            if (!media_.artist.empty()) detail += L" · " + media_.artist;
+            action = Hit::toggle;
+            playing = media_.playing;
+        } else if (feature == Screen::timers) {
+            const bool quick = homeTimer() == PillMode::timer;
+            const auto& timer = quick ? quick_ : focus_;
+            label = quick ? L"Timer" : phaseName(breakPhase_);
+            playing = timer.running();
+            done = !playing && timer.done();
+            detail = countdownTime(timer.seconds(now));
+            if (done) detail += L" · Done";
+            else if (timer.paused()) detail += L" · Paused";
+            if (!done) action = quick ? Hit::timerToggle : Hit::focusToggle;
+        } else if (feature == Screen::drop) {
+            detail = std::to_wstring(dropItems_.size()) + (dropItems_.size() == 1 ? L" item" : L" items");
+        } else if (feature == Screen::prayer) {
+            const auto& schedule = *prayerSchedule_;
+            const auto timing = prayerProgress(schedule, std::chrono::system_clock::now());
+            const auto minutes = timing.remaining.count();
+            label = std::wstring(prayerNames[timing.nextIndex]) + L" in ";
+            if (minutes >= 60) label += std::to_wstring(minutes / 60) + L"h ";
+            label += std::to_wstring(minutes % 60) + L"m";
+            detail = std::wstring(schedule.city) + L" · " + schedule.zone;
+        }
+        const auto hit = rowHits[static_cast<unsigned>(feature)];
+        constexpr size_t homeRowIndex = 1;
+        const auto entry = D2D1::RectF(row.left, row.top, action != Hit::none || done ? button.left - 4 : row.right, row.bottom);
+        if (hovered(hit, homeRowIndex) || pressed(hit, homeRowIndex))
+            target_->FillRoundedRectangle(rounded(entry, 7), ink(white(0.07f)));
+        if (record) addTarget(entry, hit, homeRowIndex);
+        if (feature == Screen::media) drawArt(leading, 1);
+        else drawScreenGlyph(feature, leading, accent_);
+        const float textLeft = leading.right + 10;
+        const float width = entry.right - textLeft - 2;
+        text(label, pillTitleFont_.get(), box(textLeft, y + 4, width, 18), rgb(inkColor));
+        text(detail, bodyFont_.get(), box(textLeft, y + 22, width, 16), rgb(mutedColor));
+        const auto center = pt((button.left + button.right) / 2, (button.top + button.bottom) / 2);
+        if (done) drawCountdownCheck(center, accent_);
+        if (action != Hit::none) {
+            drawButton(button, L"", action, record);
+            if (playing) {
+                target_->FillRectangle(box(center.x - 4.5f, center.y - 5, 3, 10), ink(color));
+                target_->FillRectangle(box(center.x + 1.5f, center.y - 5, 3, 10), ink(color));
+            } else {
+                fillPolygon({pt(center.x - 3, center.y - 5), pt(center.x + 5, center.y), pt(center.x - 3, center.y + 5)}, color);
+            }
+        }
+        ++shown;
+        y += homeRowHeight;
+    }
+    if (shown) return;
+
+    text(L"No active sessions", bodyFont_.get(), box(left, y, innerWidth, 22), rgb(mutedColor));
+    float actionLeft = left;
+    if (preferences_.enabled(Screen::timers)) {
+        drawButton(box(actionLeft, y + 28, 96, 29), L"Start timer", Hit::homeStartTimer, record, 0, true);
+        actionLeft += 104;
+    }
+    if (preferences_.enabled(Screen::scratch))
+        drawButton(box(actionLeft, y + 28, 132, 29), L"Open scratchpad", Hit::navScratch, record);
 }
 
 void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record) {
@@ -3879,6 +4033,7 @@ void Island::drawAppVolume(size_t index, D2D1_RECT_F row, bool record) {
 
 std::wstring_view Island::screenLabel(Screen screen) {
     switch (screen) {
+    case Screen::home: return L"Home";
     case Screen::media: return L"Now Playing";
     case Screen::timers: return L"Timers";
     case Screen::scratch: return L"Scratchpad";
@@ -3892,6 +4047,15 @@ std::wstring_view Island::screenLabel(Screen screen) {
 void Island::drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color) {
     const auto center = pt((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
     switch (screen) {
+    case Screen::home: {
+        const auto [x, y] = center;
+        PathBuilder house(graphics_.get());
+        house.move(pt(x - 7, y), false).line(pt(x, y - 6)).line(pt(x + 7, y))
+             .move(pt(x - 5.5f, y - 1), false).line(pt(x - 5.5f, y + 6))
+             .line(pt(x + 5.5f, y + 6)).line(pt(x + 5.5f, y - 1));
+        target_->DrawGeometry(house.finish().get(), ink(color), 1.35f, roundStroke_.get());
+        break;
+    }
     case Screen::media: {
         const auto x = center.x, y = center.y;
         const auto brush = ink(color);
@@ -3955,7 +4119,7 @@ void Island::drawNav(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     const float reveal = navExpansion(now);
     const float step = std::lerp(12.0f, expandedStep, reveal);
     const float start = centerX - static_cast<float>(count) * step / 2;
-    constexpr Hit hits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem, Hit::navPrayer};
+    constexpr Hit hits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem, Hit::navPrayer, Hit::navHome};
     const float selectionX = start + (navSelection(now) + 0.5f) * step;
     if (count && reveal > 0) {
         const auto selection = box(selectionX - (step - 4) / 2, top + 2, step - 4, height - 4);

@@ -74,6 +74,8 @@ constexpr Option options[]{
         &Settings::prayerReminders, &Settings::saveNotifications},
     {IDC_HIDE_FULLSCREEN, IDC_SETTINGS_DISPLAY, L"Hide the island over fullscreen apps and games.",
         &Settings::hideInFullscreen, &Settings::saveDisplay},
+    {IDC_SHRINK_OVER_CONTROLS, IDC_SETTINGS_DISPLAY, L"Shrink to a dot when the pill covers window controls.",
+        &Settings::shrinkOverControls, &Settings::saveDisplay},
     {IDC_ADD_COPIED_TEXT, IDC_SETTINGS_FEATURES, L"Keep copied text in Drop Zone for this session.",
         &Settings::autoAddText, &Settings::saveClipboard, IDC_FEATURE_DROP},
     {IDC_ADD_SCREENSHOTS, IDC_SETTINGS_FEATURES, L"Add screenshots and other clipboard images to Drop Zone.",
@@ -473,6 +475,9 @@ void SettingsWindow::showControls() {
     const auto fullscreen = units(144, fullscreenTop, 456, fullscreenTop + 30);
     SetWindowPos(GetDlgItem(window_, IDC_HIDE_FULLSCREEN), nullptr, fullscreen.left, fullscreen.top,
                  fullscreen.right - fullscreen.left, fullscreen.bottom - fullscreen.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    const auto overlap = units(144, fullscreenTop + 31, 456, fullscreenTop + 61);
+    SetWindowPos(GetDlgItem(window_, IDC_SHRINK_OVER_CONTROLS), nullptr, overlap.left, overlap.top,
+                 overlap.right - overlap.left, overlap.bottom - overlap.top, SWP_NOZORDER | SWP_NOACTIVATE);
     for (size_t index = 0; index < settings_.features.size(); ++index) {
         const auto id = IDC_FEATURE_MEDIA + static_cast<int>(settings_.features[index]);
         const int y = 69 + 35 * static_cast<int>(index);

@@ -20,7 +20,7 @@ constexpr bool validSettingsTest(unsigned test) {
 
 int runSettingsWindow(HINSTANCE instance);
 
-enum class Feature : unsigned { media, timers, scratch, drop, system, prayer };
+enum class Feature : unsigned { media, timers, scratch, drop, system, prayer, home };
 inline constexpr std::array featureOrder{Feature::media, Feature::timers, Feature::scratch, Feature::drop,
                                          Feature::system};
 inline constexpr unsigned featureMask = (1u << featureOrder.size()) - 1;
@@ -40,6 +40,7 @@ struct Settings {
     bool showMicrophoneIndicator = true;
     bool autoCycle = false;   // Focus and Break follow each other automatically
     bool hideInFullscreen = true;
+    bool shrinkOverControls = true;
     bool fixedPillMinimum = false;
     unsigned islandSize = 1;
     unsigned accentMode = 0;
@@ -53,6 +54,7 @@ struct Settings {
     unsigned enabledFeatures = featureMask;
 
     bool enabled(Feature feature) const {
+        if (feature == Feature::home) return true;
         if (feature == Feature::prayer) return prayerCity != 0;
         return (enabledFeatures & (1u << static_cast<unsigned>(feature))) != 0;
     }
