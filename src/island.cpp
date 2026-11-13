@@ -1354,14 +1354,16 @@ void Island::updateCaptureIndicators(Clock::time_point now) {
 
 void Island::openFromCompact(Clock::time_point now) {
     if (open_ || suppressed_ || bubbleShowing()) return;
-    if (pillMode_ == PillMode::media && media_.playing) {
-        showScreen(Screen::media, now);
-    } else if ((pillMode_ == PillMode::timer && quick_.running()) ||
-               (pillMode_ == PillMode::focus && focus_.running())) {
-        quickView_ = pillMode_ == PillMode::timer;
-        showScreen(Screen::timers, now);
-    } else if (pillMode_ != PillMode::preview) {
-        showScreen(Screen::home, now);
+    if (!panelOpened_ && pillMode_ != PillMode::preview) {
+        if (pillMode_ == PillMode::media && media_.playing) {
+            showScreen(Screen::media, now);
+        } else if ((pillMode_ == PillMode::timer && quick_.running()) ||
+                   (pillMode_ == PillMode::focus && focus_.running())) {
+            quickView_ = pillMode_ == PillMode::timer;
+            showScreen(Screen::timers, now);
+        } else {
+            showScreen(Screen::home, now);
+        }
     }
     setOpen(true, now);
 }
@@ -1374,6 +1376,7 @@ void Island::setOpen(bool open, Clock::time_point now) {
     const auto motion = panelMotion(now);
     const float shown = motion.value;
     if (open) {
+        panelOpened_ = true;
         previewUntil_ = {};
         if (shown <= 0) {
             widthStart_ = {};
@@ -1655,7 +1658,6 @@ void Island::tick() {
     if (returnToMedia && pillMode_ == PillMode::media) {
         activitySwap_ = {now, PillMode::media, countdownCompletion_.mode, completedPill, *lastActivityDot_,
                          countdownCompletion_.label, true, true};
-        showScreen(Screen::media, now);
         openAt_.reset();
     }
     if (completionExpired) countdownCompletion_ = {};

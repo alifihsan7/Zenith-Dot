@@ -423,6 +423,7 @@ private:
 
     // Panel. panelFrom_ animates toward 1 (open) or 0 (closed) from panelStart_.
     bool open_ = false;
+    bool panelOpened_ = false;
     float panelFrom_ = 0;
     float panelVelocity_ = 0;
     Clock::time_point panelStart_{};
