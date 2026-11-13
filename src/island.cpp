@@ -172,6 +172,11 @@ bool isCaptureAlert(IslandAlert::Kind kind) {
     return kind == IslandAlert::Kind::camera || kind == IslandAlert::Kind::microphone ||
            kind == IslandAlert::Kind::screenCapture;
 }
+
+// Privacy bubbles from the idle dot reach the normal pill height; other idle bubbles stay compact.
+float idleBubbleHeight(IslandAlert::Kind kind) {
+    return isCaptureAlert(kind) ? pillHeight : activityDotSize;
+}
 constexpr int timerPresets[]{1, 5, 10};
 constexpr int timerMaxSeconds = 120 * 60;
 constexpr int breakMaxSeconds = 30 * 60;
@@ -4446,7 +4451,7 @@ void Island::drawSplit(Clock::time_point now, float amount, std::optional<D2D1_R
     } else {
         // From the idle dot the bubble grows out of the dot itself.
         const float width = std::lerp(dotSize, target, p);
-        const float height = std::lerp(dotSize, activityDotSize, p);
+        const float height = std::lerp(dotSize, idleBubbleHeight(alert_->kind), p);
         area = box(-width / 2, pillCenterY - height / 2, width, height);
         capsule(shape, area);
         const float t = lin(0.31f, 0.82f, p);
@@ -4719,7 +4724,7 @@ void Island::draw(HWND window) {
         bounds = unite(bounds, grow(fullBubble, gap + 2, 2));
     } else if (splitVisible) {
         const bool fromPill = splitAmount >= 1;
-        const float height = fromPill ? compact.bottom - compact.top : activityDotSize;
+        const float height = fromPill ? compact.bottom - compact.top : idleBubbleHeight(alert_->kind);
         const float bubble = std::max(alertWidth_, height);
         const float gap = fromPill ? releaseGap * height / pillHeight : 0;
         const float primaryWidth = fromPill ? compact.right - compact.left : 0;
