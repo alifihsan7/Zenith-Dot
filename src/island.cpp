@@ -2388,6 +2388,44 @@ void Island::fillShell(ID2D1Geometry* shape) {
     target_->FillGeometry(shape, gradient.get());
 }
 
+// The Zenula owl, drawn from the 32 px icon geometry (assets/logos/zenula.svg uses the same 256 grid).
+void Island::drawLogo(D2D1_POINT_2F origin, float height) {
+    constexpr float gridLeft = 58, gridTop = 32, gridHeight = 196;   // ear tips to feet, after the 8 unit lift
+    const float scale = height / gridHeight;
+    D2D1_MATRIX_3X2_F previous{};
+    target_->GetTransform(&previous);
+    target_->SetTransform(D2D1::Matrix3x2F::Translation(-gridLeft, -gridTop) *
+                          D2D1::Matrix3x2F::Scale(scale, scale) *
+                          D2D1::Matrix3x2F::Translation(origin.x, origin.y) * previous);
+    const auto body = rgb(0x91caff);
+    const auto dark = rgb(0x0c1422);
+    // Shapes sit 8 units higher than the grid, like the icon's translate(0 -8).
+    const auto at = [](float x, float y) { return pt(x, y - 8); };
+    target_->FillRoundedRectangle(rounded(D2D1::RectF(92, 204, 122, 228), 12), ink(body));
+    target_->FillRoundedRectangle(rounded(D2D1::RectF(134, 204, 164, 228), 12), ink(body));
+    target_->FillRoundedRectangle(rounded(D2D1::RectF(58, 64, 198, 220), 58), ink(body));
+    winrt::com_ptr<ID2D1PathGeometry> ears;
+    winrt::check_hresult(graphics_->CreatePathGeometry(ears.put()));
+    winrt::com_ptr<ID2D1GeometrySink> sink;
+    winrt::check_hresult(ears->Open(sink.put()));
+    for (const float side : {1.0f, -1.0f}) {
+        const auto x = [side](float value) { return 128 + side * (value - 128); };
+        sink->BeginFigure(at(x(66), 116), D2D1_FIGURE_BEGIN_FILLED);
+        sink->AddLine(at(x(70), 48));
+        sink->AddLine(at(x(112), 84));
+        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    }
+    winrt::check_hresult(sink->Close());
+    target_->FillGeometry(ears.get(), ink(body));
+    target_->DrawGeometry(ears.get(), ink(body), 16, roundStroke_.get());
+    for (const float x : {104.0f, 152.0f}) {
+        target_->FillEllipse(D2D1::Ellipse(at(x, 130), 21, 21), ink(dark));
+        target_->FillEllipse(D2D1::Ellipse(at(x + 7, 123), 7, 7), ink(rgb(0xffffff)));
+    }
+    fillPolygon({at(121, 152), at(135, 152), at(128, 166)}, dark);
+    target_->SetTransform(previous);
+}
+
 void Island::fillPolygon(std::initializer_list<D2D1_POINT_2F> points, D2D1_COLOR_F color) {
     winrt::com_ptr<ID2D1PathGeometry> path;
     winrt::check_hresult(graphics_->CreatePathGeometry(path.put()));
@@ -3007,7 +3045,8 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     const float right = left + innerWidth;
     const float top = panel.top + 6;
     const auto settings = box(right - 29, top, 29, 29);
-    text(L"Home", titleFont_.get(), box(left, top, 110, 29), rgb(inkColor));
+    drawLogo(pt(left + 1, top + 3.5f), 22);
+    text(L"Home", titleFont_.get(), box(left + 25, top, 110, 29), rgb(inkColor));
 
     SYSTEMTIME local{};
     GetLocalTime(&local);
