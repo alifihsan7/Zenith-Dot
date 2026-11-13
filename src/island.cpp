@@ -3933,10 +3933,12 @@ void Island::drawDropZone(D2D1_RECT_F panel, bool record) {
     const bool empty = dropItems_.empty();
     const float fieldValue = dropFieldValue(now);
     const auto field = box(x, panel.top + 44, innerWidth, std::lerp(dropFilledField, dropEmptyField, fieldValue));
-    const auto blue = rgb(0x9ccfff);
+    // Drop Zone follows the active session's accent, like the other panels.
+    const auto accent = accent_;
     const auto dropArea = rounded(field, 9);
-    target_->FillRoundedRectangle(dropArea, ink(withAlpha(blue, dropHover_ ? 0.11f : 0.03f)));
-    target_->DrawRoundedRectangle(dropArea, ink(dropHover_ ? blue : rgb(0x657b94)), 1, dropDash_.get());
+    target_->FillRoundedRectangle(dropArea, ink(withAlpha(accent, dropHover_ ? 0.11f : 0.03f)));
+    target_->DrawRoundedRectangle(dropArea, ink(dropHover_ ? accent : mixColor(rgb(0x6b6f75), accent_, 0.35f)), 1,
+                                  dropDash_.get());
     // The label for the new state fades in once the area has mostly reached its new height.
     const float settled = empty ? fieldValue : 1 - fieldValue;
     const float contentOpacity = easeInOut(lin(0.45f, 1, settled));
@@ -3944,11 +3946,11 @@ void Island::drawDropZone(D2D1_RECT_F panel, bool record) {
         target_->PushAxisAlignedClip(field, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         if (contentOpacity < 1) pushLayer(nullptr, contentOpacity);
         if (empty) {
-            drawScreenGlyph(Screen::drop, box(x, field.top + 22, innerWidth, 24), blue);
+            drawScreenGlyph(Screen::drop, box(x, field.top + 22, innerWidth, 24), accent);
             text(dropHover_ ? L"Release to add" : L"Drop files or text here", headingCenterFont_.get(),
                  box(x, field.top + 53, innerWidth, 26), rgb(inkColor));
         } else {
-            drawScreenGlyph(Screen::drop, box(x + innerWidth / 2 - 58, field.top, 22, dropFilledField), blue);
+            drawScreenGlyph(Screen::drop, box(x + innerWidth / 2 - 58, field.top, 22, dropFilledField), accent);
             text(dropHover_ ? L"Release to add" : L"Drop to add", bodyFont_.get(),
                  box(x + innerWidth / 2 - 29, field.top, 115, dropFilledField), rgb(inkColor));
         }
@@ -4006,14 +4008,14 @@ void Island::drawDropZone(D2D1_RECT_F panel, bool record) {
 void Island::drawDropRow(DropPreview const& item, size_t index, float rowY, float x, bool record) {
     const bool live = index < dropItems_.size();
     record = record && live;
-    const auto blue = rgb(0x9ccfff);
+    const auto accent = accent_;
     const auto drag = box(x, rowY + 1, innerWidth - 36, dropRowHeight - 2);
     const auto remove = box(x + innerWidth - 30, rowY + 7, 30, 29);
     const auto tile = box(x + 4, rowY + 5, 44, 33);
     if (live && index > dropOffset_) target_->FillRectangle(box(x, rowY, innerWidth, 1), ink(white(0.06f)));
     if (const float level = live ? hoverLevel(Hit::dropItem, index) : 0; level > 0)
         target_->FillRoundedRectangle(rounded(drag, 6), ink(white(0.06f * level)));
-    target_->FillRoundedRectangle(rounded(tile, 5), ink(rgb(0x1c2635)));
+    target_->FillRoundedRectangle(rounded(tile, 5), ink(mixColor(rgb(0x1b1d21), accent_, 0.12f)));
     if (record) addTarget(drag, Hit::dropItem, index);
     if (item.thumbnail) {
         const auto& image = *item.thumbnail;
@@ -4031,10 +4033,10 @@ void Island::drawDropRow(DropPreview const& item, size_t index, float rowY, floa
                 width, height), 1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         }
         const bool active = live && (hovered(Hit::dropImage, index) || pressed(Hit::dropImage, index));
-        if (active) target_->FillRoundedRectangle(rounded(tile, 5), ink(withAlpha(blue, 0.20f)));
+        if (active) target_->FillRoundedRectangle(rounded(tile, 5), ink(withAlpha(accent, 0.20f)));
         if (record) addTarget(tile, Hit::dropImage, index);
     } else {
-        const auto color = ink(rgb(0xa8c4e2));
+        const auto color = ink(mixColor(rgb(inkColor), accent_, 0.45f));
         const float left = tile.left + 16, top = tile.top + 9;
         if (!item.text) target_->DrawRoundedRectangle(rounded(box(left, top, 12, 15), 2), color, 1);
         const float inset = item.text ? 0.0f : 3.0f;
