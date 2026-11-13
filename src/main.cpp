@@ -371,12 +371,11 @@ LRESULT CALLBACK App::timerEditInput(HWND edit, UINT message, WPARAM wparam, LPA
 void App::run(IslandCommand const& command) {
     switch (command.kind) {
     case IslandCommand::Kind::overlapMode: {
-        const bool shrink = command.index == 0;
-        if (settings_.shrinkOverControls == shrink) break;
+        const bool shrink = !settings_.shrinkOverControls;
         auto updated = Settings::load();
         updated.shrinkOverControls = shrink;
         if (!updated.saveDisplay()) {
-            MessageBoxW(window_, L"Could not save the island mode.", appName, MB_OK | MB_ICONWARNING);
+            MessageBoxW(window_, L"Could not save Auto-shrink.", appName, MB_OK | MB_ICONWARNING);
             break;
         }
         settings_.shrinkOverControls = shrink;

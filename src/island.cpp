@@ -2035,7 +2035,6 @@ IslandCommand Island::pointerUp(POINT client) {
     case Hit::navHome: showScreen(Screen::home, now); break;
     case Hit::homeOverlapMode:
         command.kind = IslandCommand::Kind::overlapMode;
-        command.index = index;
         break;
     case Hit::homeSettings: command.kind = IslandCommand::Kind::openSettings; break;
     case Hit::homeStartTimer:
@@ -3033,11 +3032,17 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     constexpr Hit rowHits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem,
                             Hit::navPrayer, Hit::navHome};
     const float modeTop = panel.top + 39;
-    text(L"Over tabs and toolbars", bodyFont_.get(), box(left, modeTop, innerWidth - 121, 27), rgb(mutedColor));
-    drawButton(box(right - 112, modeTop, 53, 27), L"Dot", Hit::homeOverlapMode, record, 0,
-               preferences_.shrinkOverControls);
-    drawButton(box(right - 53, modeTop, 53, 27), L"Pill", Hit::homeOverlapMode, record, 1,
-               !preferences_.shrinkOverControls);
+    const auto modeRow = box(left, modeTop, innerWidth, 27);
+    if (hovered(Hit::homeOverlapMode) || pressed(Hit::homeOverlapMode))
+        target_->FillRoundedRectangle(rounded(modeRow, 7), ink(white(0.07f)));
+    text(L"Auto-shrink", bodyFont_.get(), box(left, modeTop, innerWidth - 48, 27), rgb(inkColor));
+    const bool shrink = preferences_.shrinkOverControls;
+    const auto toggle = box(right - 36, modeTop + 4, 36, 19);
+    target_->FillRoundedRectangle(rounded(toggle, 9.5f), ink(shrink ? accent_ : white(0.14f)));
+    target_->DrawRoundedRectangle(rounded(toggle, 9.5f), ink(white(0.18f)), 1);
+    const auto thumb = pt(shrink ? toggle.right - 9.5f : toggle.left + 9.5f, modeTop + 13.5f);
+    target_->FillEllipse(D2D1::Ellipse(thumb, 6, 6), ink(shrink ? rgb(0x101318) : rgb(inkColor)));
+    if (record) addTarget(modeRow, Hit::homeOverlapMode);
 
     float y = modeTop + homeModeRowHeight;
     unsigned shown = 0;
