@@ -12,6 +12,7 @@ add_executable(Zenula WIN32
     src/audio_spectrum.cpp
     src/lyrics.cpp
     src/prayer.cpp
+    src/prayer_picker.cpp
     src/notifications.cpp
     src/power.cpp
     src/system.cpp

@@ -83,6 +83,7 @@ public:
     void setNetwork(NetworkStatus const& status);
     void setBluetoothDevices(std::vector<ConnectedBluetoothDevice> devices);
     void setPrayerSchedule(std::optional<PrayerSchedule> const& schedule);
+    void setPrayerLoad(PrayerLoad state) { prayerLoad_ = state; }
     void setAudioOutput(std::wstring const& output);
     void setAudioOutputs(std::vector<AudioOutput> outputs);
     void setAppVolumes(std::vector<AppVolume> apps);
@@ -137,7 +138,7 @@ private:
                      navScratch, navSystem, navPrayer, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
                      timerToggle, timerReset, quickAdjust, timerDuration, lyrics, lyricLine, retryLyrics, lyricsDelay, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
-                     appVolume, appMute, autoCycle, prayerLocationPicker, prayerLocationMenu, prayerLocation,
+                     appVolume, appMute, autoCycle, prayerLocationPicker,
                      audioOutputMenu, audioOutputChoice, soundSettings, navHome, homeSettings, homeStartTimer };
     using Screen = Feature;
     Settings preferences_;
@@ -277,7 +278,6 @@ private:
     void drawCompanionShell(D2D1_RECT_F shape, float pinch, float border);
     void drawSystem(D2D1_RECT_F panel, bool record);
     void drawPrayerSchedule(D2D1_RECT_F panel, bool record);
-    void drawPrayerLocationMenu(D2D1_RECT_F panel);
     void drawAppVolume(size_t index, D2D1_RECT_F row, bool record);
     float volumeFraction(D2D1_POINT_2F point) const;
     float navExpansion(Clock::time_point now) const;
@@ -436,7 +436,7 @@ private:
     Clock::time_point widthStart_{};
     bool lyricsOpen_ = false;
     bool sourcePickerOpen_ = false;
-    bool prayerPickerOpen_ = false;
+    PrayerLoad prayerLoad_ = PrayerLoad::loading;
     bool navExpanded_ = false;
     float navFrom_ = 0;
     Clock::time_point navStart_{};

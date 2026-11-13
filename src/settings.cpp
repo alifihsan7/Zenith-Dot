@@ -1,4 +1,5 @@
 #include "settings.hpp"
+#include "prayer.hpp"
 
 #include <windows.h>
 #include <shlobj.h>
@@ -100,7 +101,8 @@ Settings Settings::load() {
     if (const auto value = read(notificationsValue)) {
         const auto quiet = *value & 3u;
         if (quiet <= static_cast<unsigned>(QuietMode::on)) settings.quietMode = static_cast<QuietMode>(quiet);
-        settings.prayerCity = (*value >> 2) & 3u;
+        const auto city = (*value & (1u << 6)) ? *value >> 7 : (*value >> 2) & 3u;
+        if (city <= prayerLocations.size()) settings.prayerCity = city;
         settings.prayerReminders = (*value & 16u) == 0;
         settings.showAppNotifications = (*value & 32u) != 0;
     }
@@ -167,7 +169,7 @@ bool Settings::saveAccent() const {
 }
 
 bool Settings::saveNotifications() const {
-    return write(notificationsValue, static_cast<DWORD>(quietMode) | (prayerCity << 2) |
+    return write(notificationsValue, static_cast<DWORD>(quietMode) | (1u << 6) | (prayerCity << 7) |
                                      (prayerReminders ? 0u : 16u) | (showAppNotifications ? 32u : 0u));
 }
 

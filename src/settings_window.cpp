@@ -117,11 +117,8 @@ constexpr wchar_t const* pauseChoices[]{L"Immediately", L"3 seconds", L"5 second
 constexpr wchar_t const* focusChoices[]{L"15 minutes", L"25 minutes", L"45 minutes"};
 constexpr wchar_t const* breakChoices[]{L"5 minutes", L"10 minutes", L"15 minutes"};
 constexpr wchar_t const* quietChoices[]{L"Off", L"Follow Windows", L"On"};
-constexpr wchar_t const* prayerChoices[]{
-    L"Off", prayerLocations[0].name, prayerLocations[1].name, prayerLocations[2].name
-};
 constexpr int choiceControls[]{IDC_PILL_WIDTH, IDC_ISLAND_SIZE, IDC_ACCENT_MODE, IDC_CUSTOM_ACCENT,
-    IDC_PAUSE_DELAY, IDC_FOCUS_DURATION, IDC_BREAK_DURATION, IDC_QUIET_MODE, IDC_PRAYER_CITY};
+    IDC_PAUSE_DELAY, IDC_FOCUS_DURATION, IDC_BREAK_DURATION, IDC_QUIET_MODE};
 
 struct TestButton {
     int control;
@@ -170,7 +167,6 @@ bool isTestButton(int id) {
 std::span<wchar_t const* const> choices(int id) {
     switch (id) {
     case IDC_QUIET_MODE: return quietChoices;
-    case IDC_PRAYER_CITY: return prayerChoices;
     case IDC_PILL_WIDTH: return widthChoices;
     case IDC_ISLAND_SIZE: return sizeChoices;
     case IDC_ACCENT_MODE: return accentChoices;
@@ -374,7 +370,7 @@ void SettingsWindow::initialize(HWND window) {
         SetWindowSubclass(GetDlgItem(window, page.id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
     for (const int id : choiceControls)
         SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
-    for (const int id : {IDC_APP_NOTIFICATIONS, IDC_TEST_NOTIFICATION, IDC_SETTINGS_GITHUB, IDC_FEATURE_BACK, IDC_FEATURE_UP, IDC_FEATURE_DOWN,
+    for (const int id : {IDC_PRAYER_CITY, IDC_APP_NOTIFICATIONS, IDC_TEST_NOTIFICATION, IDC_SETTINGS_GITHUB, IDC_FEATURE_BACK, IDC_FEATURE_UP, IDC_FEATURE_DOWN,
                         IDC_FEATURE_MEDIA, IDC_FEATURE_TIMERS, IDC_FEATURE_SCRATCH, IDC_FEATURE_DROP, IDC_FEATURE_SYSTEM}) {
         SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
     }
@@ -439,7 +435,7 @@ void SettingsWindow::showControls() {
     }
     for (size_t row = 0; row < std::size(choiceControls); ++row) {
         const int id = choiceControls[row];
-        const bool visible = (id == IDC_QUIET_MODE || id == IDC_PRAYER_CITY) ? page_ == IDC_SETTINGS_NOTIFICATIONS :
+        const bool visible = id == IDC_QUIET_MODE ? page_ == IDC_SETTINGS_NOTIFICATIONS :
             id == IDC_PAUSE_DELAY ? detail_ == IDC_FEATURE_MEDIA && enabled :
             id == IDC_FOCUS_DURATION || id == IDC_BREAK_DURATION ? detail_ == IDC_FEATURE_TIMERS && enabled :
             appearance && (id != IDC_CUSTOM_ACCENT || settings_.accentMode == 2);
@@ -502,6 +498,11 @@ void SettingsWindow::showControls() {
     SetWindowTextW(appNotifications, settings_.showAppNotifications ? L"Turn off Windows app alerts" : L"Connect Windows apps");
     EnableWindow(appNotifications, packaged_ && !notificationRequest_);
     show(IDC_APP_NOTIFICATIONS, page_ == IDC_SETTINGS_NOTIFICATIONS && packaged_);
+    const auto city = settings_.prayerCity;
+    const auto location = city ? std::wstring(prayerLocations[city - 1].name) + L" · " + prayerLocations[city - 1].zone()
+                               : L"Choose prayer location";
+    SetDlgItemTextW(window_, IDC_PRAYER_CITY, location.c_str());
+    show(IDC_PRAYER_CITY, page_ == IDC_SETTINGS_NOTIFICATIONS);
     show(IDC_TEST_NOTIFICATION, page_ == IDC_SETTINGS_NOTIFICATIONS);
     show(IDC_SETTINGS_GITHUB, page_ == IDC_SETTINGS_ABOUT);
     EnableWindow(GetDlgItem(window_, IDC_PRAYER_REMINDERS), settings_.prayerCity != 0);
@@ -576,7 +577,6 @@ void SettingsWindow::sync() {
 unsigned SettingsWindow::currentChoice(int id) const {
     switch (id) {
     case IDC_QUIET_MODE: return static_cast<unsigned>(settings_.quietMode);
-    case IDC_PRAYER_CITY: return settings_.prayerCity;
     case IDC_PILL_WIDTH: return settings_.fixedPillMinimum;
     case IDC_ISLAND_SIZE: return settings_.islandSize;
     case IDC_ACCENT_MODE: return settings_.accentMode;
@@ -611,7 +611,6 @@ bool SettingsWindow::commandChoice(int id) {
     auto updated = Settings::load();
     switch (id) {
     case IDC_QUIET_MODE: updated.quietMode = static_cast<QuietMode>(index); break;
-    case IDC_PRAYER_CITY: updated.prayerCity = index; break;
     case IDC_PILL_WIDTH: updated.fixedPillMinimum = index != 0; break;
     case IDC_ISLAND_SIZE: updated.islandSize = index; break;
     case IDC_ACCENT_MODE: updated.accentMode = index; break;
@@ -619,7 +618,7 @@ bool SettingsWindow::commandChoice(int id) {
     case IDC_FOCUS_DURATION: updated.focusPreset = index; break;
     case IDC_BREAK_DURATION: updated.breakPreset = index; break;
     }
-    const bool saved = id == IDC_QUIET_MODE || id == IDC_PRAYER_CITY
+    const bool saved = id == IDC_QUIET_MODE
         ? updated.saveNotifications() : updated.saveIsland();
     if (saved) {
         const auto before = currentChoice(id);
@@ -654,6 +653,17 @@ void SettingsWindow::completeNotificationAccess(NotificationAccess access) {
 }
 
 bool SettingsWindow::command(int id) {
+    if (id == IDC_PRAYER_CITY) {
+        const auto city = choosePrayerLocation(window_, settings_.prayerCity);
+        if (city && *city != settings_.prayerCity) {
+            auto updated = Settings::load();
+            updated.prayerCity = *city;
+            if (updated.saveNotifications()) notifyOverlay();
+            else MessageBoxW(window_, L"Could not save the prayer location.", title, MB_OK | MB_ICONWARNING);
+            sync();
+        }
+        return true;
+    }
     if (id == IDC_TEST_NOTIFICATION) {
         runTest(SettingsTest::notification);
         return true;

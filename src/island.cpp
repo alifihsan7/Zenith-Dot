@@ -64,8 +64,7 @@ constexpr float pickerRowHeight = 25;
 constexpr float pickerInset = 4;
 constexpr float prayerPickerTop = 95;
 constexpr float prayerPickerHeight = 24;
-constexpr float prayerMenuTop = prayerPickerTop + prayerPickerHeight + 4;
-constexpr float prayerPanelHeight = 176;
+constexpr float prayerPanelHeight = 184;
 constexpr float prayerPanelWidth = 570;
 constexpr float prayerInfoWidth = 176;
 constexpr float appRowsTop = 73;
@@ -962,9 +961,7 @@ float Island::screenHeight(Screen screen) const {
         const float menu = audioPickerOpen_ ? systemAudioMenuTop + pickerHeight(outputs + 1) : 0;
         return navHeight + systemSectionTop(system_) + std::max({mixer, connection, menu}) + padBottom;
     }
-    case Screen::prayer:
-        return prayerPickerOpen_ ? std::max(prayerPanelHeight,
-            navHeight + prayerMenuTop + pickerHeight(prayerLocations.size()) + padBottom) : prayerPanelHeight;
+    case Screen::prayer: return prayerPanelHeight;
     }
     return 146.0f;
 }
@@ -1391,7 +1388,6 @@ void Island::setOpen(bool open, Clock::time_point now) {
     open_ = open;
     if (!open) setNavExpanded(false, now);
     sourcePickerOpen_ = false;
-    prayerPickerOpen_ = false;
     audioPickerOpen_ = false;
     updateLyricVisibility(lyricsVisible, now);
     if (!open) panelPinned_ = false;
@@ -1419,7 +1415,6 @@ void Island::showScreen(Screen screen, Clock::time_point now) {
     navSelectionStart_ = animate_ ? now : Clock::time_point{};
     screen_ = screen;
     sourcePickerOpen_ = false;
-    prayerPickerOpen_ = false;
     audioPickerOpen_ = false;
     if (screen == Screen::media) preferredPill_ = PillMode::media;
     if (screen == Screen::timers) preferredPill_ = quickView_ ? PillMode::timer : PillMode::focus;
@@ -1856,10 +1851,6 @@ bool Island::scroll(POINT client, int delta) {
         return true;
     }
     audioOutputWheelRemainder_ = 0;
-    if (prayerPickerOpen_) {
-        const auto target = targetAt(point);
-        if (target && (target->hit == Hit::prayerLocation || target->hit == Hit::prayerLocationMenu)) return true;
-    }
     if (sourcePickerOpen_ && inside(sourceMenuRect_, point)) {
         const size_t rows = (media_.sources.size() + sourceColumns - 1) / sourceColumns;
         const int limit = static_cast<int>(rows > 2 ? rows - 2 : 0);
@@ -1958,8 +1949,6 @@ bool Island::pointerDown(POINT client) {
     const auto target = targetAt(point);
     if (sourcePickerOpen_ && (!target || (target->hit != Hit::sourcePicker &&
         target->hit != Hit::source && target->hit != Hit::sourceMenu))) sourcePickerOpen_ = false;
-    if (prayerPickerOpen_ && (!target || (target->hit != Hit::prayerLocationPicker &&
-        target->hit != Hit::prayerLocation && target->hit != Hit::prayerLocationMenu))) prayerPickerOpen_ = false;
     if (audioPickerOpen_ && (!target || (target->hit != Hit::audioPicker && target->hit != Hit::audioOutputMenu &&
         target->hit != Hit::audioOutputChoice && target->hit != Hit::soundSettings))) audioPickerOpen_ = false;
     if (!target) return false;
@@ -2040,14 +2029,7 @@ IslandCommand Island::pointerUp(POINT client) {
         }
         break;
     case Hit::prayerLocationPicker:
-        prayerPickerOpen_ = !prayerPickerOpen_;
-        break;
-    case Hit::prayerLocation:
-        prayerPickerOpen_ = false;
-        if (index != preferences_.prayerCity) {
-            command.kind = IslandCommand::Kind::prayerLocation;
-            command.index = index;
-        }
+        command.kind = IslandCommand::Kind::prayerLocation;
         break;
     case Hit::navHome: showScreen(Screen::home, now); break;
     case Hit::homeSettings: command.kind = IslandCommand::Kind::openSettings; break;
@@ -2991,7 +2973,6 @@ void Island::drawIsland(Clock::time_point now, float value, float amount, bool m
         }
         drawNav(full, now, recordPanel_);
         if (recordPanel_ && sourcePickerOpen_) drawSourceMenu(content);
-        if (recordPanel_ && prayerPickerOpen_ && screen_ == Screen::prayer) drawPrayerLocationMenu(content);
         if (recordPanel_ && audioPickerOpen_ && screen_ == Screen::system) drawAudioOutputMenu(content);
         if (panelOpacity < 1) popLayer();
     }
@@ -3080,9 +3061,11 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
             const auto& schedule = *prayerSchedule_;
             const auto timing = prayerProgress(schedule, std::chrono::system_clock::now());
             const auto minutes = timing.remaining.count();
-            label = std::wstring(prayerNames[timing.nextIndex]) + L" in ";
-            if (minutes >= 60) label += std::to_wstring(minutes / 60) + L"h ";
-            label += std::to_wstring(minutes % 60) + L"m";
+            if (timing.nextIndex < prayerNames.size()) {
+                label = std::wstring(prayerNames[timing.nextIndex]) + L" in ";
+                if (minutes >= 60) label += std::to_wstring(minutes / 60) + L"h ";
+                label += std::to_wstring(minutes % 60) + L"m";
+            }
             detail = std::wstring(schedule.city) + L" · " + schedule.zone;
         }
         const auto hit = rowHits[static_cast<unsigned>(feature)];
@@ -3884,17 +3867,23 @@ void Island::drawPrayerSchedule(D2D1_RECT_F panel, bool record) {
     const float x = (panel.left + panel.right - prayerPanelWidth) / 2 + padX;
     const float y = panel.top + 12;
     const auto info = box(x, y, prayerInfoWidth, 115);
-    const auto picker = box(x + 12, panel.top + prayerPickerTop, 137, prayerPickerHeight);
+    const auto picker = box(x + 12, panel.top + prayerPickerTop, prayerInfoWidth - 24, prayerPickerHeight);
     target_->FillRoundedRectangle(rounded(info, 12), ink(withAlpha(accent_, 0.10f)));
-    drawPickerButton(picker, L"Change location", Hit::prayerLocationPicker, record, prayerPickerOpen_);
+    const auto city = preferences_.prayerCity;
+    drawPickerButton(picker, city && city <= prayerLocations.size() ? prayerLocations[city - 1].name : L"Choose location",
+                     Hit::prayerLocationPicker, record, popupOpen_);
+    text(L"Source: SIHAT Kemenag RI", bodyEndFont_.get(),
+         box(x + prayerInfoWidth + 15, y + 120, prayerPanelWidth - 2 * padX - prayerInfoWidth - 15, 17), rgb(mutedColor));
 
     if (!prayerSchedule_) {
-        text(L"Prayer times unavailable", bodyFont_.get(), box(x + 12, y + 12, prayerInfoWidth - 24, 25), rgb(mutedColor));
+        const auto status = prayerLoad_ == PrayerLoad::loading ? L"Loading prayer times…" : L"Prayer times unavailable";
+        text(status, bodyFont_.get(), box(x + 12, y + 12, prayerInfoWidth - 24, 25), rgb(mutedColor));
         return;
     }
     const auto& schedule = *prayerSchedule_;
     const auto timing = prayerProgress(schedule, std::chrono::system_clock::now());
-    const auto name = std::wstring_view(prayerNames[timing.nextIndex]);
+    const bool hasNext = timing.nextIndex < prayerNames.size();
+    const auto name = hasNext ? std::wstring_view(prayerNames[timing.nextIndex]) : L"Prayer times";
     constexpr float infoInnerWidth = prayerInfoWidth - 24;
     const float nameWidth = std::ceil(measure(name, prayerTitleFont_.get())) + 2;
     text(name, prayerTitleFont_.get(), box(x + 12, y + 8, nameWidth, 34), rgb(inkColor));
@@ -3904,7 +3893,8 @@ void Island::drawPrayerSchedule(D2D1_RECT_F panel, bool record) {
     std::wstring countdown = L"in ";
     if (hours.count()) countdown += std::to_wstring(hours.count()) + L"h ";
     countdown += std::to_wstring(minutes.count()) + L"m";
-    text(countdown, bodyFont_.get(), box(x + 19 + nameWidth, y + 15, infoInnerWidth - nameWidth - 7, 26), accent_);
+    if (hasNext)
+        text(countdown, bodyFont_.get(), box(x + 19 + nameWidth, y + 15, infoInnerWidth - nameWidth - 7, 26), accent_);
 
     text(std::wstring(L"Prayer times · ") + schedule.city, bodyFont_.get(),
          box(x + 12, y + 42, infoInnerWidth, 17), rgb(mutedColor));
@@ -3965,19 +3955,6 @@ void Island::drawPrayerSchedule(D2D1_RECT_F panel, bool record) {
     text(L"00:00", monoFont_.get(), box(scheduleLeft + 4, axisY, 40, 15), rgb(mutedColor));
     text(L"12:00", buttonFont_.get(), box((scheduleLeft + scheduleRight) / 2 - 20, axisY, 40, 15), rgb(mutedColor));
     text(L"24:00", monoEndFont_.get(), box(scheduleRight - 44, axisY, 40, 15), rgb(mutedColor));
-}
-
-void Island::drawPrayerLocationMenu(D2D1_RECT_F panel) {
-    const float x = (panel.left + panel.right - prayerPanelWidth) / 2 + padX + 12;
-    const float y = panel.top + prayerMenuTop;
-    constexpr float menuWidth = 137;
-    const auto menu = box(x, y, menuWidth, pickerHeight(prayerLocations.size()));
-    drawPickerSurface(menu, Hit::prayerLocationMenu);
-    for (size_t i = 0; i < prayerLocations.size(); ++i) {
-        const auto row = box(x + pickerInset, y + pickerInset + pickerRowHeight * static_cast<float>(i),
-                             menuWidth - 2 * pickerInset, pickerRowHeight - 1);
-        drawPickerRow(row, prayerLocations[i].name, Hit::prayerLocation, i + 1, preferences_.prayerCity == i + 1);
-    }
 }
 
 void Island::drawAppVolume(size_t index, D2D1_RECT_F row, bool record) {

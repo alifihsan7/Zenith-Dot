@@ -70,6 +70,8 @@ private:
     winrt::Windows::Foundation::IAsyncAction refreshNetwork();
     void applyNetwork(NetworkStatus status);
     bool refreshPrayers();
+    winrt::Windows::Foundation::IAsyncAction loadPrayerMonth(unsigned city, std::chrono::year_month month);
+    void cancelPrayerRequest();
     void refreshMotion();
     bool refreshFullscreen();
     void refreshPillOverlap();
@@ -119,6 +121,11 @@ private:
     unsigned prayerCity_ = 0;
     unsigned announcedPrayers_ = 0;
     std::optional<PrayerSchedule> prayers_;
+    PrayerMonth prayerMonth_, nextPrayerMonth_;
+    winrt::Windows::Foundation::IAsyncAction prayerRequest_{nullptr};
+    Island::Clock::time_point prayerRetryAt_{};
+    std::chrono::sys_days prayerReminderDate_{};
+    bool prayerPickerActive_ = false;
     std::chrono::steady_clock::time_point systemSampled_{};
     Island island_;
     std::optional<SettingsExample> example_;
@@ -421,13 +428,19 @@ void App::run(IslandCommand const& command) {
         break;
     }
     case IslandCommand::Kind::prayerLocation: {
-        if (command.index == 0 || command.index > prayerLocations.size()) break;
-        auto updated = Settings::load();
-        updated.prayerCity = static_cast<unsigned>(command.index);
-        if (updated.saveNotifications()) {
-            settings_.prayerCity = updated.prayerCity;
-            island_.setPreferences(settings_);
-            refreshPrayers();
+        prayerPickerActive_ = true;
+        island_.setPopupOpen(true);
+        const auto city = choosePrayerLocation(window_, settings_.prayerCity);
+        island_.setPopupOpen(false);
+        prayerPickerActive_ = false;
+        if (city && *city != settings_.prayerCity) {
+            auto updated = Settings::load();
+            updated.prayerCity = *city;
+            if (updated.saveNotifications()) {
+                settings_.prayerCity = updated.prayerCity;
+                island_.setPreferences(settings_);
+                refreshPrayers();
+            } else MessageBoxW(window_, L"Could not save the prayer location.", appName, MB_OK | MB_ICONWARNING);
         }
         break;
     }
@@ -501,14 +514,77 @@ void App::applyNetwork(NetworkStatus status) {
     }
 }
 
+void App::cancelPrayerRequest() {
+    if (prayerRequest_) prayerRequest_.Cancel();
+    prayerRequest_ = nullptr;
+}
+
+winrt::Windows::Foundation::IAsyncAction App::loadPrayerMonth(unsigned city, std::chrono::year_month month) {
+    const auto cancel = co_await winrt::get_cancellation_token();
+    cancel.enable_propagation();
+    const winrt::apartment_context ui;
+    co_await winrt::resume_background();
+    const auto result = std::make_shared<PrayerMonth>();
+    try {
+        co_await fetchPrayerMonth(city, month, result);
+    } catch (winrt::hresult_error const&) {
+        if (cancel()) co_return;
+    }
+    if (cancel()) co_return;
+    co_await ui;
+    if (cancel() || city != prayerCity_) co_return;
+
+    if (result->city) {
+        const std::chrono::year_month_day date{prayerDate(city, std::chrono::system_clock::now())};
+        auto& slot = month == date.year() / date.month() ? prayerMonth_ : nextPrayerMonth_;
+        slot = std::move(*result);
+    }
+    const std::chrono::year_month_day today{prayerDate(city, std::chrono::system_clock::now())};
+    const auto current = today.year() / today.month();
+    const bool available = month == current
+        ? prayerMonth_.month == month && prayerMonth_.days[unsigned(today.day()) - 1].has_value()
+        : nextPrayerMonth_.month == month && nextPrayerMonth_.days.front().has_value();
+    prayerRetryAt_ = available ? Island::Clock::time_point{} : Island::Clock::now() + 5min;
+    island_.setPrayerLoad(PrayerLoad::unavailable);
+    frame();
+}
+
 bool App::refreshPrayers() {
-    const auto now = std::chrono::system_clock::now();
+    using namespace std::chrono;
+    const auto now = system_clock::now();
     const auto date = prayerDate(settings_.prayerCity, now);
-    const bool changed = prayerCity_ != settings_.prayerCity || (prayers_ && prayers_->date != date);
-    if (changed) {
+    if (prayerCity_ != settings_.prayerCity) {
         prayerCity_ = settings_.prayerCity;
-        prayers_ = prayerSchedule(prayerCity_, date);
+        prayerMonth_ = nextPrayerMonth_ = {};
+        prayerReminderDate_ = {};
+        prayerRetryAt_ = {};
+        cancelPrayerRequest();
+    }
+    if (prayerReminderDate_ != date) {
+        prayerReminderDate_ = date;
         announcedPrayers_ = 0;
+    }
+    if (prayerCity_) {
+        const year_month_day today{date};
+        const auto month = today.year() / today.month();
+        if (nextPrayerMonth_.city && nextPrayerMonth_.month == month) {
+            prayerMonth_ = std::exchange(nextPrayerMonth_, {});
+            prayerRetryAt_ = {};
+        }
+        const bool missingToday = prayerMonth_.month != month || !prayerMonth_.days[unsigned(today.day()) - 1];
+        const bool lastDay = today.day() == year_month_day_last{month / last}.day();
+        const auto next = month + months{1};
+        const bool missingTomorrow = lastDay && (nextPrayerMonth_.month != next || !nextPrayerMonth_.days.front());
+        if ((missingToday || missingTomorrow) && Island::Clock::now() >= prayerRetryAt_ &&
+            (!prayerRequest_ || prayerRequest_.Status() != winrt::Windows::Foundation::AsyncStatus::Started)) {
+            if (missingToday) island_.setPrayerLoad(PrayerLoad::loading);
+            prayerRequest_ = loadPrayerMonth(prayerCity_, missingToday ? month : next);
+        }
+    }
+    const auto updated = prayerSchedule(prayerMonth_, date, nextPrayerMonth_);
+    const bool changed = prayers_ != updated;
+    if (changed) {
+        prayers_ = updated;
         island_.setPrayerSchedule(prayers_);
     }
     if (!prayers_) return changed;
@@ -533,6 +609,7 @@ void App::refreshMotion() {
 }
 
 bool App::refreshFullscreen() {
+    if (prayerPickerActive_) return false;
     const auto foreground = GetForegroundWindow();
     if (settings_.hideInFullscreen && foreground &&
         (foreground == window_ || foreground == scratchpad_.window())) return false;
@@ -549,7 +626,7 @@ void App::refreshPillOverlap() {
         if (island_.setPillOccluded(false)) frame();
         return;
     }
-    if (suppressed() || example_) return;
+    if (suppressed() || example_ || prayerPickerActive_) return;
     const auto now = Island::Clock::now();
     if (now < nextOverlapCheck_ ||
         (overlapRequest_ && overlapRequest_.Status() == winrt::Windows::Foundation::AsyncStatus::Started)) return;
@@ -1071,6 +1148,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     case WM_DESTROY:
         closeTimerEdit(false);
+        cancelPrayerRequest();
         spectrum_.select({});
         dropZone_.detach();
         scratchpad_.close();

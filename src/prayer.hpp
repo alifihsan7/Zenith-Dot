@@ -3,8 +3,11 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <string>
+#include <windows.h>
+#include <winrt/Windows.Foundation.h>
 
 namespace zenith {
 
@@ -12,27 +15,33 @@ inline constexpr std::array prayerNames{L"Subuh", L"Dzuhur", L"Ashar", L"Magrib"
 
 struct PrayerLocation {
     wchar_t const* name;
-    wchar_t const* zone;
-    double latitude;
-    double longitude;
+    wchar_t const* province;
     int utcOffset;
+
+    constexpr wchar_t const* zone() const {
+        return utcOffset == 9 ? L"WIT" : utcOffset == 8 ? L"WITA" : L"WIB";
+    }
 };
 
-inline constexpr std::array prayerLocations{
-    PrayerLocation{L"Jakarta", L"WIB", -6.1754, 106.8272, 7},
-    PrayerLocation{L"Makassar", L"WITA", -5.1477, 119.4327, 8},
-    PrayerLocation{L"Jayapura", L"WIT", -2.5916, 140.6690, 9},
-};
+#include "prayer_locations.inc"
 
 struct PrayerSchedule {
     wchar_t const* city;
     std::chrono::sys_days date;
     std::array<int, prayerNames.size()> times;
     int utcOffset;
-    int tomorrowSubuh;
+    std::optional<int> tomorrowSubuh;
     wchar_t const* zone = L"";
     bool operator==(PrayerSchedule const&) const = default;
 };
+
+struct PrayerMonth {
+    unsigned city = 0;
+    std::chrono::year_month month{};
+    std::array<std::optional<std::array<int, prayerNames.size()>>, 31> days{};
+};
+
+enum class PrayerLoad { loading, unavailable };
 
 struct PrayerProgress {
     double localMinute;
@@ -44,7 +53,11 @@ struct PrayerProgress {
 
 PrayerProgress prayerProgress(PrayerSchedule const& schedule, std::chrono::system_clock::time_point now);
 std::chrono::sys_days prayerDate(unsigned city, std::chrono::system_clock::time_point now);
-std::optional<PrayerSchedule> prayerSchedule(unsigned city, std::chrono::sys_days date);
+std::optional<PrayerSchedule> prayerSchedule(PrayerMonth const& month, std::chrono::sys_days date,
+                                              PrayerMonth const& nextMonth);
 std::wstring prayerTimeText(int minute);
+std::optional<unsigned> choosePrayerLocation(HWND owner, unsigned current);
+winrt::Windows::Foundation::IAsyncAction fetchPrayerMonth(unsigned city, std::chrono::year_month month,
+                                                         std::shared_ptr<PrayerMonth> result);
 
 }
