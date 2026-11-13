@@ -667,6 +667,9 @@ winrt::Windows::Foundation::IAsyncAction App::loadPrayerMonth(unsigned city, std
         ? prayerMonth_.month == month && prayerMonth_.days[unsigned(today.day()) - 1].has_value()
         : nextPrayerMonth_.month == month && nextPrayerMonth_.days.front().has_value();
     prayerRetryAt_ = available ? Island::Clock::time_point{} : Island::Clock::now() + 5min;
+    // Hand a fresh month to the island right away; waiting for the next power tick left
+    // "unavailable" on screen for up to ten seconds after a successful download.
+    if (available) refreshPrayers();
     island_.setPrayerLoad(PrayerLoad::unavailable);
     frame();
 }
