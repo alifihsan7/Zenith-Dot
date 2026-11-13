@@ -35,7 +35,7 @@ class SettingsExample;
 struct IslandCommand {
     enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, adjustLyricsDelay, editScratchpad,
                       selectAudioOutput, soundSettings, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute,
-                      autoCycle, prayerLocation, editTimerDuration, openSettings };
+                      autoCycle, prayerLocation, editTimerDuration, openSettings, overlapMode };
     Kind kind = Kind::none;
     double seconds = 0;              // seek position; appVolume: level 0..1; appMute, autoCycle: 1 = on
     std::wstring appId;
@@ -139,7 +139,7 @@ private:
                      timerToggle, timerReset, quickAdjust, timerDuration, lyrics, lyricLine, retryLyrics, lyricsDelay, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
                      appVolume, appMute, autoCycle, prayerLocationPicker,
-                     audioOutputMenu, audioOutputChoice, soundSettings, navHome, homeSettings, homeStartTimer };
+                     audioOutputMenu, audioOutputChoice, soundSettings, navHome, homeSettings, homeStartTimer, homeOverlapMode };
     using Screen = Feature;
     Settings preferences_;
     std::vector<Screen> screens_{Screen::home, Screen::media, Screen::timers, Screen::scratch, Screen::drop, Screen::system};

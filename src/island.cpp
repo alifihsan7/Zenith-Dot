@@ -47,6 +47,7 @@ constexpr float activitySwapDrop = 31;
 constexpr float activitySwapLift = 7;
 constexpr float panelWidth = 369;
 constexpr float homeRowHeight = 43;
+constexpr float homeModeRowHeight = 36;
 constexpr float mediaPanelWidth = 344;
 constexpr float systemPanelWidth = 530;
 constexpr float systemStatsBottom = 75;
@@ -942,7 +943,7 @@ float Island::screenHeight(Screen screen) const {
     case Screen::home: {
         const auto rows = homeRows();
         const auto count = std::min<std::ptrdiff_t>(3, 4 - std::ranges::count(rows, Screen::home));
-        return navHeight + 39 + (count ? homeRowHeight * static_cast<float>(count) : 62) + padBottom;
+        return navHeight + 39 + homeModeRowHeight + (count ? homeRowHeight * static_cast<float>(count) : 62) + padBottom;
     }
     case Screen::media:
         if (sourcePickerOpen_) return std::max(mediaPanelHeight,
@@ -2032,6 +2033,10 @@ IslandCommand Island::pointerUp(POINT client) {
         command.kind = IslandCommand::Kind::prayerLocation;
         break;
     case Hit::navHome: showScreen(Screen::home, now); break;
+    case Hit::homeOverlapMode:
+        command.kind = IslandCommand::Kind::overlapMode;
+        command.index = index;
+        break;
     case Hit::homeSettings: command.kind = IslandCommand::Kind::openSettings; break;
     case Hit::homeStartTimer:
         selectTimerView(0);
@@ -3027,7 +3032,14 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
 
     constexpr Hit rowHits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem,
                             Hit::navPrayer, Hit::navHome};
-    float y = panel.top + 39;
+    const float modeTop = panel.top + 39;
+    text(L"Over tabs and toolbars", bodyFont_.get(), box(left, modeTop, innerWidth - 121, 27), rgb(mutedColor));
+    drawButton(box(right - 112, modeTop, 53, 27), L"Dot", Hit::homeOverlapMode, record, 0,
+               preferences_.shrinkOverControls);
+    drawButton(box(right - 53, modeTop, 53, 27), L"Pill", Hit::homeOverlapMode, record, 1,
+               !preferences_.shrinkOverControls);
+
+    float y = modeTop + homeModeRowHeight;
     unsigned shown = 0;
     for (const auto feature : homeRows()) {
         if (feature == Screen::home) continue;

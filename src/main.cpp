@@ -370,6 +370,26 @@ LRESULT CALLBACK App::timerEditInput(HWND edit, UINT message, WPARAM wparam, LPA
 
 void App::run(IslandCommand const& command) {
     switch (command.kind) {
+    case IslandCommand::Kind::overlapMode: {
+        const bool shrink = command.index == 0;
+        if (settings_.shrinkOverControls == shrink) break;
+        auto updated = Settings::load();
+        updated.shrinkOverControls = shrink;
+        if (!updated.saveDisplay()) {
+            MessageBoxW(window_, L"Could not save the island mode.", appName, MB_OK | MB_ICONWARNING);
+            break;
+        }
+        settings_.shrinkOverControls = shrink;
+        island_.setPreferences(settings_);
+        nextOverlapCheck_ = {};
+        if (overlapRequest_) {
+            overlapRequest_.Cancel();
+            overlapRequest_ = nullptr;
+        }
+        if (!shrink) island_.setPillOccluded(false);
+        refreshPillOverlap();
+        break;
+    }
     case IslandCommand::Kind::openSettings: launchSettings(); break;
     case IslandCommand::Kind::previous: control(MediaCommand::previous); break;
     case IslandCommand::Kind::toggle: control(MediaCommand::toggle); break;
