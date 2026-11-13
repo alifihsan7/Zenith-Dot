@@ -458,6 +458,24 @@ private:
     std::vector<DropPreview> dropItems_;
     std::map<DropThumbnail const*, winrt::com_ptr<ID2D1Bitmap>> dropBitmaps_;
     size_t dropOffset_ = 0;
+    // Row motion after the item list changes: kept rows slide from their old slot, new rows fade in,
+    // and removed rows that were on screen fade out where they were.
+    struct DropRowMotion {
+        float fromOffset = 0;
+        bool entering = false;
+    };
+    struct DropGhost {
+        DropPreview item;
+        float slotY = 0;
+    };
+    std::vector<DropRowMotion> dropMotion_;
+    std::vector<DropGhost> dropGhosts_;
+    Clock::time_point dropMotionStart_{};
+    float dropRowsFrom_ = 0;   // visible rows before the last change
+    float dropFieldFrom_ = 1;
+    Clock::time_point dropFieldStart_{};
+    void drawDropRow(DropPreview const& item, size_t index, float rowY, float x, bool record);
+    float dropFieldValue(Clock::time_point now) const;
     int dropWheelRemainder_ = 0;
     D2D1_RECT_F dropViewport_{};
     bool panelPinned_ = false;

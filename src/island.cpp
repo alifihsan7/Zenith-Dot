@@ -183,6 +183,9 @@ constexpr size_t visibleDropRows = 4;
 constexpr float dropRowHeight = 43;
 constexpr float dropEmptyHeight = 222;
 constexpr float dropFilledBaseHeight = 154;
+constexpr auto dropMotionTime = 260ms;
+constexpr float dropEmptyField = 112;
+constexpr float dropFilledField = 36;
 
 constexpr unsigned inkColor = 0xf5f6f8;
 constexpr unsigned mutedColor = 0xa4aab4;
@@ -750,7 +753,46 @@ void Island::setDropItems(std::vector<DropPreview> items) {
     const float before = panelHeight(now);
     const float oldTarget = screenHeight(Screen::drop);
     const size_t limit = items.size() - std::min(items.size(), visibleDropRows);
+    const size_t oldOffset = dropOffset_;
     dropOffset_ = items.size() > dropItems_.size() ? limit : std::min(dropOffset_, limit);
+
+    // Match kept items by what they show; duplicates pair up in order.
+    const auto same = [](DropPreview const& a, DropPreview const& b) {
+        return a.text == b.text && a.thumbnail == b.thumbnail && a.label == b.label;
+    };
+    std::vector<bool> kept(dropItems_.size());
+    std::vector<DropRowMotion> motion(items.size());
+    bool changed = items.size() != dropItems_.size();
+    for (size_t i = 0; i < items.size(); ++i) {
+        size_t match = dropItems_.size();
+        for (size_t j = 0; j < dropItems_.size(); ++j) {
+            if (!kept[j] && same(dropItems_[j], items[i])) { match = j; break; }
+        }
+        if (match == dropItems_.size()) {
+            motion[i].entering = true;
+            changed = true;
+            continue;
+        }
+        kept[match] = true;
+        const float oldSlot = static_cast<float>(match) - static_cast<float>(oldOffset);
+        const float newSlot = static_cast<float>(i) - static_cast<float>(dropOffset_);
+        motion[i].fromOffset = (oldSlot - newSlot) * dropRowHeight;
+        if (motion[i].fromOffset != 0) changed = true;
+    }
+    dropGhosts_.clear();
+    if (!items.empty()) {
+        const size_t oldEnd = std::min(dropItems_.size(), oldOffset + visibleDropRows);
+        for (size_t j = oldOffset; j < oldEnd; ++j) {
+            if (!kept[j]) dropGhosts_.push_back({dropItems_[j], static_cast<float>(j - oldOffset) * dropRowHeight});
+        }
+    }
+    if (items.empty() != dropItems_.empty()) {
+        dropFieldFrom_ = dropFieldValue(now);
+        dropFieldStart_ = animate_ ? now : Clock::time_point{};
+    }
+    dropRowsFrom_ = static_cast<float>(std::min(dropItems_.size() - std::min(dropItems_.size(), oldOffset), visibleDropRows));
+    dropMotion_ = std::move(motion);
+    if (changed) dropMotionStart_ = animate_ ? now : Clock::time_point{};
     dropItems_ = std::move(items);
     dropBitmaps_.clear();
     if (pressed_ == Hit::dropImage || pressed_ == Hit::removeDrop) pressed_ = Hit::none;
@@ -991,7 +1033,8 @@ bool Island::moving(Clock::time_point now) const {
     if (!animate_) return false;
     return activitySwapActive(now) || now - timerDigitsStart_ < timerDigitMotion || now - countdownCompletion_.start < countdownCompletionMotion ||
            now - dotExitStart_ < activityDotExitTime || now - dotHoverStart_ < dotHoverTime ||
-           now - hoverStart_ < hoverFadeTime || now - shrinkStart_ < toggleTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
+           now - hoverStart_ < hoverFadeTime || now - shrinkStart_ < toggleTime ||
+           now - dropMotionStart_ < dropMotionTime || now - dropFieldStart_ < dropMotionTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
            std::ranges::any_of(captureIndicators_, [now](auto const& item) { return now - item.start < captureTime; }) ||
            now - screenStart_ < shapeTime ||
            now - widthStart_ < shapeTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
@@ -3644,24 +3687,42 @@ void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
     }
 }
 
+float Island::dropFieldValue(Clock::time_point now) const {
+    // 1 = the tall empty drop area, 0 = the short bar above the item list.
+    const float target = dropItems_.empty() ? 1.0f : 0.0f;
+    const float t = animate_ ? easeInOut(progress(dropFieldStart_, dropMotionTime, now)) : 1;
+    return std::lerp(dropFieldFrom_, target, t);
+}
+
 void Island::drawDropZone(D2D1_RECT_F panel, bool record) {
+    const auto now = drawNow_;
     const float x = panel.left + padX;
     const float y = panel.top + padTop;
     text(L"Drop Zone", titleFont_.get(), box(x, y, innerWidth, 22), rgb(inkColor));
     const bool empty = dropItems_.empty();
-    const auto field = box(x, panel.top + 44, innerWidth, empty ? 112.0f : 36.0f);
+    const float fieldValue = dropFieldValue(now);
+    const auto field = box(x, panel.top + 44, innerWidth, std::lerp(dropFilledField, dropEmptyField, fieldValue));
     const auto blue = rgb(0x9ccfff);
     const auto dropArea = rounded(field, 9);
     target_->FillRoundedRectangle(dropArea, ink(withAlpha(blue, dropHover_ ? 0.11f : 0.03f)));
     target_->DrawRoundedRectangle(dropArea, ink(dropHover_ ? blue : rgb(0x657b94)), 1, dropDash_.get());
-    if (empty) {
-        drawScreenGlyph(Screen::drop, box(x, field.top + 22, innerWidth, 24), blue);
-        text(dropHover_ ? L"Release to add" : L"Drop files or text here", headingCenterFont_.get(),
-             box(x, field.top + 53, innerWidth, 26), rgb(inkColor));
-    } else {
-        drawScreenGlyph(Screen::drop, box(x + innerWidth / 2 - 58, field.top, 22, 36), blue);
-        text(dropHover_ ? L"Release to add" : L"Drop to add", bodyFont_.get(),
-             box(x + innerWidth / 2 - 29, field.top, 115, 36), rgb(inkColor));
+    // The label for the new state fades in once the area has mostly reached its new height.
+    const float settled = empty ? fieldValue : 1 - fieldValue;
+    const float contentOpacity = easeInOut(lin(0.45f, 1, settled));
+    if (contentOpacity > 0) {
+        target_->PushAxisAlignedClip(field, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        if (contentOpacity < 1) pushLayer(nullptr, contentOpacity);
+        if (empty) {
+            drawScreenGlyph(Screen::drop, box(x, field.top + 22, innerWidth, 24), blue);
+            text(dropHover_ ? L"Release to add" : L"Drop files or text here", headingCenterFont_.get(),
+                 box(x, field.top + 53, innerWidth, 26), rgb(inkColor));
+        } else {
+            drawScreenGlyph(Screen::drop, box(x + innerWidth / 2 - 58, field.top, 22, dropFilledField), blue);
+            text(dropHover_ ? L"Release to add" : L"Drop to add", bodyFont_.get(),
+                 box(x + innerWidth / 2 - 29, field.top, 115, dropFilledField), rgb(inkColor));
+        }
+        if (contentOpacity < 1) popLayer();
+        target_->PopAxisAlignedClip();
     }
 
     if (!empty) drawButton(box(x + innerWidth - 70, y, 70, 25), L"Clear all", Hit::clearDrop, record);
@@ -3669,58 +3730,93 @@ void Island::drawDropZone(D2D1_RECT_F panel, bool record) {
     const float rowsTop = field.bottom + 6;
     const auto rows = box(x, rowsTop, innerWidth, dropRowHeight * static_cast<float>(end - dropOffset_));
     if (record) dropViewport_ = rows;
+
+    const float t = animate_ ? easeInOut(progress(dropMotionStart_, dropMotionTime, now)) : 1;
+    // The list area grows or shrinks with the rows, so the footer never covers a row that is still moving.
+    const float rowsHeight = dropRowHeight * std::lerp(dropRowsFrom_, static_cast<float>(end - dropOffset_), t);
+    target_->PushAxisAlignedClip(box(x - 2, rowsTop, innerWidth + 4, rowsHeight), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    if (t < 1) {
+        const float ghostOpacity = 1 - easeInOut(lin(0, 0.6f, t));
+        for (const auto& ghost : dropGhosts_) {
+            if (ghostOpacity <= 0) break;
+            pushLayer(nullptr, ghostOpacity);
+            drawDropRow(ghost.item, dropItems_.size(), rowsTop + ghost.slotY, x, false);
+            popLayer();
+        }
+    }
     for (size_t index = dropOffset_; index < end; ++index) {
-        const float rowY = rowsTop + dropRowHeight * static_cast<float>(index - dropOffset_);
-        const auto drag = box(x, rowY + 1, innerWidth - 36, dropRowHeight - 2);
-        const auto remove = box(x + innerWidth - 30, rowY + 7, 30, 29);
-        const auto tile = box(x + 4, rowY + 5, 44, 33);
-        if (index > dropOffset_) target_->FillRectangle(box(x, rowY, innerWidth, 1), ink(white(0.06f)));
-        if (const float level = hoverLevel(Hit::dropItem, index); level > 0)
-            target_->FillRoundedRectangle(rounded(drag, 6), ink(white(0.06f * level)));
-        target_->FillRoundedRectangle(rounded(tile, 5), ink(rgb(0x1c2635)));
-        const auto& item = dropItems_[index];
-        if (record) addTarget(drag, Hit::dropItem, index);
-        if (item.thumbnail) {
-            const auto& image = *item.thumbnail;
-            auto& bitmap = dropBitmaps_[&image];
-            if (!bitmap) {
-                const auto properties = D2D1::BitmapProperties(
-                    D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
-                target_->CreateBitmap(D2D1::SizeU(image.width, image.height), image.pixels.data(),
-                                      image.width * 4, properties, bitmap.put());
-            }
-            if (bitmap) {
-                const float scale = std::min(42.0f / image.width, 31.0f / image.height);
-                const float width = image.width * scale, height = image.height * scale;
-                target_->DrawBitmap(bitmap.get(), box(tile.left + (44 - width) / 2, tile.top + (33 - height) / 2,
-                    width, height), 1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-            }
-            const bool active = hovered(Hit::dropImage, index) || pressed(Hit::dropImage, index);
-            if (active) target_->FillRoundedRectangle(rounded(tile, 5), ink(withAlpha(blue, 0.20f)));
-            if (record) addTarget(tile, Hit::dropImage, index);
-        } else {
-            const auto color = ink(rgb(0xa8c4e2));
-            const float left = tile.left + 16, top = tile.top + 9;
-            if (!item.text) target_->DrawRoundedRectangle(rounded(box(left, top, 12, 15), 2), color, 1);
-            const float inset = item.text ? 0.0f : 3.0f;
-            for (int line = 0; line < 3; ++line) {
-                const float lineY = top + 4 + line * 3.0f;
-                target_->DrawLine(pt(left + inset, lineY), pt(left + 12 - inset - (line == 2 ? 2 : 0), lineY), color, 1);
+        float rowY = rowsTop + dropRowHeight * static_cast<float>(index - dropOffset_);
+        float opacity = 1;
+        if (t < 1 && index < dropMotion_.size()) {
+            const auto& motion = dropMotion_[index];
+            rowY += motion.fromOffset * (1 - t);
+            if (motion.entering) {
+                opacity = t;
+                rowY += 6 * (1 - t);
             }
         }
-        text(item.label, bodyFont_.get(), box(x + 57, rowY + 3, innerWidth - 100, 20), rgb(inkColor));
-        text(item.thumbnail ? L"Image" : item.text ? L"Plain text" : L"File", bodyFont_.get(),
-             box(x + 57, rowY + 22, innerWidth - 100, 15), rgb(mutedColor));
-        drawButton(remove, L"×", Hit::removeDrop, record, index);
+        if (opacity < 1) pushLayer(nullptr, opacity);
+        drawDropRow(dropItems_[index], index, rowY, x, record);
+        if (opacity < 1) popLayer();
     }
+    target_->PopAxisAlignedClip();
+
     const auto count = std::to_wstring(dropItems_.size()) + (dropItems_.size() == 1 ? L" item" : L" items");
     const auto status = dropItems_.size() > visibleDropRows
         ? std::to_wstring(dropOffset_ + 1) + L"–" + std::to_wstring(end) + L" of " + count
         : count;
-    const float footerY = (empty ? field.bottom : rows.bottom) + 8;
+    const float footerY = (empty && t >= 1 ? field.bottom : rowsTop + rowsHeight - (empty ? 6 : 0)) + 8;
     text(empty ? L"Temporary items" : L"Drag an item to another app", bodyFont_.get(),
          box(x, footerY, 220, 18), rgb(mutedColor));
     text(status, bodyEndFont_.get(), box(x + 221, footerY, innerWidth - 221, 18), rgb(mutedColor));
+}
+
+// index == dropItems_.size() draws a row that is leaving: it records no targets and has no hover.
+void Island::drawDropRow(DropPreview const& item, size_t index, float rowY, float x, bool record) {
+    const bool live = index < dropItems_.size();
+    record = record && live;
+    const auto blue = rgb(0x9ccfff);
+    const auto drag = box(x, rowY + 1, innerWidth - 36, dropRowHeight - 2);
+    const auto remove = box(x + innerWidth - 30, rowY + 7, 30, 29);
+    const auto tile = box(x + 4, rowY + 5, 44, 33);
+    if (live && index > dropOffset_) target_->FillRectangle(box(x, rowY, innerWidth, 1), ink(white(0.06f)));
+    if (const float level = live ? hoverLevel(Hit::dropItem, index) : 0; level > 0)
+        target_->FillRoundedRectangle(rounded(drag, 6), ink(white(0.06f * level)));
+    target_->FillRoundedRectangle(rounded(tile, 5), ink(rgb(0x1c2635)));
+    if (record) addTarget(drag, Hit::dropItem, index);
+    if (item.thumbnail) {
+        const auto& image = *item.thumbnail;
+        auto& bitmap = dropBitmaps_[&image];
+        if (!bitmap) {
+            const auto properties = D2D1::BitmapProperties(
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            target_->CreateBitmap(D2D1::SizeU(image.width, image.height), image.pixels.data(),
+                                  image.width * 4, properties, bitmap.put());
+        }
+        if (bitmap) {
+            const float scale = std::min(42.0f / image.width, 31.0f / image.height);
+            const float width = image.width * scale, height = image.height * scale;
+            target_->DrawBitmap(bitmap.get(), box(tile.left + (44 - width) / 2, tile.top + (33 - height) / 2,
+                width, height), 1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
+        const bool active = live && (hovered(Hit::dropImage, index) || pressed(Hit::dropImage, index));
+        if (active) target_->FillRoundedRectangle(rounded(tile, 5), ink(withAlpha(blue, 0.20f)));
+        if (record) addTarget(tile, Hit::dropImage, index);
+    } else {
+        const auto color = ink(rgb(0xa8c4e2));
+        const float left = tile.left + 16, top = tile.top + 9;
+        if (!item.text) target_->DrawRoundedRectangle(rounded(box(left, top, 12, 15), 2), color, 1);
+        const float inset = item.text ? 0.0f : 3.0f;
+        for (int line = 0; line < 3; ++line) {
+            const float lineY = top + 4 + line * 3.0f;
+            target_->DrawLine(pt(left + inset, lineY), pt(left + 12 - inset - (line == 2 ? 2 : 0), lineY), color, 1);
+        }
+    }
+    text(item.label, bodyFont_.get(), box(x + 57, rowY + 3, innerWidth - 100, 20), rgb(inkColor));
+    text(item.thumbnail ? L"Image" : item.text ? L"Plain text" : L"File", bodyFont_.get(),
+         box(x + 57, rowY + 22, innerWidth - 100, 15), rgb(mutedColor));
+    if (live) drawButton(remove, L"\u00d7", Hit::removeDrop, record, index);
+    else drawButton(remove, L"\u00d7", Hit::none, false);
 }
 
 void Island::drawSystem(D2D1_RECT_F panel, bool record) {
