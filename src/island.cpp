@@ -195,6 +195,9 @@ constexpr float taskFieldHeight = taskBarHeight + taskRowHeight * visibleTaskRow
 
 constexpr unsigned inkColor = 0xf5f6f8;
 constexpr unsigned mutedColor = 0xa4aab4;
+// Opaque: even 2% translucency let windows underneath show through the island's text.
+constexpr float shellOpacity = 1.0f;
+constexpr float shellTintOpacity = 1.0f;
 constexpr unsigned readoutColor = 0xc2e0ff;
 constexpr float batteryCellWidth = 25;   // 20 DIP cell, its nub, and the gap before the percentage
 
@@ -2527,7 +2530,7 @@ void Island::text(std::wstring_view value, IDWriteTextFormat* format, D2D1_RECT_
 
 // Black-dominant glass; the cover only tints the far corner of the gradient.
 void Island::fillShell(D2D1_ROUNDED_RECT shape) {
-    const D2D1_GRADIENT_STOP stops[]{{0, D2D1::ColorF(0, 0, 0, 0.94f)}, {1, withAlpha(tint_, 0.9f)}};
+    const D2D1_GRADIENT_STOP stops[]{{0, D2D1::ColorF(0, 0, 0, shellOpacity)}, {1, withAlpha(tint_, shellTintOpacity)}};
     winrt::com_ptr<ID2D1GradientStopCollection> collection;
     winrt::check_hresult(target_->CreateGradientStopCollection(stops, 2, collection.put()));
     winrt::com_ptr<ID2D1LinearGradientBrush> gradient;
@@ -2541,7 +2544,7 @@ void Island::fillShell(D2D1_ROUNDED_RECT shape) {
 void Island::fillShell(ID2D1Geometry* shape) {
     D2D1_RECT_F bounds{};
     winrt::check_hresult(shape->GetBounds(nullptr, &bounds));
-    const D2D1_GRADIENT_STOP stops[]{{0, D2D1::ColorF(0, 0, 0, 0.94f)}, {1, withAlpha(tint_, 0.9f)}};
+    const D2D1_GRADIENT_STOP stops[]{{0, D2D1::ColorF(0, 0, 0, shellOpacity)}, {1, withAlpha(tint_, shellTintOpacity)}};
     winrt::com_ptr<ID2D1GradientStopCollection> collection;
     winrt::check_hresult(target_->CreateGradientStopCollection(stops, 2, collection.put()));
     winrt::com_ptr<ID2D1LinearGradientBrush> gradient;
@@ -3223,7 +3226,17 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         homeClock_ = time;
         homeClockStart_ = continuing && homeClockFrom_.size() == time.size() ? now : Clock::time_point{};
     }
-    const auto clockBox = box(settings.left - 66, top, 57, 29);
+    // Indonesian time zone after the clock, from the system's current UTC offset.
+    std::wstring_view zone;
+    try {
+        const auto offset = std::chrono::current_zone()->get_info(std::chrono::system_clock::now()).offset;
+        const auto hours = std::chrono::duration_cast<std::chrono::minutes>(offset).count();
+        zone = hours == 7 * 60 ? L"WIB" : hours == 8 * 60 ? L"WITA" : hours == 9 * 60 ? L"WIT" : L"";
+    } catch (std::runtime_error const&) {
+    }
+    const float zoneWidth = zone.empty() ? 0.0f : 34.0f;
+    if (!zone.empty()) text(zone, bodyEndFont_.get(), box(settings.left - 9 - zoneWidth, top, zoneWidth, 29), rgb(mutedColor));
+    const auto clockBox = box(settings.left - 66 - zoneWidth, top, 57, 29);
     const float roll = easeInOut(progress(homeClockStart_, homeClockTime, now));
     if (roll < 1) {
         // Monospaced and right aligned: each character has a fixed slot, and only changed ones roll up.
@@ -4399,9 +4412,9 @@ void Island::drawPrayerSchedule(D2D1_RECT_F panel, bool record) {
                  pt(current.x, current.y - 7)}, accent_);
 
     const float axisY = y + 58;
-    text(L"00:00", monoFont_.get(), box(scheduleLeft + 4, axisY, 40, 15), rgb(mutedColor));
+    text(L"00:00", buttonFont_.get(), box(scheduleLeft + 4, axisY, 40, 15), rgb(mutedColor));
     text(L"12:00", buttonFont_.get(), box((scheduleLeft + scheduleRight) / 2 - 20, axisY, 40, 15), rgb(mutedColor));
-    text(L"24:00", monoEndFont_.get(), box(scheduleRight - 44, axisY, 40, 15), rgb(mutedColor));
+    text(L"24:00", buttonFont_.get(), box(scheduleRight - 44, axisY, 40, 15), rgb(mutedColor));
 }
 
 void Island::drawAppVolume(size_t index, D2D1_RECT_F row, bool record) {
