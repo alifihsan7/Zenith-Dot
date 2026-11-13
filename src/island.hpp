@@ -2,7 +2,6 @@
 
 #include "desktop.hpp"
 #include "bluetooth.hpp"
-#include "calendar.hpp"
 #include "audio_spectrum.hpp"
 #include "media.hpp"
 #include "lyrics.hpp"
@@ -83,7 +82,6 @@ public:
     void setSystem(SystemStats const& stats);
     void setNetwork(NetworkStatus const& status);
     void setBluetoothDevices(std::vector<ConnectedBluetoothDevice> devices);
-    void setAgenda(std::optional<CalendarEvent> event);
     void setPrayerSchedule(std::optional<PrayerSchedule> const& schedule);
     void setPrayerLoad(PrayerLoad state) { prayerLoad_ = state; }
     void setAudioOutput(std::wstring const& output);
@@ -223,9 +221,7 @@ private:
     void setOpen(bool open, Clock::time_point now);
     void openFromCompact(Clock::time_point now);
     PillMode homeTimer() const;
-    std::array<Screen, 5> homeRows() const;
-    bool agendaShown() const;
-    void drawAgendaGlyph(D2D1_RECT_F rect, D2D1_COLOR_F color);
+    std::array<Screen, 4> homeRows() const;
     void showScreen(Screen screen, Clock::time_point now);
     void toggleFocus(Clock::time_point now);
     void selectTimerView(size_t index);
@@ -503,7 +499,6 @@ private:
         bool done = false;
     };
     std::vector<ScratchCheck> scratchChecks_;
-    std::optional<CalendarEvent> agenda_;
     float scratchScroll_ = 0;
     float scratchScrollLimit_ = 0;
     LyricsView const* lyrics_ = nullptr;

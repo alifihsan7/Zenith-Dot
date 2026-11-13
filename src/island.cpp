@@ -185,7 +185,6 @@ constexpr float dropEmptyHeight = 222;
 constexpr float dropFilledBaseHeight = 154;
 constexpr auto dropMotionTime = 260ms;
 constexpr auto homeRowTime = 280ms;
-constexpr auto homeAgendaRow = Feature::system;
 constexpr auto homeClockTime = 320ms;
 constexpr float dropEmptyField = 112;
 constexpr float dropFilledField = 36;
@@ -705,17 +704,6 @@ void Island::setNetwork(NetworkStatus const& status) {
     network_ = status;
 }
 
-void Island::setAgenda(std::optional<CalendarEvent> event) {
-    agenda_ = std::move(event);
-}
-
-// The next calendar event gets a Home row once it is less than 12 hours away, and keeps it until it ends.
-bool Island::agendaShown() const {
-    if (!agenda_) return false;
-    const auto now = std::chrono::system_clock::now();
-    return agenda_->end > now && agenda_->start - now < std::chrono::hours(12);
-}
-
 void Island::setBluetoothDevices(std::vector<ConnectedBluetoothDevice> devices) {
     bluetoothOffset_ = std::min(bluetoothOffset_, devices.size() - std::min(devices.size(), visibleBluetoothRows));
     bluetoothDevices_ = std::move(devices);
@@ -986,12 +974,10 @@ Island::PillMode Island::homeTimer() const {
     return PillMode::dot;
 }
 
-// Screen::home marks an empty slot. System never has a Home row, so homeAgendaRow stands for the calendar event.
-std::array<Island::Screen, 5> Island::homeRows() const {
+std::array<Island::Screen, 4> Island::homeRows() const {
     return {
         preferences_.enabled(Screen::media) && media_.hasSession ? Screen::media : Screen::home,
         homeTimer() != PillMode::dot ? Screen::timers : Screen::home,
-        agendaShown() ? homeAgendaRow : Screen::home,
         preferences_.enabled(Screen::drop) && !dropItems_.empty() ? Screen::drop : Screen::home,
         preferences_.enabled(Screen::prayer) && prayerSchedule_ ? Screen::prayer : Screen::home
     };
@@ -2535,16 +2521,6 @@ void Island::drawLogo(D2D1_POINT_2F origin, float height) {
     target_->SetTransform(previous);
 }
 
-void Island::drawAgendaGlyph(D2D1_RECT_F rect, D2D1_COLOR_F color) {
-    const auto c = pt((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
-    const auto page = box(c.x - 7, c.y - 6, 14, 13);
-    target_->DrawRoundedRectangle(rounded(page, 2.5f), ink(color), 1.3f);
-    target_->DrawLine(pt(page.left, page.top + 4), pt(page.right, page.top + 4), ink(color), 1.3f);
-    target_->DrawLine(pt(c.x - 3.5f, page.top - 2), pt(c.x - 3.5f, page.top + 1.5f), ink(color), 1.3f, roundStroke_.get());
-    target_->DrawLine(pt(c.x + 3.5f, page.top - 2), pt(c.x + 3.5f, page.top + 1.5f), ink(color), 1.3f, roundStroke_.get());
-    target_->FillEllipse(D2D1::Ellipse(pt(c.x - 2.5f, c.y + 3), 1.2f, 1.2f), ink(color));
-}
-
 void Island::fillPolygon(std::initializer_list<D2D1_POINT_2F> points, D2D1_COLOR_F color) {
     winrt::com_ptr<ID2D1PathGeometry> path;
     winrt::check_hresult(graphics_->CreatePathGeometry(path.put()));
@@ -3276,28 +3252,6 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
             if (done) detail += L" · Done";
             else if (timer.paused()) detail += L" · Paused";
             if (!done) action = quick ? Hit::timerToggle : Hit::focusToggle;
-        } else if (feature == homeAgendaRow) {
-            const auto current = std::chrono::system_clock::now();
-            label = agenda_->title.empty() ? L"Busy" : agenda_->title;
-            const auto clockText = [](std::chrono::system_clock::time_point at) {
-                const auto local = std::chrono::current_zone()->to_local(at);
-                const auto minutes = std::chrono::duration_cast<std::chrono::minutes>(
-                    local - std::chrono::floor<std::chrono::days>(local)).count();
-                return prayerTimeText(static_cast<int>(minutes));
-            };
-            if (agenda_->start <= current) {
-                detail = L"Now · until " + clockText(agenda_->end);
-            } else {
-                const auto minutes = std::chrono::ceil<std::chrono::minutes>(agenda_->start - current).count();
-                if (minutes < 60) detail = L"In " + std::to_wstring(minutes) + L"m · " + clockText(agenda_->start);
-                else {
-                    const auto day = [](std::chrono::system_clock::time_point at) {
-                        return std::chrono::floor<std::chrono::days>(std::chrono::current_zone()->to_local(at));
-                    };
-                    detail = (day(agenda_->start) != day(current) ? L"Tomorrow " : L"") + clockText(agenda_->start);
-                }
-            }
-            if (!agenda_->location.empty()) detail += L" · " + agenda_->location;
         } else if (feature == Screen::drop) {
             detail = std::to_wstring(dropItems_.size()) + (dropItems_.size() == 1 ? L" item" : L" items");
         } else if (feature == Screen::prayer) {
@@ -3316,9 +3270,8 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         const auto entry = D2D1::RectF(row.left, row.top, action != Hit::none || done ? button.left - 4 : row.right, row.bottom);
         if (const float level = pressed(hit, homeRowIndex) ? 1 : hoverLevel(hit, homeRowIndex); level > 0)
             target_->FillRoundedRectangle(rounded(entry, 7), ink(white(0.07f * level)));
-        if (record && feature != homeAgendaRow) addTarget(entry, hit, homeRowIndex);
+        if (record) addTarget(entry, hit, homeRowIndex);
         if (feature == Screen::media) drawArt(leading, 1);
-        else if (feature == homeAgendaRow) drawAgendaGlyph(leading, accent_);
         else drawScreenGlyph(feature, leading, accent_);
         const float textLeft = leading.right + 10;
         const float width = entry.right - textLeft - 2;
