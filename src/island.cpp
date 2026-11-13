@@ -2225,6 +2225,10 @@ void Island::prepareSurface(int width, int height, bool animating) {
         const auto round = D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
                                                        D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND);
         winrt::check_hresult(graphics_->CreateStrokeStyle(round, nullptr, 0, roundStroke_.put()));
+        auto dashed = D2D1::StrokeStyleProperties();
+        dashed.dashStyle = D2D1_DASH_STYLE_CUSTOM;
+        constexpr float dashes[]{4, 4};
+        winrt::check_hresult(graphics_->CreateStrokeStyle(dashed, dashes, std::size(dashes), dropDash_.put()));
     }
     if (!target_) {
         const auto properties = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE,
@@ -3560,7 +3564,9 @@ void Island::drawDropZone(D2D1_RECT_F panel, bool record) {
     const bool empty = dropItems_.empty();
     const auto field = box(x, panel.top + 44, innerWidth, empty ? 112.0f : 36.0f);
     const auto blue = rgb(0x9ccfff);
-    target_->FillRoundedRectangle(rounded(field, 9), ink(withAlpha(blue, dropHover_ ? 0.21f : 0.09f)));
+    const auto dropArea = rounded(field, 9);
+    target_->FillRoundedRectangle(dropArea, ink(withAlpha(blue, dropHover_ ? 0.11f : 0.03f)));
+    target_->DrawRoundedRectangle(dropArea, ink(dropHover_ ? blue : rgb(0x657b94)), 1, dropDash_.get());
     if (empty) {
         drawScreenGlyph(Screen::drop, box(x, field.top + 22, innerWidth, 24), blue);
         text(dropHover_ ? L"Release to add" : L"Drop files or text here", headingCenterFont_.get(),

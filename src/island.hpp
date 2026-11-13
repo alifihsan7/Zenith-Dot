@@ -554,6 +554,7 @@ private:
     winrt::com_ptr<ID2D1DCRenderTarget> target_;
     winrt::com_ptr<ID2D1SolidColorBrush> brush_;
     winrt::com_ptr<ID2D1StrokeStyle> roundStroke_;
+    winrt::com_ptr<ID2D1StrokeStyle> dropDash_;
     std::array<winrt::com_ptr<ID2D1Layer>, 4> layers_;
     size_t layerDepth_ = 0;
     D2D1_MATRIX_3X2_F base_ = D2D1::Matrix3x2F::Identity();
