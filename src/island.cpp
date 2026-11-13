@@ -41,6 +41,8 @@ constexpr auto idleBeforePausedMedia = 110ms;
 constexpr auto activityDotExitTime = 240ms;
 constexpr auto countdownCompletionMotion = 280ms;
 constexpr auto navSelectionTime = 240ms;
+constexpr auto hoverFadeTime = 120ms;
+constexpr auto toggleTime = 180ms;
 constexpr auto timerDigitMotion = 170ms;
 constexpr float timerDragStep = 12;
 constexpr float activitySwapDrop = 31;
@@ -988,7 +990,8 @@ D2D1_RECT_F Island::panelRect(Clock::time_point now) const {
 bool Island::moving(Clock::time_point now) const {
     if (!animate_) return false;
     return activitySwapActive(now) || now - timerDigitsStart_ < timerDigitMotion || now - countdownCompletion_.start < countdownCompletionMotion ||
-           now - dotExitStart_ < activityDotExitTime || now - dotHoverStart_ < dotHoverTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
+           now - dotExitStart_ < activityDotExitTime || now - dotHoverStart_ < dotHoverTime ||
+           now - hoverStart_ < hoverFadeTime || now - shrinkStart_ < toggleTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
            std::ranges::any_of(captureIndicators_, [now](auto const& item) { return now - item.start < captureTime; }) ||
            now - screenStart_ < shapeTime ||
            now - widthStart_ < shapeTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
@@ -1790,8 +1793,7 @@ bool Island::pointerMove(POINT client) {
     const bool navChanged = setNavExpanded(open_ && inside(navHoverRect_, point), now);
     if (hit == hovered_ && index == hoveredIndex_) return navChanged || openAt_.has_value();
     setDotHover(hit == Hit::activityDot || (hit == Hit::pill && pillMode_ == PillMode::dot), now);
-    hovered_ = hit;
-    hoveredIndex_ = index;
+    setHovered(hit, index, now);
     return true;
 }
 
@@ -1803,7 +1805,7 @@ bool Island::pointerLeave() {
     const bool navChanged = setNavExpanded(false, now);
     setDotHover(false, now);
     if (hovered_ == Hit::none) return navChanged;
-    hovered_ = Hit::none;
+    setHovered(Hit::none, 0, now);
     return true;
 }
 
@@ -2184,6 +2186,47 @@ bool Island::hovered(Hit hit, size_t index) const {
     return hovered_ == hit && hoveredIndex_ == index && pressed_ == Hit::none;
 }
 
+float Island::hoverLevel(Hit hit, size_t index) const {
+    if (pressed_ != Hit::none) return 0;
+    const float t = animate_ ? easeOut(progress(hoverStart_, hoverFadeTime, drawNow_)) : 1;
+    if (hovered_ == hit && hoveredIndex_ == index) return std::lerp(hoverFrom_, 1.0f, t);
+    if (fadingHover_ == hit && fadingHoverIndex_ == index) return fadingHoverFrom_ * (1 - t);
+    return 0;
+}
+
+void Island::setHovered(Hit hit, size_t index, Clock::time_point now) {
+    // The item left behind fades out from its current level; returning to it picks that level back up.
+    const auto previous = drawNow_;
+    drawNow_ = now;
+    const float outgoing = hovered_ == Hit::none ? 0 : hoverLevel(hovered_, hoveredIndex_);
+    const float returning = fadingHover_ == hit && fadingHoverIndex_ == index ? hoverLevel(hit, index) : 0;
+    drawNow_ = previous;
+    fadingHover_ = hovered_;
+    fadingHoverIndex_ = hoveredIndex_;
+    fadingHoverFrom_ = outgoing;
+    hoverFrom_ = returning;
+    hoverStart_ = now;
+    hovered_ = hit;
+    hoveredIndex_ = index;
+}
+
+float Island::shrinkToggleValue(Clock::time_point now) {
+    const bool on = preferences_.shrinkOverControls;
+    const auto at = [&] {
+        const float t = animate_ ? easeInOut(progress(shrinkStart_, toggleTime, now)) : 1;
+        return std::lerp(shrinkFrom_, *shrinkShown_ ? 1.0f : 0.0f, t);
+    };
+    if (!shrinkShown_) {
+        shrinkShown_ = on;
+        shrinkFrom_ = on ? 1.0f : 0.0f;
+    } else if (*shrinkShown_ != on) {
+        shrinkFrom_ = at();
+        shrinkShown_ = on;
+        shrinkStart_ = now;
+    }
+    return at();
+}
+
 bool Island::pressed(Hit hit, size_t index) const {
     return pressed_ == hit && pressedIndex_ == index;
 }
@@ -2467,7 +2510,7 @@ void Island::drawChipGlyph(D2D1_POINT_2F center, D2D1_COLOR_F color) {
 }
 
 void Island::drawButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record, size_t index, bool selected) {
-    const float fill = pressed(hit, index) ? 0.14f : hovered(hit, index) ? 0.08f : 0.04f;
+    const float fill = pressed(hit, index) ? 0.14f : 0.04f + 0.04f * hoverLevel(hit, index);
     target_->FillRoundedRectangle(rounded(rect, 8), ink(selected ? withAlpha(accent_, 0.16f) : white(fill)));
     text(label, buttonFont_.get(), rect, selected ? accent_ : rgb(inkColor));
     if (record) addTarget(rect, hit, index);
@@ -3068,14 +3111,14 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
                             Hit::navPrayer, Hit::navHome};
     const float modeTop = panel.top + 39;
     const auto modeRow = box(left, modeTop, innerWidth, 27);
-    if (hovered(Hit::homeOverlapMode) || pressed(Hit::homeOverlapMode))
-        target_->FillRoundedRectangle(rounded(modeRow, 7), ink(white(0.07f)));
+    if (const float level = pressed(Hit::homeOverlapMode) ? 1 : hoverLevel(Hit::homeOverlapMode); level > 0)
+        target_->FillRoundedRectangle(rounded(modeRow, 7), ink(white(0.07f * level)));
     text(L"Auto-shrink", bodyFont_.get(), box(left, modeTop, innerWidth - 48, 27), rgb(inkColor));
-    const bool shrink = preferences_.shrinkOverControls;
+    const float shrink = shrinkToggleValue(now);
     const auto toggle = box(right - 36, modeTop + 4, 36, 19);
-    target_->FillRoundedRectangle(rounded(toggle, 9.5f), ink(shrink ? accent_ : white(0.14f)));
-    const auto thumb = pt(shrink ? toggle.right - 9.5f : toggle.left + 9.5f, modeTop + 13.5f);
-    target_->FillEllipse(D2D1::Ellipse(thumb, 6, 6), ink(shrink ? rgb(0x101318) : rgb(inkColor)));
+    target_->FillRoundedRectangle(rounded(toggle, 9.5f), ink(mixColor(white(0.14f), accent_, shrink)));
+    const auto thumb = pt(std::lerp(toggle.left + 9.5f, toggle.right - 9.5f, shrink), modeTop + 13.5f);
+    target_->FillEllipse(D2D1::Ellipse(thumb, 6, 6), ink(mixColor(rgb(inkColor), rgb(0x101318), shrink)));
     if (record) addTarget(modeRow, Hit::homeOverlapMode);
 
     float y = modeTop + homeModeRowHeight;
@@ -3122,8 +3165,8 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         const auto hit = rowHits[static_cast<unsigned>(feature)];
         constexpr size_t homeRowIndex = 1;
         const auto entry = D2D1::RectF(row.left, row.top, action != Hit::none || done ? button.left - 4 : row.right, row.bottom);
-        if (hovered(hit, homeRowIndex) || pressed(hit, homeRowIndex))
-            target_->FillRoundedRectangle(rounded(entry, 7), ink(white(0.07f)));
+        if (const float level = pressed(hit, homeRowIndex) ? 1 : hoverLevel(hit, homeRowIndex); level > 0)
+            target_->FillRoundedRectangle(rounded(entry, 7), ink(white(0.07f * level)));
         if (record) addTarget(entry, hit, homeRowIndex);
         if (feature == Screen::media) drawArt(leading, 1);
         else drawScreenGlyph(feature, leading, accent_);
@@ -3169,8 +3212,8 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
         drawScreenGlyph(Screen::media, cover, rgb(mutedColor));
     }
     if (hasMedia && !media_.appId.empty()) {
-        if (hovered(Hit::cover) || pressed(Hit::cover))
-            target_->FillRoundedRectangle(rounded(cover, 8), ink(withAlpha(accent_, 0.19f)));
+        if (const float level = pressed(Hit::cover) ? 1 : hoverLevel(Hit::cover); level > 0)
+            target_->FillRoundedRectangle(rounded(cover, 8), ink(withAlpha(accent_, 0.19f * level)));
         if (record) addTarget(cover, Hit::cover);
     }
     if (!hideTitle)
@@ -3259,7 +3302,7 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
         if (buttons[i] == Hit::toggle) {
             auto face = hasMedia ? accent_ : white(0.10f);
             if (pressed(Hit::toggle)) face = mixColor(face, D2D1::ColorF(0, 0, 0), 0.18f);
-            else if (hovered(Hit::toggle)) face = mixColor(face, D2D1::ColorF(1, 1, 1), 0.12f);
+            else face = mixColor(face, D2D1::ColorF(1, 1, 1), 0.12f * hoverLevel(Hit::toggle));
             target_->FillEllipse(disc, ink(face));
             if (media_.playing) {
                 target_->FillRectangle(box(c.x - 5, c.y - 6, 3.5f, 12), ink(onAccent));
@@ -3269,7 +3312,8 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
             }
         } else {
             if (enabled && pressed(buttons[i])) target_->FillEllipse(disc, ink(white(0.14f)));
-            else if (enabled && hovered(buttons[i])) target_->FillEllipse(disc, ink(white(0.08f)));
+            else if (const float level = enabled ? hoverLevel(buttons[i]) : 0; level > 0)
+                target_->FillEllipse(disc, ink(white(0.08f * level)));
             const auto color = enabled ? rgb(inkColor) : rgb(mutedColor, 0.42f);
             const float d = buttons[i] == Hit::next ? 1.0f : -1.0f;
             fillPolygon({{c.x - 6 * d, c.y - 5.5f}, {c.x + 5 * d, c.y}, {c.x - 6 * d, c.y + 5.5f}}, color);
@@ -3453,15 +3497,16 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     const auto control = [&](D2D1_RECT_F rect, std::wstring_view label, Hit hit, size_t index = 0,
                              bool enabled = true, bool active = false, bool primary = false, bool quiet = false) {
         const bool down = enabled && pressed(hit, index);
-        const bool hot = enabled && hovered(hit, index);
+        const float hot = enabled ? hoverLevel(hit, index) : 0;
         const auto foreground = primary ? rgb(0x101318) : active ? accent_ : rgb(enabled ? inkColor : mutedColor);
         if (primary) {
             const auto fill = down ? mixColor(accent_, rgb(0x101318), 0.15f)
-                : hot ? mixColor(accent_, white(1), 0.12f) : accent_;
+                : mixColor(accent_, white(1), 0.12f * hot);
             target_->FillRoundedRectangle(rounded(rect, 8), ink(fill));
-        } else if (active || hot || down || !quiet) {
-            const auto fill = active ? withAlpha(accent_, down ? 0.26f : hot ? 0.23f : 0.18f)
-                : white(down ? 0.16f : hot ? 0.11f : enabled ? 0.065f : 0.035f);
+        } else if (active || hot > 0 || down || !quiet) {
+            const float rest = quiet ? 0.0f : enabled ? 0.065f : 0.035f;
+            const auto fill = active ? withAlpha(accent_, down ? 0.26f : 0.18f + 0.05f * hot)
+                : white(down ? 0.16f : std::lerp(rest, 0.11f, hot));
             target_->FillRoundedRectangle(rounded(rect, 8), ink(fill));
         }
         text(label, buttonFont_.get(), rect, foreground);
@@ -3504,8 +3549,9 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
             const int value = unit == 0 ? time / 60 : time % 60;
             return (value < 10 ? L"0" : L"") + std::to_wstring(value);
         };
-        if (adjustable && (hovered(Hit::timerDuration, unit) || pressed(Hit::timerDuration, unit)))
-            target_->FillRoundedRectangle(rounded(area, 8), ink(white(0.08f)));
+        if (const float level = !adjustable ? 0 : pressed(Hit::timerDuration, unit) ? 1 : hoverLevel(Hit::timerDuration, unit);
+            level > 0)
+            target_->FillRoundedRectangle(rounded(area, 8), ink(white(0.08f * level)));
         if (roll < 1 && digits(timerDigitsFrom_) != digits(seconds)) {
             target_->PushAxisAlignedClip(area, D2D1_ANTIALIAS_MODE_ALIASED);
             text(digits(timerDigitsFrom_), clockFont_.get(),
@@ -3629,7 +3675,8 @@ void Island::drawDropZone(D2D1_RECT_F panel, bool record) {
         const auto remove = box(x + innerWidth - 30, rowY + 7, 30, 29);
         const auto tile = box(x + 4, rowY + 5, 44, 33);
         if (index > dropOffset_) target_->FillRectangle(box(x, rowY, innerWidth, 1), ink(white(0.06f)));
-        if (hovered(Hit::dropItem, index)) target_->FillRoundedRectangle(rounded(drag, 6), ink(white(0.06f)));
+        if (const float level = hoverLevel(Hit::dropItem, index); level > 0)
+            target_->FillRoundedRectangle(rounded(drag, 6), ink(white(0.06f * level)));
         target_->FillRoundedRectangle(rounded(tile, 5), ink(rgb(0x1c2635)));
         const auto& item = dropItems_[index];
         if (record) addTarget(drag, Hit::dropItem, index);
@@ -3815,9 +3862,10 @@ void Island::drawPickerCheck(D2D1_POINT_2F center) {
 
 void Island::drawPickerRow(D2D1_RECT_F row, std::wstring_view label, Hit hit, size_t index,
                            bool selected, std::optional<bool> headphones) {
-    if (selected || hovered(hit, index) || pressed(hit, index)) {
-        const auto fill = selected ? withAlpha(accent_, hovered(hit, index) ? 0.22f : 0.14f) :
-                                     white(pressed(hit, index) ? 0.15f : 0.08f);
+    const float level = hoverLevel(hit, index);
+    if (selected || level > 0 || pressed(hit, index)) {
+        const auto fill = selected ? withAlpha(accent_, 0.14f + 0.08f * level) :
+                                     white(pressed(hit, index) ? 0.15f : 0.08f * level);
         target_->FillRoundedRectangle(rounded(row, 6), ink(fill));
     }
     const float middle = (row.top + row.bottom) / 2;
@@ -4036,8 +4084,8 @@ void Island::drawAppVolume(size_t index, D2D1_RECT_F row, bool record) {
 
     // App icon; click to mute. A muted app's icon dims and gets a slash.
     const auto tile = box(row.left, middle - 12, 24, 24);
-    if (hovered(Hit::appMute, index) || pressed(Hit::appMute, index)) {
-        target_->FillRoundedRectangle(rounded(tile, 6), ink(white(0.1f)));
+    if (const float hot = pressed(Hit::appMute, index) ? 1 : hoverLevel(Hit::appMute, index); hot > 0) {
+        target_->FillRoundedRectangle(rounded(tile, 6), ink(white(0.1f * hot)));
     }
     const float iconOpacity = muted ? 0.4f : 1.0f;
     const auto glyph = box(tile.left + 3, tile.top + 3, 18, 18);
@@ -4178,7 +4226,8 @@ void Island::drawNav(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         const auto screen = screens_[i];
         const auto hit = hits[static_cast<unsigned>(screen)];
         const bool selected = screen_ == screen;
-        if (!selected && hovered(hit)) target_->FillRoundedRectangle(rounded(rect, 7), ink(white(0.08f * reveal)));
+        if (const float level = selected ? 0 : hoverLevel(hit); level > 0)
+            target_->FillRoundedRectangle(rounded(rect, 7), ink(white(0.08f * reveal * level)));
         const auto color = selected ? accent_ : rgb(mutedColor);
         const auto center = pt((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
         if (reveal < 1) {
@@ -4193,8 +4242,8 @@ void Island::drawNav(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         target_->FillRoundedRectangle(rounded(marker, 2.4f), ink(withAlpha(accent_, 1 - reveal)));
     }
     const auto pin = box(panel.right - padX - 26, top, 26, 24);
-    if (hovered(Hit::panelPin) || pressed(Hit::panelPin)) {
-        target_->FillRoundedRectangle(rounded(pin, 6), ink(white(pressed(Hit::panelPin) ? 0.14f : 0.09f)));
+    if (const float level = pressed(Hit::panelPin) ? 1 : hoverLevel(Hit::panelPin); level > 0) {
+        target_->FillRoundedRectangle(rounded(pin, 6), ink(white(pressed(Hit::panelPin) ? 0.14f : 0.09f * level)));
     }
     if (record) addTarget(pin, Hit::panelPin);
     const bool pinned = panelPinned();
@@ -4707,6 +4756,7 @@ void Island::drawInlineAlert(D2D1_RECT_F panel) {
 
 void Island::draw(HWND window) {
     const auto now = Clock::now();
+    drawNow_ = now;
     updateTheme(now);
     scale_ = GetDpiForWindow(window) / 96.0f * preferences_.islandScale();
     const auto monitor = MonitorFromPoint(POINT{}, MONITOR_DEFAULTTOPRIMARY);

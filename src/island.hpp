@@ -319,6 +319,10 @@ private:
     void text(std::wstring_view value, IDWriteTextFormat* format, D2D1_RECT_F rect, D2D1_COLOR_F color);
     void addTarget(D2D1_RECT_F rect, Hit hit, size_t index = 0);
     bool hovered(Hit hit, size_t index = 0) const;
+    // 0..1 hover highlight that fades in and out; pressed states stay immediate.
+    float hoverLevel(Hit hit, size_t index = 0) const;
+    void setHovered(Hit hit, size_t index, Clock::time_point now);
+    float shrinkToggleValue(Clock::time_point now);
     void setDotHover(bool hot, Clock::time_point now);
     float dotHover(Clock::time_point now) const;
     bool pressed(Hit hit, size_t index = 0) const;
@@ -495,6 +499,15 @@ private:
     bool dotHot_ = false;
     bool privacyDetailsOpen_ = false;
     size_t hoveredIndex_ = 0;
+    Hit fadingHover_ = Hit::none;
+    size_t fadingHoverIndex_ = 0;
+    float fadingHoverFrom_ = 0;
+    float hoverFrom_ = 0;
+    Clock::time_point hoverStart_{};
+    Clock::time_point drawNow_{};
+    std::optional<bool> shrinkShown_;
+    float shrinkFrom_ = 0;
+    Clock::time_point shrinkStart_{};
     Hit pressed_ = Hit::none;
     size_t pressedIndex_ = 0;
     bool dragging_ = false;
