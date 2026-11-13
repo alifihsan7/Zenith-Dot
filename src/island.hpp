@@ -6,6 +6,7 @@
 #include "media.hpp"
 #include "lyrics.hpp"
 #include "scratchpad.hpp"
+#include "tasks.hpp"
 #include "countdown.hpp"
 #include "drop_zone.hpp"
 #include "power.hpp"
@@ -35,7 +36,8 @@ class SettingsExample;
 struct IslandCommand {
     enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, adjustLyricsDelay, editScratchpad,
                       selectAudioOutput, soundSettings, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute,
-                      autoCycle, prayerLocation, editTimerDuration, openSettings, overlapMode, toggleScratchCheck, addScratchItem, clearScratchDone };
+                      autoCycle, prayerLocation, editTimerDuration, openSettings, overlapMode,
+                      addTask, toggleTask, removeTask, clearDoneTasks };
     Kind kind = Kind::none;
     double seconds = 0;              // seek position; appVolume: level 0..1; appMute, autoCycle: 1 = on
     std::wstring appId;
@@ -99,6 +101,8 @@ public:
     void setLyrics(LyricsView const& lyrics);
     void setScratchpad(ScratchpadView const& scratchpad);
     void setScratchEditing(bool editing);
+    void setTasks(TaskView const& tasks);
+    void setTaskInputOpen(bool open);
     void setDropItems(std::vector<DropPreview> items);
     void setDropHover(bool hovering);
     void setPopupOpen(bool open);
@@ -107,6 +111,7 @@ public:
     void closePanel();
     bool panelPinned() const;
     std::optional<RECT> scratchEditorRect() const;
+    std::optional<RECT> taskInputRect() const;
     std::optional<RECT> timerEditorRect() const;
     std::wstring timerDurationText() const;
     bool setTimerDurationText(std::wstring_view text);
@@ -139,7 +144,8 @@ private:
                      timerToggle, timerReset, quickAdjust, timerDuration, lyrics, lyricLine, retryLyrics, lyricsDelay, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
                      appVolume, appMute, autoCycle, prayerLocationPicker,
-                     audioOutputMenu, audioOutputChoice, soundSettings, navHome, homeSettings, homeStartTimer, homeOverlapMode, scratchCheck, scratchAdd, scratchClearDone };
+                     audioOutputMenu, audioOutputChoice, soundSettings, navHome, homeSettings, homeStartTimer, homeOverlapMode,
+                     scratchMode, taskAdd, taskToggle, taskRemove, taskClearDone };
     using Screen = Feature;
     Settings preferences_;
     std::vector<Screen> screens_{Screen::home, Screen::media, Screen::timers, Screen::scratch, Screen::drop, Screen::system};
@@ -270,6 +276,8 @@ private:
     void prepareLyricLayout(float width);
     void drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record);
     void drawScratchpad(D2D1_RECT_F panel, bool record);
+    void drawTasks(float x, float top, float headerY, float statusLeft, float statusRight, bool record);
+    void setScratchMode(bool tasks, Clock::time_point now);
     void drawDropZone(D2D1_RECT_F panel, bool record);
     void drawCaptureIndicators(D2D1_POINT_2F right, std::array<float, 3> const& amounts);
     void drawCenteredCaptureIndicators(D2D1_RECT_F shape, std::array<float, 3> const& amounts);
@@ -453,6 +461,15 @@ private:
     int sourceWheelRemainder_ = 0;
     D2D1_RECT_F sourceMenuRect_{};
     bool scratchEditing_ = false;
+    // Scratchpad's second page: a task list with its own one-line input popup.
+    bool scratchTasks_ = false;
+    TaskView const* tasks_ = nullptr;
+    size_t tasksOffset_ = 0;
+    size_t tasksSeen_ = 0;
+    int tasksWheelRemainder_ = 0;
+    bool taskInputOpen_ = false;
+    std::optional<D2D1_RECT_F> taskInput_;
+    D2D1_RECT_F taskViewport_{};
     bool dropHover_ = false;
     bool popupOpen_ = false;
     std::vector<DropPreview> dropItems_;
@@ -492,13 +509,6 @@ private:
     std::optional<D2D1_RECT_F> scratchEditor_;
     winrt::com_ptr<IDWriteTextLayout> scratchLayout_;
     std::wstring scratchLayoutText_;
-    // Checklist lines in the note: where the mark sits in the saved text and in the displayed layout.
-    struct ScratchCheck {
-        size_t source = 0;
-        UINT32 display = 0;
-        bool done = false;
-    };
-    std::vector<ScratchCheck> scratchChecks_;
     float scratchScroll_ = 0;
     float scratchScrollLimit_ = 0;
     LyricsView const* lyrics_ = nullptr;

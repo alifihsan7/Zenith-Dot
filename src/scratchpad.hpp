@@ -26,12 +26,6 @@ public:
     void place(RECT bounds);
     void close(bool restoreFocus = true);
     bool scrollAt(POINT screen, int delta);
-    // Flips the mark of a "[ ] " / "[x] " line that starts at offset; saves right away.
-    bool toggleCheck(size_t offset);
-    // Appends an empty "[ ] " line; the editor opened next puts the caret after it.
-    bool addItem();
-    // Drops every "[x] " line.
-    bool clearDone();
     HWND window() const { return window_; }
     ScratchpadView const& view() const { return view_; }
 
@@ -39,7 +33,6 @@ private:
     static LRESULT CALLBACK dispatch(HWND, UINT, WPARAM, LPARAM);
     static LRESULT CALLBACK editInput(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     void save();
-    void write();
 
     ScratchpadView view_;
     std::filesystem::path file_;

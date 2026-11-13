@@ -28,6 +28,7 @@ constexpr UINT trayMessage = WM_APP + 2;
 constexpr UINT redrawMessage = WM_APP + 3;
 constexpr UINT networkChangedMessage = WM_APP + 21;
 constexpr UINT timerEditFinished = WM_APP + 22;
+constexpr UINT taskEditFinished = WM_APP + 24;
 constexpr UINT_PTR powerTimer = 1;
 constexpr UINT_PTR frameTimer = 2;
 constexpr UINT_PTR fullscreenTimer = 3;
@@ -62,6 +63,10 @@ private:
     void run(IslandCommand const& command);
     void openTimerEdit();
     void closeTimerEdit(bool commit, bool restoreFocus = false);
+    void openTaskEdit();
+    void closeTaskEdit(bool restoreFocus = false);
+    static LRESULT CALLBACK taskEditInput(HWND edit, UINT message, WPARAM wparam, LPARAM lparam,
+                                          UINT_PTR id, DWORD_PTR context);
     static LRESULT CALLBACK timerEditInput(HWND edit, UINT message, WPARAM wparam, LPARAM lparam,
                                           UINT_PTR id, DWORD_PTR context);
     void refreshPower();
@@ -93,6 +98,10 @@ private:
     HWND timerEdit_ = nullptr;
     HWND timerPreviousFocus_ = nullptr;
     HFONT timerEditFont_ = nullptr;
+    HWND taskEdit_ = nullptr;
+    HWND taskPreviousFocus_ = nullptr;
+    HFONT taskEditFont_ = nullptr;
+    HBRUSH taskEditBrush_ = nullptr;
     HPOWERNOTIFY powerNotification_ = nullptr;
     UINT taskbarCreated_ = 0;
     UINT frameInterval_ = 0;
@@ -116,6 +125,7 @@ private:
     winrt::Windows::Foundation::IAsyncAction overlapRequest_{nullptr};
     Island::Clock::time_point nextOverlapCheck_{};
     Scratchpad scratchpad_;
+    TaskList tasks_;
     DropZone dropZone_;
     Settings settings_;
     unsigned prayerCity_ = 0;
@@ -206,6 +216,8 @@ int App::run(HINSTANCE instance, std::optional<SettingsTest> test, Feature featu
     island_.setLyrics(lyrics_->view());
     scratchpad_.load();
     island_.setScratchpad(scratchpad_.view());
+    tasks_.load();
+    island_.setTasks(tasks_.view());
     refreshFullscreen();
     refreshCapture(false);
     addTray();
@@ -278,6 +290,17 @@ void App::frame() {
     }
     if (scratchpad_.window()) {
         if (const auto bounds = island_.scratchEditorRect()) scratchpad_.place(*bounds);
+    }
+    if (taskEdit_) {
+        if (const auto bounds = island_.taskInputRect(); visible && bounds) {
+            RECT current{};
+            GetWindowRect(taskEdit_, &current);
+            if (!EqualRect(&current, &*bounds))
+                SetWindowPos(taskEdit_, nullptr, bounds->left, bounds->top, bounds->right - bounds->left,
+                             bounds->bottom - bounds->top, SWP_NOACTIVATE | SWP_NOZORDER);
+        } else {
+            closeTaskEdit();
+        }
     }
     if (visible != shown) {
         ShowWindow(window_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
@@ -356,6 +379,64 @@ void App::closeTimerEdit(bool commit, bool restoreFocus) {
     timerPreviousFocus_ = nullptr;
 }
 
+void App::openTaskEdit() {
+    const auto bounds = island_.taskInputRect();
+    if (!bounds || taskEdit_) return;
+    taskPreviousFocus_ = GetForegroundWindow();
+    taskEdit_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"EDIT", L"", WS_POPUP | ES_AUTOHSCROLL,
+        bounds->left, bounds->top, bounds->right - bounds->left, bounds->bottom - bounds->top,
+        window_, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!taskEdit_) return;
+    if (!SetWindowSubclass(taskEdit_, taskEditInput, 1, reinterpret_cast<DWORD_PTR>(window_))) {
+        closeTaskEdit();
+        return;
+    }
+    const auto dpi = GetDpiForWindow(window_);
+    const int height = bounds->bottom - bounds->top;
+    taskEditFont_ = CreateFontW(-std::min(MulDiv(14, static_cast<int>(dpi), 96), height * 3 / 5), 0, 0, 0, FW_NORMAL,
+                                FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    taskEditBrush_ = CreateSolidBrush(RGB(0x24, 0x2a, 0x33));
+    SendMessageW(taskEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(taskEditFont_), FALSE);
+    SendMessageW(taskEdit_, EM_SETLIMITTEXT, TaskList::maxLength, 0);
+    const int margin = MulDiv(10, static_cast<int>(dpi), 96);
+    SendMessageW(taskEdit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(margin, margin));
+    SendMessageW(taskEdit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"Type a task, then Enter"));
+    island_.setPopupOpen(true);
+    island_.setTaskInputOpen(true);
+    ShowWindow(taskEdit_, SW_SHOW);
+    SetForegroundWindow(taskEdit_);
+    SetFocus(taskEdit_);
+}
+
+// Closing never adds: only Enter saves a task, so Esc and a click elsewhere both drop what was typed.
+void App::closeTaskEdit(bool restoreFocus) {
+    if (!taskEdit_) return;
+    const HWND closing = std::exchange(taskEdit_, nullptr);
+    const bool restore = restoreFocus && GetForegroundWindow() == closing;
+    RemoveWindowSubclass(closing, taskEditInput, 1);
+    DestroyWindow(closing);
+    if (taskEditFont_) DeleteObject(std::exchange(taskEditFont_, nullptr));
+    if (taskEditBrush_) DeleteObject(std::exchange(taskEditBrush_, nullptr));
+    island_.setPopupOpen(false);
+    island_.setTaskInputOpen(false);
+    if (restore && IsWindow(taskPreviousFocus_)) SetForegroundWindow(taskPreviousFocus_);
+    taskPreviousFocus_ = nullptr;
+}
+
+// Enter adds the task and keeps the input open for the next one; Esc or a click elsewhere closes it.
+LRESULT CALLBACK App::taskEditInput(HWND edit, UINT message, WPARAM wparam, LPARAM lparam,
+                                    UINT_PTR, DWORD_PTR context) {
+    const auto owner = reinterpret_cast<HWND>(context);
+    if (message == WM_KEYDOWN && (wparam == VK_RETURN || wparam == VK_ESCAPE)) {
+        PostMessageW(owner, taskEditFinished, reinterpret_cast<WPARAM>(edit), wparam == VK_RETURN ? 2 : 0);
+        return 0;
+    }
+    if (message == WM_CHAR && (wparam == L'\r' || wparam == 27)) return 0;
+    if (message == WM_KILLFOCUS) PostMessageW(owner, taskEditFinished, reinterpret_cast<WPARAM>(edit), 1);
+    return DefSubclassProc(edit, message, wparam, lparam);
+}
+
 LRESULT CALLBACK App::timerEditInput(HWND edit, UINT message, WPARAM wparam, LPARAM lparam,
                                     UINT_PTR, DWORD_PTR context) {
     const auto owner = reinterpret_cast<HWND>(context);
@@ -412,19 +493,15 @@ void App::run(IslandCommand const& command) {
         if (lyrics_) lyrics_->adjustDelay(command.index == 0 ? -1 : 1);
         break;
     case IslandCommand::Kind::editTimerDuration: openTimerEdit(); break;
-    case IslandCommand::Kind::addScratchItem:
-        if (scratchpad_.addItem()) {
-            island_.setScratchpad(scratchpad_.view());
-            if (const auto bounds = island_.scratchEditorRect()) {
-                island_.setScratchEditing(scratchpad_.open(window_, *bounds));
-            }
-        }
+    case IslandCommand::Kind::addTask: openTaskEdit(); break;
+    case IslandCommand::Kind::toggleTask:
+        if (tasks_.toggle(command.index)) island_.setTasks(tasks_.view());
         break;
-    case IslandCommand::Kind::clearScratchDone:
-        if (scratchpad_.clearDone()) island_.setScratchpad(scratchpad_.view());
+    case IslandCommand::Kind::removeTask:
+        if (tasks_.remove(command.index)) island_.setTasks(tasks_.view());
         break;
-    case IslandCommand::Kind::toggleScratchCheck:
-        if (scratchpad_.toggleCheck(command.index)) island_.setScratchpad(scratchpad_.view());
+    case IslandCommand::Kind::clearDoneTasks:
+        if (tasks_.clearDone()) island_.setTasks(tasks_.view());
         break;
     case IslandCommand::Kind::editScratchpad:
         if (const auto bounds = island_.scratchEditorRect()) {
@@ -1133,6 +1210,12 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_LBUTTONDOWN: {
         if (example_) return 0;
         closeTimerEdit(true);
+        closeTaskEdit();
+        // A click elsewhere on the island ends note editing (the note is saved) but keeps the panel open.
+        if (scratchpad_.window()) {
+            scratchpad_.close();
+            island_.setScratchEditing(false);
+        }
         POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         if (const auto item = island_.dropItemAt(point)) {
             ClientToScreen(window_, &point);
@@ -1156,6 +1239,29 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         island_.pointerCancel();
         frame();
         return 0;
+    case taskEditFinished:
+        if (taskEdit_ == reinterpret_cast<HWND>(wparam)) {
+            if (lparam == 2) {
+                const auto edit = taskEdit_;
+                const int length = GetWindowTextLengthW(edit);
+                std::wstring text(static_cast<size_t>(length) + 1, L'\0');
+                text.resize(GetWindowTextW(edit, text.data(), length + 1));
+                if (tasks_.add(std::move(text))) island_.setTasks(tasks_.view());
+                SetWindowTextW(edit, L"");
+            } else {
+                closeTaskEdit(lparam == 0);
+            }
+            frame();
+        }
+        return 0;
+    case WM_CTLCOLOREDIT:
+        if (taskEdit_ && reinterpret_cast<HWND>(lparam) == taskEdit_) {
+            const auto dc = reinterpret_cast<HDC>(wparam);
+            SetTextColor(dc, RGB(0xf2, 0xf5, 0xf8));
+            SetBkColor(dc, RGB(0x24, 0x2a, 0x33));
+            return reinterpret_cast<LRESULT>(taskEditBrush_);
+        }
+        break;
     case timerEditFinished:
         if (timerEdit_ == reinterpret_cast<HWND>(wparam)) {
             closeTimerEdit(lparam != 0, lparam != 1);
@@ -1201,6 +1307,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     case WM_DESTROY:
         closeTimerEdit(false);
+        closeTaskEdit();
         cancelPrayerRequest();
         spectrum_.select({});
         dropZone_.detach();

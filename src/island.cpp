@@ -188,6 +188,10 @@ constexpr auto homeRowTime = 280ms;
 constexpr auto homeClockTime = 320ms;
 constexpr float dropEmptyField = 112;
 constexpr float dropFilledField = 36;
+constexpr float taskRowHeight = 28;
+constexpr size_t visibleTaskRows = 4;
+constexpr float taskBarHeight = 34;
+constexpr float taskFieldHeight = taskBarHeight + taskRowHeight * visibleTaskRows + 4;
 
 constexpr unsigned inkColor = 0xf5f6f8;
 constexpr unsigned mutedColor = 0xa4aab4;
@@ -750,6 +754,29 @@ void Island::setScratchpad(ScratchpadView const& scratchpad) { scratchpad_ = &sc
 
 void Island::setScratchEditing(bool editing) { scratchEditing_ = editing; }
 
+void Island::setTasks(TaskView const& tasks) {
+    tasks_ = &tasks;
+    const auto count = tasks.items.size();
+    const size_t limit = count - std::min(count, visibleTaskRows);
+    // A newly added task scrolls into view; removals keep the list where it was.
+    tasksOffset_ = count > tasksSeen_ ? limit : std::min(tasksOffset_, limit);
+    tasksSeen_ = count;
+}
+
+void Island::setTaskInputOpen(bool open) { taskInputOpen_ = open; }
+
+void Island::setScratchMode(bool tasks, Clock::time_point now) {
+    if (scratchTasks_ == tasks) return;
+    const float before = panelHeight(now);
+    scratchTasks_ = tasks;
+    if (open_ && screen_ == Screen::scratch) {
+        heightFrom_ = before;
+        keepHeight_ = std::max(keepHeight_, before);
+        screenFrom_ = screen_;
+        screenStart_ = animate_ ? now : Clock::time_point{};
+    }
+}
+
 void Island::setDropItems(std::vector<DropPreview> items) {
     const auto now = Clock::now();
     const float before = panelHeight(now);
@@ -839,6 +866,13 @@ std::optional<size_t> Island::dropItemAt(POINT client) const {
 void Island::closePanel() { setOpen(false, Clock::now()); }
 
 bool Island::panelPinned() const { return open_ && panelPinned_; }
+
+std::optional<RECT> Island::taskInputRect() const {
+    if (!open_ || screen_ != Screen::scratch || !scratchTasks_ || !taskInput_) return std::nullopt;
+    const auto box = *taskInput_;
+    return RECT{anchor_.x + std::lround(box.left * scale_), anchor_.y + std::lround(box.top * scale_),
+                anchor_.x + std::lround(box.right * scale_), anchor_.y + std::lround(box.bottom * scale_)};
+}
 
 std::optional<RECT> Island::scratchEditorRect() const {
     if (!open_ || screen_ != Screen::scratch || !scratchEditor_) return std::nullopt;
@@ -996,7 +1030,7 @@ float Island::screenHeight(Screen screen) const {
             navHeight + sourceMenuTop + sourcePickerHeight(std::min(media_.sources.size(), visibleSources)) + padBottom);
         return mediaPanelHeight;
     case Screen::timers: return 268;
-    case Screen::scratch: return 216.0f;
+    case Screen::scratch: return scratchTasks_ ? 216.0f - 116 + taskFieldHeight : 216.0f;
     case Screen::drop: return dropItems_.empty() ? dropEmptyHeight :
         dropFilledBaseHeight + dropRowHeight * static_cast<float>(std::min(dropItems_.size(), visibleDropRows));
     case Screen::system: {
@@ -1942,6 +1976,17 @@ bool Island::scroll(POINT client, int delta) {
         return steps != 0;
     }
     dropWheelRemainder_ = 0;
+    if (open_ && screen_ == Screen::scratch && scratchTasks_ && tasks_ && tasks_->items.size() > visibleTaskRows &&
+        inside(taskViewport_, point)) {
+        wheelRemainder_ = 0;
+        tasksWheelRemainder_ += delta;
+        const int steps = tasksWheelRemainder_ / WHEEL_DELTA;
+        tasksWheelRemainder_ %= WHEEL_DELTA;
+        const int limit = static_cast<int>(tasks_->items.size() - visibleTaskRows);
+        tasksOffset_ = static_cast<size_t>(std::clamp(static_cast<int>(tasksOffset_) - steps, 0, limit));
+        return steps != 0;
+    }
+    tasksWheelRemainder_ = 0;
     if (wantsLyrics() && inside(lyricViewport_, point)) {
         wheelRemainder_ = 0;
         return scrollLyrics(delta);
@@ -2121,14 +2166,17 @@ IslandCommand Island::pointerUp(POINT client) {
         lyricFollowAt_ = {};
         break;
     case Hit::scratchEdit: command.kind = IslandCommand::Kind::editScratchpad; break;
-    case Hit::scratchAdd: command.kind = IslandCommand::Kind::addScratchItem; break;
-    case Hit::scratchClearDone: command.kind = IslandCommand::Kind::clearScratchDone; break;
-    case Hit::scratchCheck:
-        if (index < scratchChecks_.size()) {
-            command.kind = IslandCommand::Kind::toggleScratchCheck;
-            command.index = scratchChecks_[index].source;
-        }
+    case Hit::scratchMode: setScratchMode(index == 1, now); break;
+    case Hit::taskAdd: command.kind = IslandCommand::Kind::addTask; break;
+    case Hit::taskToggle:
+        command.kind = IslandCommand::Kind::toggleTask;
+        command.index = index;
         break;
+    case Hit::taskRemove:
+        command.kind = IslandCommand::Kind::removeTask;
+        command.index = index;
+        break;
+    case Hit::taskClearDone: command.kind = IslandCommand::Kind::clearDoneTasks; break;
     case Hit::panelPin:
         panelPinned_ = !panelPinned_;
         closeAt_.reset();
@@ -3712,37 +3760,21 @@ void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
     const float x = panel.left + padX;
     const float y = panel.top + padTop;
     text(L"Scratchpad", titleFont_.get(), box(x, y, innerWidth, 22), rgb(inkColor));
-    // Checklist tools on the right of the title; hidden while the editor covers the note.
-    size_t items = 0, done = 0;
-    if (scratchpad_) {
-        const auto& note = scratchpad_->text;
-        for (size_t i = 0; i + 3 < note.size(); ++i) {
-            if ((i == 0 || note[i - 1] == L'\n') && note[i] == L'[' && note[i + 2] == L']' && note[i + 3] == L' ') {
-                if (note[i + 1] == L' ') ++items;
-                else if (note[i + 1] == L'x' || note[i + 1] == L'X') ++items, ++done;
-            }
-        }
+    // Notes | Tasks switch at the right of the title.
+    const auto tasksTab = box(x + innerWidth - 56, y - 1, 56, 25);
+    const auto notesTab = box(tasksTab.left - 61, y - 1, 58, 25);
+    drawButton(notesTab, L"Notes", Hit::scratchMode, record, 0, !scratchTasks_);
+    drawButton(tasksTab, L"Tasks", Hit::scratchMode, record, 1, scratchTasks_);
+    const float statusLeft = x + 104;
+    const float statusRight = notesTab.left - 8;
+    if (scratchTasks_) {
+        drawTasks(x, y + 32, y, statusLeft, statusRight, record);
+        return;
     }
-    float toolsLeft = x + innerWidth;
-    if (!scratchEditing_) {
-        const auto add = box(toolsLeft - 62, y - 1, 62, 25);
-        drawButton(add, L"+ Item", Hit::scratchAdd, record);
-        toolsLeft = add.left - 6;
-        if (done) {
-            const auto clear = box(toolsLeft - 84, y - 1, 84, 25);
-            drawButton(clear, L"Clear done", Hit::scratchClearDone, record);
-            toolsLeft = clear.left - 6;
-        }
-    }
-    const float statusLeft = x + 110;
     if (scratchpad_ && scratchpad_->saveFailed) {
-        text(L"Couldn’t save", bodyEndFont_.get(), box(statusLeft, y, toolsLeft - 4 - statusLeft, 22), rgb(mutedColor));
-    } else if (items) {
-        text(std::to_wstring(done) + L"/" + std::to_wstring(items) + L" done", bodyEndFont_.get(),
-             box(statusLeft, y, toolsLeft - 4 - statusLeft, 22), done == items ? accent_ : rgb(mutedColor));
+        text(L"Couldn’t save", bodyEndFont_.get(), box(statusLeft, y, statusRight - statusLeft, 22), rgb(mutedColor));
     }
     const auto field = box(x, y + 32, innerWidth, 116);
-    std::vector<std::pair<D2D1_RECT_F, size_t>> checkTargets;
     const bool active = scratchEditing_ || hovered(Hit::scratchEdit);
     const auto fill = active ? mixColor(rgb(0x161c24), accent_, 0.15f) : rgb(0x161c24);
     target_->FillRoundedRectangle(rounded(field, 6), ink(fill));
@@ -3752,7 +3784,6 @@ void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
         if (!scratchpad_ || scratchpad_->text.empty()) {
             scratchLayout_ = nullptr;
             scratchLayoutText_.clear();
-            scratchChecks_.clear();
             scratchScroll_ = scratchScrollLimit_ = 0;
             text(L"Write a quick note…", scratchFont_.get(), viewport, rgb(mutedColor));
         } else {
@@ -3760,32 +3791,9 @@ void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
             if (!scratchLayout_ || scratchLayoutText_ != scratchpad_->text || std::abs(scratchLayout_->GetMaxWidth() - width) > .1f) {
                 scratchLayoutText_ = scratchpad_->text;
                 scratchLayout_ = nullptr;
-                // A line that starts with "[ ] " or "[x] " shows a checkbox; the mark becomes blank room for it.
-                scratchChecks_.clear();
-                std::wstring shown;
-                shown.reserve(scratchLayoutText_.size());
-                const auto& source = scratchLayoutText_;
-                for (size_t i = 0; i < source.size();) {
-                    const bool lineStart = i == 0 || source[i - 1] == L'\n';
-                    if (lineStart && i + 3 < source.size() && source[i] == L'[' && source[i + 2] == L']' &&
-                        source[i + 3] == L' ' && (source[i + 1] == L' ' || source[i + 1] == L'x' || source[i + 1] == L'X')) {
-                        scratchChecks_.push_back({i, static_cast<UINT32>(shown.size()), source[i + 1] != L' '});
-                        shown += L"\u2003\u2002";
-                        i += 4;
-                        continue;
-                    }
-                    shown += source[i++];
-                }
-                winrt::check_hresult(fonts_->CreateTextLayout(shown.data(),
-                    static_cast<UINT32>(shown.size()), scratchFont_.get(), width, 1'000'000,
+                winrt::check_hresult(fonts_->CreateTextLayout(scratchLayoutText_.data(),
+                    static_cast<UINT32>(scratchLayoutText_.size()), scratchFont_.get(), width, 1'000'000,
                     scratchLayout_.put()));
-                for (const auto& check : scratchChecks_) {
-                    if (!check.done) continue;
-                    const auto lineEnd = shown.find_first_of(L"\r\n", check.display);
-                    const auto end = lineEnd == std::wstring::npos ? shown.size() : lineEnd;
-                    const UINT32 first = check.display + 2;
-                    if (end > first) scratchLayout_->SetStrikethrough(TRUE, {first, static_cast<UINT32>(end) - first});
-                }
                 DWRITE_TEXT_METRICS metrics{};
                 winrt::check_hresult(scratchLayout_->GetMetrics(&metrics));
                 scratchScrollLimit_ = std::max(0.0f, metrics.height - (viewport.bottom - viewport.top));
@@ -3794,36 +3802,100 @@ void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
             target_->PushAxisAlignedClip(viewport, D2D1_ANTIALIAS_MODE_ALIASED);
             target_->DrawTextLayout(pt(viewport.left, viewport.top - scratchScroll_), scratchLayout_.get(),
                                     ink(rgb(inkColor)), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-            for (size_t i = 0; i < scratchChecks_.size(); ++i) {
-                const auto& check = scratchChecks_[i];
-                float caretX = 0, caretY = 0;
-                DWRITE_HIT_TEST_METRICS metrics{};
-                if (FAILED(scratchLayout_->HitTestTextPosition(check.display, FALSE, &caretX, &caretY, &metrics))) continue;
-                const float size = 13;
-                const auto mark = box(viewport.left + 1, viewport.top - scratchScroll_ + metrics.top + (metrics.height - size) / 2,
-                                      size, size);
-                if (mark.bottom < viewport.top || mark.top > viewport.bottom) continue;
-                const float hot = hoverLevel(Hit::scratchCheck, i);
-                if (check.done) {
-                    target_->FillRoundedRectangle(rounded(mark, 3.5f), ink(mixColor(accent_, white(1), 0.12f * hot)));
-                    PathBuilder tick(graphics_.get());
-                    const auto c = pt((mark.left + mark.right) / 2, (mark.top + mark.bottom) / 2);
-                    tick.move(pt(c.x - 3.5f, c.y), false).line(pt(c.x - 1, c.y + 2.5f)).line(pt(c.x + 3.5f, c.y - 2.5f));
-                    target_->DrawGeometry(tick.finish().get(), ink(rgb(0x101318)), 1.6f, roundStroke_.get());
-                } else {
-                    target_->FillRoundedRectangle(rounded(mark, 3.5f), ink(white(0.10f * hot)));
-                    target_->DrawRoundedRectangle(rounded(grow(mark, -0.5f, -0.5f), 3), ink(rgb(mutedColor)), 1.2f);
-                }
-                checkTargets.push_back({grow(mark, 4, 3), i});
-            }
             target_->PopAxisAlignedClip();
         }
     }
     if (record) {
         scratchEditor_ = editor;
         addTarget(field, Hit::scratchEdit);
-        // After the field target, so a click on a checkbox toggles it instead of opening the editor.
-        for (const auto& [rect, index] : checkTargets) addTarget(rect, Hit::scratchCheck, index);
+    }
+}
+
+void Island::drawTasks(float x, float top, float headerY, float statusLeft, float statusRight, bool record) {
+    const auto field = box(x, top, innerWidth, taskFieldHeight);
+    target_->FillRoundedRectangle(rounded(field, 6), ink(rgb(0x161c24)));
+    static const std::vector<Task> none;
+    const auto& items = tasks_ ? tasks_->items : none;
+    const auto done = static_cast<size_t>(std::ranges::count_if(items, &Task::done));
+    const auto status = box(statusLeft, headerY, statusRight - statusLeft, 22);
+    if (tasks_ && tasks_->saveFailed) text(L"Couldn’t save", bodyEndFont_.get(), status, rgb(mutedColor));
+    else if (!items.empty()) {
+        text(std::to_wstring(done) + L"/" + std::to_wstring(items.size()) + L" done", bodyEndFont_.get(), status,
+             done == items.size() ? accent_ : rgb(mutedColor));
+    }
+
+    // The add bar looks like an empty field; clicking it opens the real one-line input on top of it.
+    const auto clear = box(field.right - 4 - 80, field.top + 4, 80, 26);
+    const float addRight = done ? clear.left - 4 : field.right - 4;
+    const auto add = box(field.left + 4, field.top + 4, addRight - field.left - 4, 26);
+    if (!taskInputOpen_) {
+        const float level = pressed(Hit::taskAdd) ? 1 : hoverLevel(Hit::taskAdd);
+        target_->FillRoundedRectangle(rounded(add, 7), ink(white(0.045f + 0.04f * level)));
+        const auto plus = pt(add.left + 14, (add.top + add.bottom) / 2);
+        target_->DrawLine(pt(plus.x - 4.5f, plus.y), pt(plus.x + 4.5f, plus.y), ink(accent_), 1.4f, roundStroke_.get());
+        target_->DrawLine(pt(plus.x, plus.y - 4.5f), pt(plus.x, plus.y + 4.5f), ink(accent_), 1.4f, roundStroke_.get());
+        text(L"Add a task", bodyFont_.get(), box(add.left + 28, add.top, add.right - add.left - 32, 26), rgb(mutedColor));
+    }
+    if (record) {
+        taskInput_ = add;
+        if (!taskInputOpen_) addTarget(add, Hit::taskAdd);
+    }
+    if (done) drawButton(clear, L"Clear done", Hit::taskClearDone, record);
+
+    const auto list = box(field.left + 4, field.top + taskBarHeight, innerWidth - 8, taskRowHeight * visibleTaskRows);
+    if (record) taskViewport_ = list;
+    if (items.empty()) {
+        text(L"No tasks yet", bodyFont_.get(), box(list.left + 10, list.top + 4, list.right - list.left - 20, 22),
+             rgb(mutedColor));
+        return;
+    }
+    const auto end = std::min(items.size(), tasksOffset_ + visibleTaskRows);
+    for (size_t index = tasksOffset_; index < end; ++index) {
+        const auto& task = items[index];
+        const auto row = box(list.left, list.top + taskRowHeight * static_cast<float>(index - tasksOffset_),
+                             list.right - list.left, taskRowHeight);
+        const auto remove = box(row.right - 27, row.top + 3, 25, taskRowHeight - 6);
+        const float toggle = pressed(Hit::taskToggle, index) ? 1 : hoverLevel(Hit::taskToggle, index);
+        const float rowHot = std::max(toggle, hoverLevel(Hit::taskRemove, index));
+        if (rowHot > 0) target_->FillRoundedRectangle(rounded(row, 6), ink(white(0.06f * rowHot)));
+        if (record) addTarget(box(row.left, row.top, remove.left - row.left, taskRowHeight), Hit::taskToggle, index);
+
+        const float size = 14;
+        const float middle = (row.top + row.bottom) / 2;
+        const auto mark = box(row.left + 8, middle - size / 2, size, size);
+        if (task.done) {
+            target_->FillRoundedRectangle(rounded(mark, 4), ink(accent_));
+            PathBuilder tick(graphics_.get());
+            const auto c = pt((mark.left + mark.right) / 2, middle);
+            tick.move(pt(c.x - 3.5f, c.y), false).line(pt(c.x - 1, c.y + 2.5f)).line(pt(c.x + 3.5f, c.y - 2.5f));
+            target_->DrawGeometry(tick.finish().get(), ink(rgb(0x101318)), 1.6f, roundStroke_.get());
+        } else {
+            target_->DrawRoundedRectangle(rounded(grow(mark, -0.6f, -0.6f), 3.5f), ink(rgb(mutedColor)), 1.2f);
+        }
+        const float textLeft = mark.right + 9;
+        const float textWidth = remove.left - 4 - textLeft;
+        text(task.text, bodyFont_.get(), box(textLeft, row.top, textWidth, taskRowHeight),
+             task.done ? rgb(mutedColor) : rgb(inkColor));
+        if (task.done) {
+            const float width = std::min(textWidth, measure(task.text, bodyFont_.get()));
+            target_->DrawLine(pt(textLeft, middle + 0.5f), pt(textLeft + width, middle + 0.5f), ink(rgb(mutedColor)), 1);
+        }
+        // The remove button shows on hover, but stays clickable so the pointer can reach it.
+        if (rowHot > 0) {
+            pushLayer(nullptr, rowHot);
+            drawButton(remove, L"\u00d7", Hit::taskRemove, record, index);
+            popLayer();
+        } else if (record) {
+            addTarget(remove, Hit::taskRemove, index);
+        }
+    }
+    if (items.size() > visibleTaskRows) {
+        // A thin scroll thumb on the right edge of the list.
+        const float span = list.bottom - list.top;
+        const float thumb = std::max(18.0f, span * visibleTaskRows / static_cast<float>(items.size()));
+        const float travel = span - thumb;
+        const float at = travel * static_cast<float>(tasksOffset_) / static_cast<float>(items.size() - visibleTaskRows);
+        target_->FillRoundedRectangle(rounded(box(field.right - 3, list.top + at, 2, thumb), 1), ink(white(0.18f)));
     }
 }
 
@@ -5109,6 +5181,8 @@ void Island::draw(HWND window) {
             D2D1::Matrix3x2F::Translation(static_cast<float>(-origin_.x), static_cast<float>(-origin_.y));
     targets_.clear();
     scratchEditor_.reset();
+    taskInput_.reset();
+    taskViewport_ = {};
     timerEditor_.reset();
     lyricViewport_ = {};
     dropViewport_ = {};
