@@ -81,8 +81,11 @@ constexpr float systemMetricHeight = 21;
 constexpr float systemStatusLine = 24;
 constexpr float pickerRowHeight = 25;
 constexpr float pickerInset = 4;
-constexpr float prayerPanelHeight = 258;
+constexpr float prayerPickerTop = 95;
+constexpr float prayerPickerHeight = 24;
+constexpr float prayerPanelHeight = 184;
 constexpr float prayerPanelWidth = 570;
+constexpr float prayerInfoWidth = 176;
 constexpr float prayerResultHeight = 30;
 constexpr size_t visiblePrayerResults = 7;
 constexpr float prayerPickHeight = 12 + 30 + 8 + prayerResultHeight * visiblePrayerResults + 8;
@@ -5222,89 +5225,106 @@ void Island::drawPrayerSchedule(D2D1_RECT_F panel, bool record) {
     if (fade < 1) pushLayer(nullptr, fade);
     struct Pop { Island* self; float fade; ~Pop() { if (fade < 1) self->popLayer(); } } pop{this, fade};
     const float x = (panel.left + panel.right - prayerPanelWidth) / 2 + padX;
-    const float y = panel.top;
-    constexpr float width = prayerPanelWidth - 2 * padX;
-    const auto green = rgb(breakColor);
-
-    // Header: the title, and the location on the right (it opens the search in this panel).
-    text(L"Prayer", titleFont_.get(), box(x, y + padTop, 120, 22.4f), rgb(inkColor));
+    const float y = panel.top + 12;
+    const auto tone = accent_;   // prayer follows the session accent
+    const auto info = box(x, y, prayerInfoWidth, 115);
+    const auto picker = box(x + 12, panel.top + prayerPickerTop, prayerInfoWidth - 24, prayerPickerHeight);
+    target_->FillRoundedRectangle(rounded(info, 14), ink(withAlpha(tone, 0.08f)));
     const auto city = preferences_.prayerCity;
-    const std::wstring_view place = city && city <= prayerLocations.size() ? std::wstring_view(prayerLocations[city - 1].name)
-                                                                        : std::wstring_view(L"Choose location");
-    const float chipWidth = std::clamp(std::ceil(measure(place, bodyFont_.get())) + 34, 110.0f, 240.0f);
-    drawPickerButton(box(x + width - chipWidth, y + 9, chipWidth, 28), place, Hit::prayerLocationPicker, record, popupOpen_);
-    text(L"Source: SIHAT Kemenag RI", bodyEndFont_.get(), box(x, y + 202, width, 16), rgb(mutedColor, 0.75f));
+    drawPickerButton(picker, city && city <= prayerLocations.size() ? prayerLocations[city - 1].name : L"Choose location",
+                     Hit::prayerLocationPicker, record, popupOpen_);
+    text(L"Source: SIHAT Kemenag RI", bodyEndFont_.get(),
+         box(x + prayerInfoWidth + 15, y + 122, prayerPanelWidth - 2 * padX - prayerInfoWidth - 15, 16), rgb(mutedColor, 0.7f));
 
     if (!prayerSchedule_) {
         const auto status = prayerLoad_ == PrayerLoad::loading ? L"Loading prayer times…" : L"Prayer times unavailable";
-        text(status, bodyFont_.get(), box(x, y + 60, width, 25), rgb(mutedColor));
+        text(status, bodyFont_.get(), box(x + 12, y + 12, prayerInfoWidth - 24, 25), rgb(mutedColor));
         return;
     }
     const auto& schedule = *prayerSchedule_;
     const auto timing = prayerProgress(schedule, std::chrono::system_clock::now());
     const bool hasNext = timing.nextIndex < prayerNames.size();
+    const auto name = hasNext ? std::wstring_view(prayerNames[timing.nextIndex]) : L"Prayer times";
+    constexpr float infoInnerWidth = prayerInfoWidth - 24;
+    const float nameWidth = std::ceil(measure(name, prayerTitleFont_.get())) + 2;
+    text(name, prayerTitleFont_.get(), box(x + 12, y + 8, nameWidth, 34), rgb(inkColor));
 
-    // The next prayer, big, with its time in green; the countdown and the clock on the right.
-    if (hasNext) {
-        text(timing.tomorrow ? L"Next, tomorrow" : L"Next", bodyFont_.get(), box(x, y + 44, 200, 17), rgb(mutedColor));
-        const std::wstring_view name = prayerNames[timing.nextIndex];
-        const float nameWidth = std::ceil(measure(name, prayerTitleFont_.get())) + 2;
-        text(name, prayerTitleFont_.get(), box(x, y + 60, nameWidth, 34), rgb(inkColor));
-        text(prayerTimeText(timing.nextMinute), prayerTitleFont_.get(), box(x + nameWidth + 8, y + 60, 120, 34), green);
-        const auto hours = std::chrono::duration_cast<std::chrono::hours>(timing.remaining);
-        const auto minutes = timing.remaining - hours;
-        std::wstring countdown = L"in ";
-        if (hours.count()) countdown += std::to_wstring(hours.count()) + L"h ";
-        countdown += std::to_wstring(minutes.count()) + L"m";
-        text(countdown, homeHeadFont_.get(), box(x + width - 200, y + 52, 200, 22), rgb(inkColor));
-    } else {
-        text(L"Prayer times", prayerTitleFont_.get(), box(x, y + 60, 300, 34), rgb(inkColor));
-    }
-    const auto clock = std::wstring(L"Now ") + prayerTimeText(static_cast<int>(timing.localMinute)) + L" " + schedule.zone;
-    text(clock, bodyEndFont_.get(), box(x + width - 200, y + 75, 200, 17), rgb(mutedColor));
+    const auto hours = std::chrono::duration_cast<std::chrono::hours>(timing.remaining);
+    const auto minutes = timing.remaining - hours;
+    std::wstring countdown = L"in ";
+    if (hours.count()) countdown += std::to_wstring(hours.count()) + L"h ";
+    countdown += std::to_wstring(minutes.count()) + L"m";
+    if (hasNext)
+        text(countdown, bodyFont_.get(), box(x + 19 + nameWidth, y + 15, infoInnerWidth - nameWidth - 7, 26), tone);
 
-    // How far along from the last prayer to the next one.
-    constexpr size_t count = prayerNames.size();
-    if (hasNext) {
-        const float now = static_cast<float>(timing.localMinute);
-        const float next = now + static_cast<float>(timing.remaining.count());
-        const size_t previous = (timing.nextIndex + count - 1) % count;
-        float since = static_cast<float>(schedule.times[previous]);
-        if (!timing.tomorrow && timing.nextIndex == 0) since -= 24 * 60;   // before Subuh: since last night's Isya
-        const float span = std::max(1.0f, next - since);
-        const float done = std::clamp((now - since) / span, 0.0f, 1.0f);
-        const auto labels = box(x, y + 102, width, 15);
-        text(std::wstring(prayerNames[previous]) + L" " + prayerTimeText(schedule.times[previous]), bodyFont_.get(),
-             box(labels.left, labels.top, 160, 15), rgb(mutedColor));
-        text(std::wstring(prayerNames[timing.nextIndex]) + L" " + prayerTimeText(timing.nextMinute), bodyEndFont_.get(),
-             box(labels.right - 160, labels.top, 160, 15), rgb(mutedColor));
-        const auto bar = box(x, y + 121, width, 4);
-        target_->FillRoundedRectangle(rounded(bar, 2), ink(white(0.12f)));
-        if (done > 0) target_->FillRoundedRectangle(rounded(box(bar.left, bar.top, width * done, 4), 2), ink(green));
-    }
+    text(std::wstring(L"Prayer times · ") + schedule.city, bodyFont_.get(),
+         box(x + 12, y + 42, infoInnerWidth, 17), rgb(mutedColor));
+    auto clock = std::wstring(L"Now ") + prayerTimeText(static_cast<int>(timing.localMinute)) + L" " + schedule.zone;
+    text(clock, bodyFont_.get(), box(x + 12, y + 62, infoInnerWidth, 17), rgb(inkColor));
+    if (timing.tomorrow)
+        text(L"Tomorrow", bodyEndFont_.get(), box(x + 12, y + 62, infoInnerWidth, 17), tone);
 
-    // Five cards: past ones dim, the next one green. The highlight slides when the next prayer changes.
-    constexpr float gap = 8;
-    constexpr float cardWidth = (width - gap * (count - 1)) / count;
-    const float cardsTop = y + 136;
-    constexpr float cardHeight = 52;
-    if (hasNext) {
-        const float at = slidePosition(prayerSlide_, timing.nextIndex, drawNow_);
-        const auto highlight = box(x + at * (cardWidth + gap), cardsTop, cardWidth, cardHeight);
-        target_->FillRoundedRectangle(rounded(highlight, 12), ink(withAlpha(green, 0.13f)));
-        target_->DrawRoundedRectangle(rounded(grow(highlight, -0.5f, -0.5f), 11.5f), ink(withAlpha(green, 0.35f)), 1);
+    // The day as an arc from 00:00 to 23:59: the part already passed in tone, a ring where now is.
+    const float scheduleLeft = info.right + 15;
+    const float scheduleRight = x + prayerPanelWidth - 2 * padX;
+    const float left = scheduleLeft + 10;
+    const float right = scheduleRight - 10;
+    const float baseline = y + 55;
+    constexpr float rise = 23;
+    constexpr float dayMinutes = 24 * 60;
+    const auto pointAt = [&](float t) {
+        return pt(std::lerp(left, right, t), baseline - 4 * rise * t * (1 - t));
+    };
+    const auto drawArc = [&](float t, D2D1_COLOR_F color, float stroke) {
+        if (t <= 0) return;
+        const auto end = pointAt(t);
+        const float width = end.x - left;
+        PathBuilder arc(graphics_.get());
+        arc.move(pt(left, baseline), false)
+            .curve(pt(left + width / 3, baseline - 4 * rise * t / 3),
+                   pt(end.x - width / 3, end.y - 4 * rise * (2 * t - 1) * t / 3), end);
+        target_->DrawGeometry(arc.finish().get(), ink(color), stroke, roundStroke_.get());
+    };
+    drawArc(1, white(0.22f), 1.4f);
+    const float nowFraction = static_cast<float>(timing.localMinute) / dayMinutes;
+    drawArc(nowFraction, withAlpha(tone, 0.75f), 2);
+
+    for (size_t i = 0; i < schedule.times.size(); ++i) {
+        const auto point = pointAt(static_cast<float>(schedule.times[i]) / dayMinutes);
+        const bool upcoming = hasNext && !timing.tomorrow && i == timing.nextIndex;
+        const bool past = !upcoming && (timing.tomorrow || !hasNext || i < timing.nextIndex);
+        if (upcoming) target_->FillEllipse(D2D1::Ellipse(point, 6, 6), ink(withAlpha(tone, 0.25f)));
+        target_->FillEllipse(D2D1::Ellipse(point, 2.8f, 2.8f), ink(upcoming ? tone : past ? rgb(mutedColor) : rgb(inkColor)));
     }
-    for (size_t i = 0; i < count; ++i) {
-        const auto card = box(x + static_cast<float>(i) * (cardWidth + gap), cardsTop, cardWidth, cardHeight);
+    const auto current = pointAt(nowFraction);
+    target_->FillEllipse(D2D1::Ellipse(current, 5, 5), ink(rgb(0x0b0c0e)));
+    target_->DrawEllipse(D2D1::Ellipse(current, 5, 5), ink(rgb(inkColor)), 1.6f);
+
+    const float axisY = y + 58;
+    const auto axis = rgb(mutedColor, 0.7f);
+    text(L"00:00", buttonFont_.get(), box(scheduleLeft + 4, axisY, 40, 15), axis);
+    text(L"12:00", buttonFont_.get(), box((scheduleLeft + scheduleRight) / 2 - 20, axisY, 40, 15), axis);
+    text(L"23:59", buttonFont_.get(), box(scheduleRight - 44, axisY, 40, 15), axis);
+
+    // Five small cards: past ones dim, the next one tone; its highlight slides when the next prayer changes.
+    const float labelStep = (scheduleRight - scheduleLeft) / static_cast<float>(prayerNames.size());
+    const auto cardAt = [&](float i) { return box(scheduleLeft + i * labelStep + 2, y + 77, labelStep - 4, 40); };
+    if (hasNext) {
+        const auto highlight = cardAt(slidePosition(prayerSlide_, timing.nextIndex, drawNow_));
+        target_->FillRoundedRectangle(rounded(highlight, 10), ink(withAlpha(tone, 0.13f)));
+        target_->DrawRoundedRectangle(rounded(grow(highlight, -0.5f, -0.5f), 9.5f), ink(withAlpha(tone, 0.35f)), 1);
+    }
+    for (size_t i = 0; i < schedule.times.size(); ++i) {
+        const auto card = cardAt(static_cast<float>(i));
         const bool upcoming = hasNext && i == timing.nextIndex;
-        const bool past = !upcoming && (!hasNext || timing.tomorrow || i < timing.nextIndex);
-        if (!upcoming) target_->FillRoundedRectangle(rounded(card, 12), ink(white(0.045f)));
+        const bool past = !upcoming && (timing.tomorrow || !hasNext || i < timing.nextIndex);
+        if (!upcoming) target_->FillRoundedRectangle(rounded(card, 10), ink(white(0.045f)));
         const float alpha = past ? 0.5f : 1.0f;
         const int minute = upcoming && timing.tomorrow ? timing.nextMinute : schedule.times[i];
-        text(prayerNames[i], buttonFont_.get(), box(card.left, card.top + 8, cardWidth, 15),
-             upcoming ? green : rgb(mutedColor, alpha));
-        text(prayerTimeText(minute), prayerTimeFont_.get(), box(card.left, card.top + 24, cardWidth, 20),
-             upcoming ? green : rgb(inkColor, alpha));
+        text(prayerNames[i], buttonFont_.get(), box(card.left, card.top + 4, card.right - card.left, 14),
+             upcoming ? tone : rgb(mutedColor, alpha));
+        text(prayerTimeText(minute), prayerTimeFont_.get(), box(card.left, card.top + 18, card.right - card.left, 18),
+             upcoming ? tone : rgb(inkColor, alpha));
     }
 }
 
