@@ -59,10 +59,11 @@ Tidak ada test otomatis. Verifikasi lewat skrip PowerShell di desktop user:
 - Screenshot: `SetProcessDPIAware()` lalu `Graphics.CopyFromScreen`. `PrintWindow` kadang melewatkan teks di tombol owner-draw yang sedang fokus; kalau ragu, cek ulang dengan `CopyFromScreen`. Panel Settings atau dialog bisa di-capture lewat `GetWindowRect`.
 - Kursor dan klik: `SetCursorPos` dan `mouse_event`. Simpan posisi kursor dan kembalikan.
 - **Keyboard: cek dulu jendela foreground milik proses Zenula sebelum `keybd_event`.** Tanpa cek ini, ketikan pernah masuk ke chat user.
+- Island di layar user tampil dengan skala sekitar 125%. Ambil koordinat klik dari screenshot, jangan dari angka DIP di kode.
 - Panel island terbuka lewat hover pada pill, bukan klik. Untuk mengklik isi panel, hover dulu lalu klik dalam satu urutan; panel menutup begitu cursor dikembalikan.
 - Jangan ubah data user tanpa backup: `scratchpad.txt`, `tasks.txt`, clipboard, brightness monitor, dan registry `HKCU\Software\Zenith Dot`. Kembalikan setelah tes.
 - Jendela overlay tidak terlihat dari shell yang di-sandbox; jalankan skrip interaksi tanpa sandbox.
-- ID untuk `BM_CLICK` di Settings: halaman 1010 General, 1011 Island, 1012 Features, 1015 Alerts & privacy, 1017 Prayer; detail fitur 1040–1044, kembali 1025; ganti lokasi 1071; reset 1016 (memunculkan konfirmasi Yes/No); pindah urutan 1080+fitur (naik) dan 1085+fitur (turun); pilihan segmented 1300 + baris × 4 + opsi.
+- ID untuk `BM_CLICK` di Settings: halaman 1010 General, 1011 Island, 1012 Features, 1015 Alerts & privacy, 1017 Prayer; detail fitur 1040–1044, kembali 1025; ganti lokasi 1071; reset 1016 (memunculkan konfirmasi Yes/No); pindah urutan 1080+fitur (naik) dan 1085+fitur (turun); pilihan segmented 1300 + baris × 4 + opsi (Rhythm: 1316–1319); stepper Custom 1100–1105 (Focus, Break, Rounds −/+).
 - `reg import` tidak menghapus value yang baru dibuat selama tes (misalnya `FeatureOrderV3` setelah tes urutan). Cek dan hapus value itu, lalu kirim `WM_APP + 13` ke `ZenithDot.Overlay` supaya island memuat ulang. Dari PowerShell, `FindWindowW` butuh `[NullString]::Value`, bukan `$null`.
 
 ## Aturan main dari user
