@@ -280,6 +280,12 @@ void MediaMonitor::refresh(WPARAM reason) {
         const bool changedSession = (reason == sessions || reason == playback) && selectSession();
         if (reason != metadata || changedSession) updateState();
         if (changedSession || reason == metadata) requestMetadata();
+        // Players sometimes publish a track without its cover and add it later without saying so.
+        // While the cover is missing, any playback or timeline change is a cheap moment to look again.
+        else if ((reason == playback || reason == timeline) && !state_.cover &&
+                 std::chrono::steady_clock::now() - artworkTriedAt_ > std::chrono::seconds(artworkRetries_ < 6 ? 3 : 15)) {
+            retryArtwork();   // a source that never has covers is checked at most every 15 s once the retries ran out
+        }
     } catch (winrt::hresult_error const&) {
         // A session Windows already replaced (a browser that restarted its media session) throws here.
         // Take a fresh session list once instead of leaving the island on the old source.
@@ -326,6 +332,7 @@ void MediaMonitor::rememberArtwork() {
 winrt::Windows::Foundation::IAsyncAction MediaMonitor::readMetadata() {
     const auto lifetime = shared_from_this();
     readingMetadata_ = true;
+    artworkTriedAt_ = std::chrono::steady_clock::now();
     while (!stopped_ && selected_) {
         const auto session = selected_;
         const auto revision = metadataRevision_;
@@ -387,7 +394,7 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::readMetadata() {
             // Some players stop exposing metadata as their session closes.
         }
         if (revision == metadataRevision_) {
-            constexpr UINT retryDelays[]{250, 750, 2000, 5000};
+            constexpr UINT retryDelays[]{250, 750, 2000, 5000, 10000, 20000};   // about 38 s in all
             if (!stopped_ && selected_ == session && !state_.cover && artworkRetries_ < std::size(retryDelays)) {
                 SetTimer(window_, artworkTimer, retryDelays[artworkRetries_++], nullptr);
             }

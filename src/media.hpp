@@ -112,6 +112,7 @@ private:
     winrt::Windows::Foundation::DateTime timelineUpdated_{};
     unsigned metadataRevision_ = 0;
     unsigned artworkRetries_ = 0;
+    std::chrono::steady_clock::time_point artworkTriedAt_{};   // the last read that looked for a missing cover
     std::vector<Artwork> artwork_;
     bool readingMetadata_ = false;
     bool stopped_ = false;
