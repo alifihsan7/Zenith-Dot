@@ -422,7 +422,6 @@ void App::openPrayerEdit() {
     SendMessageW(prayerEdit_, EM_SETLIMITTEXT, 60, 0);
     const int margin = MulDiv(4, static_cast<int>(dpi), 96);
     SendMessageW(prayerEdit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(margin, margin));
-    SendMessageW(prayerEdit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"Type a city, province, or zone"));
     island_.setPopupOpen(true);
     island_.setPrayerSearchOpen(true);
     ShowWindow(prayerEdit_, SW_SHOW);
@@ -457,6 +456,22 @@ LRESULT CALLBACK App::prayerEditInput(HWND edit, UINT message, WPARAM wparam, LP
     const auto result = DefSubclassProc(edit, message, wparam, lparam);
     if (message == WM_CHAR || (message == WM_KEYDOWN && wparam == VK_DELETE) || message == WM_PASTE || message == WM_CUT)
         PostMessageW(owner, prayerEditKey, reinterpret_cast<WPARAM>(edit), 1);
+    // The Windows cue banner uses the system grey (1.6:1 here). Draw the hint in the island's muted
+    // colour instead (4.9:1 on the field), only while the field is empty.
+    if (message == WM_PAINT && GetWindowTextLengthW(edit) == 0) {
+        if (const auto dc = GetDC(edit)) {
+            HideCaret(edit);
+            RECT area{};
+            SendMessageW(edit, EM_GETRECT, 0, reinterpret_cast<LPARAM>(&area));
+            const auto font = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(edit, WM_GETFONT, 0, 0)));
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, RGB(0xa4, 0xaa, 0xb4));
+            DrawTextW(dc, L"Type a city, province, or zone", -1, &area, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+            SelectObject(dc, font);
+            ShowCaret(edit);
+            ReleaseDC(edit, dc);
+        }
+    }
     return result;
 }
 
