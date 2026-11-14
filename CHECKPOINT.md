@@ -24,7 +24,7 @@ cmake --build out\Zenula --config Release --parallel
 Start-Process out\Zenula\Release\Zenula.exe
 ```
 
-- Kalau Zenula sedang jalan, exe di `out\Zenula` terkunci. Untuk cek build tanpa mematikan Zenula user, build ke `out\Redesign` (`cmake -S . -B out\Redesign`).
+- Setelah perubahan kode, matikan Zenula, build `out\Zenula`, lalu jalankan lagi (user minta ini otomatis). Kalau mematikan proses diblokir, build ke folder terpisah (`cmake -S . -B out\Check`) untuk cek warning, lalu minta user restart.
 - Build directory yang dipakai `out\Zenula` (`out\CMakeCache.txt` masih menunjuk ke folder lama `zenith-dot`). Kalau menambah file `.cpp`, jalankan `cmake -S . -B out\Zenula` dulu.
 - User belum memasang installer; Zenula jalan langsung dari `out\Zenula\Release\Zenula.exe`.
 - Settings dibuka dengan `[Diagnostics.Process]::Start($exe, '--settings')`. `Start-Process -ArgumentList '--settings'` tidak dikenali.
