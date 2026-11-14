@@ -13,7 +13,6 @@ Serah terima untuk sesi berikutnya. Kode adalah acuan perilaku; README cuma ring
 
 ## Belum diuji di layar
 
-- Pemilih sumber media dengan dua sumber yang diputar bersamaan.
 - Baris Bluetooth saat perangkat tersambung atau terputus (kodenya sama dengan App Volume, yang sudah diuji).
 - Slider brightness di layar laptop (jalur WMI). Monitor utama user memakai DDC/CI.
 
@@ -60,6 +59,7 @@ Tidak ada test otomatis. Verifikasi lewat skrip PowerShell di desktop user:
 - Screenshot: `SetProcessDPIAware()` lalu `Graphics.CopyFromScreen`. `PrintWindow` kadang melewatkan teks di tombol owner-draw yang sedang fokus; kalau ragu, cek ulang dengan `CopyFromScreen`. Panel Settings atau dialog bisa di-capture lewat `GetWindowRect`.
 - Kursor dan klik: `SetCursorPos` dan `mouse_event`. Simpan posisi kursor dan kembalikan.
 - **Keyboard: cek dulu jendela foreground milik proses Zenula sebelum `keybd_event`.** Tanpa cek ini, ketikan pernah masuk ke chat user.
+- Panel island terbuka lewat hover pada pill, bukan klik. Untuk mengklik isi panel, hover dulu lalu klik dalam satu urutan; panel menutup begitu cursor dikembalikan.
 - Jangan ubah data user tanpa backup: `scratchpad.txt`, `tasks.txt`, clipboard, brightness monitor, dan registry `HKCU\Software\Zenith Dot`. Kembalikan setelah tes.
 - Jendela overlay tidak terlihat dari shell yang di-sandbox; jalankan skrip interaksi tanpa sandbox.
 - ID untuk `BM_CLICK` di Settings: halaman 1010 General, 1011 Island, 1012 Features, 1015 Alerts & privacy, 1017 Prayer; detail fitur 1040–1044, kembali 1025; ganti lokasi 1071; reset 1016 (memunculkan konfirmasi Yes/No); pindah urutan 1080+fitur (naik) dan 1085+fitur (turun); pilihan segmented 1300 + baris × 4 + opsi.
