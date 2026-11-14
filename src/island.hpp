@@ -496,6 +496,18 @@ private:
     std::vector<TaskMotion> taskMotion_;
     std::vector<TaskGhost> taskGhosts_;
     Clock::time_point taskMotionStart_{};
+    // Segmented controls slide their highlight to a new choice; Scratchpad fades its content on a mode switch.
+    struct SegmentSlide {
+        size_t shown = static_cast<size_t>(-1);
+        float from = 0;
+        float to = 0;
+        Clock::time_point start{};
+        Clock::time_point drawnAt{};
+    };
+    SegmentSlide timerSlide_;
+    SegmentSlide scratchSlide_;
+    Clock::time_point scratchModeStart_{};
+    float slidePosition(SegmentSlide& slide, size_t selected, Clock::time_point now);
     void drawTaskRow(Task const& task, size_t index, float top, float left, float width, float check, bool record);
     bool dropHover_ = false;
     bool popupOpen_ = false;

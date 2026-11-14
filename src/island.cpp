@@ -195,6 +195,8 @@ constexpr size_t visibleTaskRows = 4;
 constexpr float taskBarHeight = 34;
 constexpr float taskFieldHeight = taskBarHeight + taskRowHeight * visibleTaskRows + 4;
 constexpr auto taskMotionTime = 260ms;
+constexpr auto segmentSlideTime = 240ms;
+constexpr auto scratchFadeTime = 220ms;
 
 constexpr unsigned inkColor = 0xf5f6f8;
 constexpr unsigned mutedColor = 0xa4aab4;
@@ -809,10 +811,26 @@ void Island::setTasks(TaskView const& tasks) {
 
 void Island::setTaskInputOpen(bool open) { taskInputOpen_ = open; }
 
+// The highlight's position as a fractional index. Changes seen while the control stays on screen
+// slide from wherever the highlight is; reopening the panel shows the choice at once.
+float Island::slidePosition(SegmentSlide& slide, size_t selected, Clock::time_point now) {
+    const bool continuing = animate_ && slide.drawnAt != Clock::time_point{} && now - slide.drawnAt < 1500ms;
+    const auto at = [&] { return std::lerp(slide.from, slide.to, easeInOut(progress(slide.start, segmentSlideTime, now))); };
+    if (selected != slide.shown) {
+        slide.from = continuing && slide.shown != static_cast<size_t>(-1) ? at() : static_cast<float>(selected);
+        slide.to = static_cast<float>(selected);
+        slide.start = continuing ? now : Clock::time_point{};
+        slide.shown = selected;
+    }
+    slide.drawnAt = now;
+    return at();
+}
+
 void Island::setScratchMode(bool tasks, Clock::time_point now) {
     if (scratchTasks_ == tasks) return;
     const float before = panelHeight(now);
     scratchTasks_ = tasks;
+    scratchModeStart_ = animate_ ? now : Clock::time_point{};
     if (open_ && screen_ == Screen::scratch) {
         heightFrom_ = before;
         keepHeight_ = std::max(keepHeight_, before);
@@ -1135,7 +1153,8 @@ bool Island::moving(Clock::time_point now) const {
            now - hoverStart_ < hoverFadeTime || now - shrinkStart_ < toggleTime ||
            now - dropMotionStart_ < dropMotionTime || now - dropFieldStart_ < dropMotionTime ||
            now - homeRowsStart_ < homeRowTime || now - homeClockStart_ < homeClockTime ||
-           now - taskMotionStart_ < taskMotionTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
+           now - taskMotionStart_ < taskMotionTime || now - timerSlide_.start < segmentSlideTime ||
+           now - scratchSlide_.start < segmentSlideTime || now - scratchModeStart_ < scratchFadeTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
            std::ranges::any_of(captureIndicators_, [now](auto const& item) { return now - item.start < captureTime; }) ||
            now - screenStart_ < shapeTime ||
            now - widthStart_ < shapeTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
@@ -3750,7 +3769,10 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     const bool focusBusy = focus_.running() || focus_.paused();
 
     const auto control = [&](D2D1_RECT_F rect, std::wstring_view label, Hit hit, size_t index = 0,
-                             bool enabled = true, bool active = false, bool primary = false, bool quiet = false) {
+                             bool enabled = true, bool active = false, bool primary = false, bool quiet = false,
+                             bool slid = false) {
+        // slid: the active fill is the separately drawn sliding highlight, so only hover is painted here.
+        const bool filled = active && !slid;
         const bool down = enabled && pressed(hit, index);
         const float hot = enabled ? hoverLevel(hit, index) : 0;
         const auto foreground = primary ? rgb(0x101318) : active ? accent_ : rgb(enabled ? inkColor : mutedColor);
@@ -3758,9 +3780,9 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
             const auto fill = down ? mixColor(accent_, rgb(0x101318), 0.15f)
                 : mixColor(accent_, white(1), 0.12f * hot);
             target_->FillRoundedRectangle(rounded(rect, 8), ink(fill));
-        } else if (active || hot > 0 || down || !quiet) {
+        } else if (filled || hot > 0 || down || !quiet) {
             const float rest = quiet ? 0.0f : enabled ? 0.065f : 0.035f;
-            const auto fill = active ? withAlpha(accent_, down ? 0.26f : 0.18f + 0.05f * hot)
+            const auto fill = filled ? withAlpha(accent_, down ? 0.26f : 0.18f + 0.05f * hot)
                 : white(down ? 0.16f : std::lerp(rest, 0.11f, hot));
             target_->FillRoundedRectangle(rounded(rect, 8), ink(fill));
         }
@@ -3784,10 +3806,12 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         }
     }
     target_->FillRoundedRectangle(rounded(box(centerX - 120, y + 39, 240, 36), 11), ink(white(0.045f)));
+    const float slide = slidePosition(timerSlide_, selected, now);
+    target_->FillRoundedRectangle(rounded(box(centerX - 116 + 79 * slide, y + 43, 74, 28), 8), ink(withAlpha(accent_, 0.18f)));
     for (size_t i = 0; i < std::size(labels); ++i) {
         const bool selectable = i == 2 || !focusBusy || i == phase;
         control(box(centerX - 116 + 79 * static_cast<float>(i), y + 43, 74, 28),
-                labels[i], Hit::timerView, i, selectable, i == selected, false, true);
+                labels[i], Hit::timerView, i, selectable, i == selected, false, true, true);
     }
 
     const auto& timer = quickView_ ? quick_ : focus_;
@@ -3862,12 +3886,25 @@ void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
     // Notes | Tasks switch at the right of the title.
     const auto tasksTab = box(x + innerWidth - 56, y - 1, 56, 25);
     const auto notesTab = box(tasksTab.left - 61, y - 1, 58, 25);
-    drawButton(notesTab, L"Notes", Hit::scratchMode, record, 0, !scratchTasks_);
-    drawButton(tasksTab, L"Tasks", Hit::scratchMode, record, 1, scratchTasks_);
+    const float slide = slidePosition(scratchSlide_, scratchTasks_ ? 1 : 0, drawNow_);
+    target_->FillRoundedRectangle(rounded(mixRect(notesTab, tasksTab, slide), 8), ink(withAlpha(accent_, 0.16f)));
+    const D2D1_RECT_F tabs[]{notesTab, tasksTab};
+    const wchar_t* names[]{L"Notes", L"Tasks"};
+    for (size_t i = 0; i < 2; ++i) {
+        const bool selected = (i == 1) == scratchTasks_;
+        const float hot = selected ? 0.0f : pressed(Hit::scratchMode, i) ? 1.0f : hoverLevel(Hit::scratchMode, i);
+        target_->FillRoundedRectangle(rounded(tabs[i], 8), ink(white(0.04f + 0.04f * hot)));
+        text(names[i], buttonFont_.get(), tabs[i], selected ? accent_ : rgb(inkColor));
+        if (record) addTarget(tabs[i], Hit::scratchMode, i);
+    }
     const float statusLeft = x + 104;
     const float statusRight = notesTab.left - 8;
+    // The new mode's content fades in while the panel resizes.
+    const float fade = easeInOut(progress(scratchModeStart_, scratchFadeTime, drawNow_));
+    if (fade < 1) pushLayer(nullptr, fade);
     if (scratchTasks_) {
         drawTasks(x, y + 32, y, statusLeft, statusRight, record);
+        if (fade < 1) popLayer();
         return;
     }
     if (scratchpad_ && scratchpad_->saveFailed) {
@@ -3908,6 +3945,7 @@ void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
         scratchEditor_ = editor;
         addTarget(field, Hit::scratchEdit);
     }
+    if (fade < 1) popLayer();
 }
 
 void Island::drawTasks(float x, float top, float headerY, float statusLeft, float statusRight, bool record) {
