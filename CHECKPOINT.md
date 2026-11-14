@@ -16,7 +16,6 @@ Serah terima untuk sesi berikutnya. Kode adalah acuan perilaku; README cuma ring
 - Pemilih sumber media dengan dua sumber yang diputar bersamaan.
 - Baris Bluetooth saat perangkat tersambung atau terputus (kodenya sama dengan App Volume, yang sudah diuji).
 - Slider brightness di layar laptop (jalur WMI). Monitor utama user memakai DDC/CI.
-- Klik satu baris di dialog lokasi Settings untuk memilih.
 
 ## Build dan jalankan
 
@@ -63,7 +62,7 @@ Tidak ada test otomatis. Verifikasi lewat skrip PowerShell di desktop user:
 - **Keyboard: cek dulu jendela foreground milik proses Zenula sebelum `keybd_event`.** Tanpa cek ini, ketikan pernah masuk ke chat user.
 - Jangan ubah data user tanpa backup: `scratchpad.txt`, `tasks.txt`, clipboard, brightness monitor, dan registry `HKCU\Software\Zenith Dot`. Kembalikan setelah tes.
 - Jendela overlay tidak terlihat dari shell yang di-sandbox; jalankan skrip interaksi tanpa sandbox.
-- ID untuk `BM_CLICK` di Settings: halaman 1010 General, 1011 Island, 1012 Features, 1015 Alerts & privacy, 1017 Prayer; detail fitur 1040–1044, kembali 1025; ganti lokasi 1071; pindah urutan 1080+fitur (naik) dan 1085+fitur (turun); pilihan segmented 1300 + baris × 4 + opsi.
+- ID untuk `BM_CLICK` di Settings: halaman 1010 General, 1011 Island, 1012 Features, 1015 Alerts & privacy, 1017 Prayer; detail fitur 1040–1044, kembali 1025; ganti lokasi 1071; reset 1016 (memunculkan konfirmasi Yes/No); pindah urutan 1080+fitur (naik) dan 1085+fitur (turun); pilihan segmented 1300 + baris × 4 + opsi.
 - `reg import` tidak menghapus value yang baru dibuat selama tes (misalnya `FeatureOrderV3` setelah tes urutan). Cek dan hapus value itu, lalu kirim `WM_APP + 13` ke `ZenithDot.Overlay` supaya island memuat ulang. Dari PowerShell, `FindWindowW` butuh `[NullString]::Value`, bukan `$null`.
 
 ## Aturan main dari user
