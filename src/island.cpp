@@ -188,7 +188,8 @@ bool isCaptureAlert(IslandAlert::Kind kind) {
     return kind == IslandAlert::Kind::camera || kind == IslandAlert::Kind::microphone ||
            kind == IslandAlert::Kind::screenCapture;
 }
-constexpr int timerPresets[]{1, 5, 10};
+constexpr int timerPresets[]{1, 5, 10, 25};
+constexpr unsigned breakColor = 0x9fe0c0;   // Break blocks and labels; Focus uses the accent
 constexpr int timerMaxSeconds = 120 * 60;
 constexpr size_t visibleDropRows = 4;
 constexpr float dropRowHeight = 43;
@@ -1330,11 +1331,14 @@ float Island::screenHeight(Screen screen) const {
         if (sourcePickerOpen_) return std::max(mediaPanelHeight,
             navHeight + sourceMenuTop + sourcePickerHeight(std::min(media_.sources.size(), visibleSources)) + padBottom);
         return mediaPanelHeight;
-    case Screen::timers:
-        if (quickView_) return 300;
-        if (focus_.running() || focus_.paused()) return 290;
+    case Screen::timers: {
+        const bool quickIdle = !quick_.running() && !quick_.paused();
+        const bool focusIdle = !focus_.running() && !focus_.paused();
+        if (quickView_) return quickIdle ? 346.0f : 268.0f;
+        if (!focusIdle) return 268;
         // Idle Focus: templates, and with Custom the stepper row below them.
-        return preferences_.rhythm == customRhythm ? 368.0f : 312.0f;
+        return preferences_.rhythm == customRhythm ? 392.0f : 340.0f;
+    }
     case Screen::scratch: return scratchTasks_ ? 216.0f - 116 + taskFieldHeight : 216.0f;
     case Screen::drop: return dropItems_.empty() ? dropEmptyHeight :
         dropFilledBaseHeight + dropRowHeight * static_cast<float>(std::min(dropItems_.size(), visibleDropRows));
@@ -1824,6 +1828,8 @@ void Island::toggleFocus(Clock::time_point now) {
     }
     if (focus_.running()) retirePausedActivity(PillMode::focus, now);
     else preferredPill_ = PillMode::focus;
+    if (!focus_.running() && !focus_.paused() && focusRound_ == 1 && !breakPhase_)
+        focusStarted_ = std::chrono::system_clock::now();
     focus_.toggle(now);
 }
 
@@ -1848,6 +1854,7 @@ void Island::endFocusSession() {
     focusRound_ = 1;
     breakPhase_ = false;
     focus_.configure(phaseSeconds(false));
+    focusStarted_.reset();
 }
 
 void Island::skipBreak(Clock::time_point now) {
@@ -1937,6 +1944,7 @@ bool Island::takeFinishedCountdown() {
 
 void Island::completeCountdown(Clock::time_point now, PillMode mode, IslandAlert alert) {
     countdownFinished_ = true;
+    resizeTimers(now);
     if (!suppressed_ && !open_ && !dotOnly_ && pillMode_ == mode && alertAllowed(alert.kind)) {
         const auto reveal = animate_ ? countdownCompletionMotion : 0ms;
         countdownCompletion_ = {now, now + reveal + alertHoldTime(alert), mode, std::move(alert.title)};
@@ -2565,8 +2573,8 @@ IslandCommand Island::pointerUp(POINT client) {
         panelPinned_ = !panelPinned_;
         closeAt_.reset();
         break;
-    case Hit::focusToggle: toggleFocus(now); break;
-    case Hit::focusReset: endFocusSession(); break;
+    case Hit::focusToggle: resizeTimers(now); toggleFocus(now); break;
+    case Hit::focusReset: resizeTimers(now); endFocusSession(); break;
     case Hit::focusSkip: skipBreak(now); break;
     case Hit::focusRhythm: command = chooseRhythm(static_cast<unsigned>(index)); break;
     case Hit::timerView: selectTimerView(index); break;
@@ -2583,14 +2591,18 @@ IslandCommand Island::pointerUp(POINT client) {
         }
         break;
     case Hit::timerToggle:
+        resizeTimers(now);
         if (countdownCompletion_.mode == PillMode::timer) countdownCompletion_ = {};
         if (quick_.running()) retirePausedActivity(PillMode::timer, now);
         else preferredPill_ = PillMode::timer;
+        if (!quick_.running() && !quick_.paused()) quickStarted_ = std::chrono::system_clock::now();
         quick_.toggle(now);
         break;
     case Hit::timerReset:
+        resizeTimers(now);
         if (countdownCompletion_.mode == PillMode::timer) countdownCompletion_ = {};
         quick_.reset();
+        quickStarted_.reset();
         break;
     case Hit::audioPicker:
         audioPickerOpen_ = !audioPickerOpen_;
@@ -2859,6 +2871,10 @@ void Island::prepareText() {
     create(clockFont_, L"Segoe UI", 32, normal, center);
     create(buttonFont_, L"Segoe UI", 11, normal, center);
     create(timerTextFont_, L"Segoe UI", 13, normal, center);
+    create(timerSmallFont_, L"Segoe UI", 12, normal, center);
+    create(timerAxisStartFont_, L"Segoe UI", 12, normal, start);
+    create(timerAxisEndFont_, L"Segoe UI", 12, normal, end);
+    create(bigClockFont_, L"Segoe UI", 52, DWRITE_FONT_WEIGHT_LIGHT, center);
     create(glyphFont_, L"Segoe UI Symbol", 17, normal, center);
     create(letterFont_, L"Segoe UI", 10, strong, center);
     create(alertTitleFont_, L"Segoe UI", 11, DWRITE_FONT_WEIGHT_BOLD, start);
@@ -4071,16 +4087,22 @@ void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double positio
     target_->PopAxisAlignedClip();
 }
 
+// Timer and Focus share one layout: a big clock, a timeline of the run, and the controls under it.
 void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     constexpr float width = timersPanelWidth;
     const float x = panel.left;
     const float y = panel.top;
+    const float left = x + padX;
+    const float right = x + width - padX;
     const float centerX = x + width / 2;
-    text(L"Timers", titleFont_.get(), box(x + padX, y + padTop, width - 2 * padX, 22.4f), rgb(inkColor));
-    constexpr wchar_t const* labels[]{L"Timer", L"Focus"};
-    const size_t selected = quickView_ ? 0 : 1;
     const bool focusBusy = focus_.running() || focus_.paused();
+    const bool quickBusy = quick_.running() || quick_.paused();
+    const bool busy = quickView_ ? quickBusy : focusBusy;
+    const int rounds = preferences_.focusRounds();
+    const auto& rhythm = preferences_;
     auto* font = timerTextFont_.get();
+    auto* smallFont = timerSmallFont_.get();
+    const auto breakTone = rgb(breakColor);
 
     const auto control = [&](D2D1_RECT_F rect, std::wstring_view label, Hit hit, size_t index = 0,
                              bool enabled = true, bool active = false, bool primary = false, bool quiet = false,
@@ -4093,143 +4115,212 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         if (primary) {
             const auto fill = down ? mixColor(accent_, rgb(0x101318), 0.15f)
                 : mixColor(accent_, white(1), 0.12f * hot);
-            target_->FillRoundedRectangle(rounded(rect, 9), ink(fill));
+            target_->FillRoundedRectangle(rounded(rect, 10), ink(fill));
         } else if (filled || hot > 0 || down || !quiet) {
             const float rest = quiet ? 0.0f : enabled ? 0.065f : 0.035f;
             const auto fill = filled ? withAlpha(accent_, down ? 0.26f : 0.18f + 0.05f * hot)
                 : white(down ? 0.16f : std::lerp(rest, 0.11f, hot));
-            target_->FillRoundedRectangle(rounded(rect, 9), ink(fill));
+            target_->FillRoundedRectangle(rounded(rect, 10), ink(fill));
         }
-        text(label, font, rect, foreground);
+        if (!label.empty()) text(label, font, rect, foreground);
         if (record && enabled) addTarget(rect, hit, index);
     };
-    const auto line = [&](float top, std::wstring const& value) {
-        text(value, font, box(x + padX, y + top, width - 2 * padX, 20), rgb(mutedColor));
-    };
 
-    // In the Focus view, one dot per round at the top right (filled = that round's Focus is done).
-    const int rounds = preferences_.focusRounds();
-    if (!quickView_) {
-        for (int i = 0; i < rounds; ++i) {
-            const auto center = pt(x + width - padX - 5 - 13.0f * static_cast<float>(rounds - 1 - i), y + padTop + 11);
-            const bool finished = i < focusRound_ - (breakPhase_ ? 0 : 1);
-            const bool current = i == focusRound_ - 1 && focusBusy && !finished;
-            const float radius = finished || current ? 4.0f : 3.0f;
-            target_->FillEllipse(D2D1::Ellipse(center, radius, radius),
-                                 ink(finished ? accent_ : current ? withAlpha(accent_, 0.62f) : white(0.32f)));
-        }
-    }
-    target_->FillRoundedRectangle(rounded(box(centerX - 150, y + 39, 300, 40), 12), ink(white(0.045f)));
-    const float slide = slidePosition(timerSlide_, selected, now);
-    target_->FillRoundedRectangle(rounded(box(centerX - 146 + 148 * slide, y + 43, 144, 32), 9), ink(withAlpha(accent_, 0.18f)));
+    // Title on the left, Timer | Focus on the right.
+    text(L"Timers", titleFont_.get(), box(left, y + padTop, 120, 22.4f), rgb(inkColor));
+    constexpr wchar_t const* labels[]{L"Timer", L"Focus"};
+    const auto tabs = box(right - 176, y + 8, 176, 34);
+    target_->FillRoundedRectangle(rounded(tabs, 11), ink(white(0.045f)));
+    const float slide = slidePosition(timerSlide_, quickView_ ? 0 : 1, now);
+    target_->FillRoundedRectangle(rounded(box(tabs.left + 3 + 85 * slide, tabs.top + 3, 85, 28), 8), ink(withAlpha(accent_, 0.18f)));
     for (size_t i = 0; i < std::size(labels); ++i) {
-        control(box(centerX - 146 + 148 * static_cast<float>(i), y + 43, 144, 32),
-                labels[i], Hit::timerView, i, true, i == selected, false, true, true);
+        control(box(tabs.left + 3 + 85 * static_cast<float>(i), tabs.top + 3, 85, 28), labels[i], Hit::timerView, i,
+                true, i == (quickView_ ? 0u : 1u), false, true, true);
     }
 
+    // The big clock. Only the idle Quick Timer's digits can be dragged or scrolled.
     const auto& timer = quickView_ ? quick_ : focus_;
-    // Only the Quick Timer's digits can be dragged; Focus lengths come from the rhythm.
-    const bool adjustable = quickView_ && !timer.running() && !timer.paused();
-    const auto clock = box(centerX - 79, y + 85, 158, 44);
+    const bool adjustable = quickView_ && !quickBusy;
     const int seconds = timer.seconds(now);
     const float roll = adjustable && animate_ && timerDigitsTo_ == seconds
         ? easeInOut(progress(timerDigitsStart_, timerDigitMotion, now)) : 1;
     const float direction = timerDigitsTo_ > timerDigitsFrom_ ? 1.0f : -1.0f;
-    text(L":", clockFont_.get(), box(centerX - 6, clock.top, 12, 44), rgb(mutedColor));
+    const float clockTop = y + 46;
+    text(L":", bigClockFont_.get(), box(centerX - 10, clockTop - 4, 20, 64), rgb(mutedColor));
     for (size_t unit = 0; unit < 2; ++unit) {
-        const auto area = box(unit == 0 ? centerX - 78 : centerX + 8, clock.top, 70, 44);
+        const auto area = box(unit == 0 ? centerX - 100 : centerX + 12, clockTop, 88, 60);
         const auto digits = [unit](int time) {
             const int value = unit == 0 ? time / 60 : time % 60;
             return (value < 10 ? L"0" : L"") + std::to_wstring(value);
         };
         if (const float level = !adjustable ? 0 : pressed(Hit::timerDuration, unit) ? 1 : hoverLevel(Hit::timerDuration, unit);
             level > 0)
-            target_->FillRoundedRectangle(rounded(area, 8), ink(white(0.08f * level)));
+            target_->FillRoundedRectangle(rounded(area, 10), ink(white(0.08f * level)));
+        const auto digitBox = [&](float shift) { return box(area.left, area.top - 2 + shift, 88, 64); };
         if (roll < 1 && digits(timerDigitsFrom_) != digits(seconds)) {
             target_->PushAxisAlignedClip(area, D2D1_ANTIALIAS_MODE_ALIASED);
-            text(digits(timerDigitsFrom_), clockFont_.get(),
-                 box(area.left, area.top - direction * 34 * roll, 70, 44), white(1 - roll));
-            text(digits(seconds), clockFont_.get(),
-                 box(area.left, area.top + direction * 34 * (1 - roll), 70, 44), white(roll));
+            text(digits(timerDigitsFrom_), bigClockFont_.get(), digitBox(-direction * 44 * roll), white(1 - roll));
+            text(digits(seconds), bigClockFont_.get(), digitBox(direction * 44 * (1 - roll)), white(roll));
             target_->PopAxisAlignedClip();
         } else {
-            text(digits(seconds), clockFont_.get(), area, rgb(inkColor));
+            text(digits(seconds), bigClockFont_.get(), digitBox(0), rgb(inkColor));
         }
         if (record && adjustable) addTarget(area, Hit::timerDuration, unit);
     }
 
+    // The line under the clock: what is happening, in the phase colour.
+    std::wstring phase;
+    auto phaseTone = accent_;
     if (quickView_) {
-        for (size_t i = 0; i < std::size(timerPresets); ++i) {
-            const auto minutes = timerPresets[i];
-            control(box(centerX - 117 + 80 * static_cast<float>(i), y + 138, 74, 30),
-                    std::to_wstring(minutes) + L" min", Hit::timerPreset, i, adjustable,
-                    quick_.duration() == minutes * 60);
+        phase = quick_.running() ? L"Timer · running" : quick_.paused() ? L"Timer · paused" : quick_.done() ? L"Timer · done" : L"Ready";
+    } else if (!focusBusy) {
+        phase = L"Ready · " + std::to_wstring(rounds) + (rounds == 1 ? L" round" : L" rounds");
+    } else {
+        phase = phaseName(breakPhase_) + L" · round " + std::to_wstring(focusRound_) + L" of " + std::to_wstring(rounds);
+        if (focus_.paused()) phase += L" · paused";
+        if (breakPhase_) phaseTone = breakTone;
+    }
+    text(phase, font, box(left, y + 108, width - 2 * padX, 20), phaseTone);
+
+    // The timeline: the whole run to scale, Focus blocks in the accent and Break blocks in green.
+    struct Block { float minutes; bool rest; };
+    std::vector<Block> blocks;
+    float elapsed = 0;   // minutes into the run
+    if (quickView_) {
+        blocks.push_back({quick_.duration() / 60.0f, false});
+        if (quickBusy || quick_.done()) elapsed = (quick_.duration() - quick_.seconds(now)) / 60.0f;
+    } else {
+        for (int round = 1; round <= rounds; ++round) {
+            blocks.push_back({static_cast<float>(rhythm.focusMinutes()), false});
+            blocks.push_back({static_cast<float>(round == rounds ? rhythm.longBreakMinutes() : rhythm.breakMinutes()), true});
         }
-        if (adjustable) {
+        if (focusBusy) {
+            elapsed = static_cast<float>((focusRound_ - 1) * (rhythm.focusMinutes() + rhythm.breakMinutes()) +
+                                         (breakPhase_ ? rhythm.focusMinutes() : 0)) +
+                      (phaseSeconds(breakPhase_) - focus_.seconds(now)) / 60.0f;
+        }
+    }
+    float total = 0;
+    for (const auto& block : blocks) total += block.minutes;
+    constexpr float gap = 3;
+    const float barTop = y + 136;
+    const float usable = (right - left) - gap * static_cast<float>(blocks.size() - 1);
+    float cursor = left;
+    float run = 0;
+    std::optional<float> marker;
+    for (const auto& block : blocks) {
+        const float w = usable * block.minutes / std::max(total, 0.001f);
+        const auto rect = box(cursor, barTop, w, 14);
+        const auto tone = block.rest ? breakTone : accent_;
+        target_->FillRoundedRectangle(rounded(rect, 4), ink(withAlpha(tone, 0.22f)));
+        const float filled = std::clamp((elapsed - run) / std::max(block.minutes, 0.001f), 0.0f, 1.0f);
+        if (filled > 0) {
+            target_->PushAxisAlignedClip(box(cursor, barTop, w * filled, 14), D2D1_ANTIALIAS_MODE_ALIASED);
+            target_->FillRoundedRectangle(rounded(rect, 4), ink(tone));
+            target_->PopAxisAlignedClip();
+        }
+        if (busy && !marker && elapsed < run + block.minutes) marker = cursor + w * filled;
+        run += block.minutes;
+        cursor += w + gap;
+    }
+    if (marker) target_->FillRoundedRectangle(rounded(box(*marker - 1, barTop - 5, 2, 24), 1), ink(rgb(inkColor)));
+
+    // Under the bar: where the run starts, what is quiet, and when it ends.
+    const auto started = quickView_ ? quickStarted_ : focusStarted_;
+    const auto clockText = [](std::chrono::system_clock::time_point at) {
+        const auto time = std::chrono::system_clock::to_time_t(at);
+        std::tm local{};
+        if (localtime_s(&local, &time) != 0) return std::wstring{};
+        wchar_t value[8]{};
+        swprintf_s(value, L"%02d:%02d", local.tm_hour, local.tm_min);
+        return std::wstring(value);
+    };
+    const float axisTop = y + 156;
+    const int remaining = quickView_ ? quick_.seconds(now) : (focusBusy ? sessionSecondsLeft(now) : rhythm.sessionMinutes() * 60);
+    const std::wstring startText = busy && started ? L"started " + clockText(*started) : L"now";
+    const std::wstring endText = timer.paused() ? L"paused" : L"ends " + clockAfter(remaining);
+    text(startText, timerAxisStartFont_.get(), box(left, axisTop, 140, 18), rgb(mutedColor));
+    text(endText, timerAxisEndFont_.get(), box(right - 140, axisTop, 140, 18), rgb(mutedColor));
+    if (!quickView_) {
+        const std::wstring middle = !focusBusy ? durationText(rounds * rhythm.focusMinutes()) + L" focus · " +
+                durationText(rhythm.sessionMinutes()) + L" total"
+            : !breakPhase_ && focus_.running() ? L"☾ Do Not Disturb on" : L"";
+        if (!middle.empty()) text(middle, smallFont, box(centerX - 100, axisTop, 200, 18), rgb(mutedColor));
+    }
+
+    if (quickView_) {
+        if (!quickBusy) {
+            // Presets in one segmented track, then min and sec steppers.
+            const auto track = box(left, y + 186, right - left, 36);
+            target_->FillRoundedRectangle(rounded(track, 11), ink(white(0.045f)));
+            const float cell = (track.right - track.left - 6) / static_cast<float>(std::size(timerPresets));
+            for (size_t i = 0; i < std::size(timerPresets); ++i) {
+                control(box(track.left + 3 + cell * static_cast<float>(i), track.top + 3, cell, 30),
+                        std::to_wstring(timerPresets[i]) + L" min", Hit::timerPreset, i, true,
+                        quick_.duration() == timerPresets[i] * 60, false, true);
+            }
             const int duration = quick_.duration();
             for (size_t unit = 0; unit < 2; ++unit) {
-                const float left = centerX - 140 + 150 * static_cast<float>(unit);
-                control(box(left, y + 178, 32, 30), L"−", Hit::quickAdjust, 2 * unit, duration > 1);
-                text(unit == 0 ? L"min" : L"sec", font, box(left + 34, y + 178, 62, 30), rgb(mutedColor));
-                control(box(left + 98, y + 178, 32, 30), L"+", Hit::quickAdjust, 2 * unit + 1, duration < timerMaxSeconds);
+                const float group = centerX - 150 + 160 * static_cast<float>(unit);
+                control(box(group, y + 232, 34, 30), L"−", Hit::quickAdjust, 2 * unit, duration > 1);
+                text(unit == 0 ? L"min" : L"sec", font, box(group + 36, y + 232, 68, 30), rgb(mutedColor));
+                control(box(group + 106, y + 232, 34, 30), L"+", Hit::quickAdjust, 2 * unit + 1, duration < timerMaxSeconds);
             }
+            control(box(centerX - 70, y + 276, 140, 34), quick_.done() ? L"Restart" : L"Start", Hit::timerToggle, 0, true, false, true);
+        } else {
+            control(box(centerX - 120, y + 188, 130, 34), quick_.running() ? L"Pause" : L"Resume", Hit::timerToggle, 0, true, false, true);
+            control(box(centerX + 18, y + 188, 102, 34), L"Reset", Hit::timerReset, 0, true, false, false, true);
         }
-        auto action = L"Start";
-        if (quick_.running()) action = L"Pause";
-        else if (quick_.paused()) action = L"Resume";
-        else if (quick_.done()) action = L"Restart";
-        control(box(centerX - 110, y + 220, 126, 32), action, Hit::timerToggle, 0, true, false, true);
-        control(box(centerX + 24, y + 220, 86, 32), L"Reset", Hit::timerReset, 0, true, false, false, true);
         return;
     }
 
-    const auto& rhythm = preferences_;
     if (!focusBusy) {
-        line(136, std::to_wstring(rounds) + (rounds == 1 ? L" round · " : L" rounds · ") +
-                  durationText(rounds * rhythm.focusMinutes()) + L" focus · " + durationText(rhythm.sessionMinutes()) + L" total");
-        // Templates and Custom.
+        // Templates and Custom: two lines each, the lengths over the name.
+        const auto track = box(left, y + 186, right - left, 48);
+        target_->FillRoundedRectangle(rounded(track, 12), ink(white(0.045f)));
+        const float cell = (track.right - track.left - 6) / 4.0f;
         for (size_t i = 0; i <= customRhythm; ++i) {
-            const auto label = i == customRhythm ? std::wstring(L"Custom")
+            const bool chosen = rhythm.rhythm == i;
+            const auto rect = box(track.left + 3 + cell * static_cast<float>(i), track.top + 3, cell, 42);
+            const auto lengths = i == customRhythm
+                ? std::to_wstring(rhythm.customFocus) + L" + " + std::to_wstring(rhythm.customBreak)
                 : std::to_wstring(rhythms[i].focus) + L" + " + std::to_wstring(rhythms[i].rest);
-            control(box(centerX - 179 + 90 * static_cast<float>(i), y + 164, 84, 32), label, Hit::focusRhythm, i,
-                    true, rhythm.rhythm == i);
+            const auto name = i == customRhythm ? L"Custom" : rhythms[i].name;
+            control(rect, L"", Hit::focusRhythm, i, true, chosen, false, true);
+            text(lengths, font, box(rect.left, rect.top + 3, cell, 20), chosen ? accent_ : rgb(inkColor));
+            text(name, smallFont, box(rect.left, rect.top + 21, cell, 18), rgb(mutedColor));
         }
-        float next = 208;
+        float next = 246;
         if (rhythm.rhythm == customRhythm) {
-            const std::wstring values[]{std::to_wstring(rhythm.customFocus) + L"m", std::to_wstring(rhythm.customBreak) + L"m",
-                                        std::to_wstring(rhythm.customRounds) + L"×"};
-            constexpr wchar_t const* captions[]{L"Focus", L"Break", L"Rounds"};
+            const std::wstring values[]{std::to_wstring(rhythm.customFocus) + L" min focus",
+                                        std::to_wstring(rhythm.customBreak) + L" min break",
+                                        std::to_wstring(rhythm.customRounds) + (rhythm.customRounds == 1 ? L" round" : L" rounds")};
             const bool canLower[]{rhythm.customFocus > minFocusMinutes, rhythm.customBreak > minBreakMinutes,
                                   rhythm.customRounds > minRounds};
             const bool canRaise[]{rhythm.customFocus < maxFocusMinutes, rhythm.customBreak < maxBreakMinutes,
                                   rhythm.customRounds < maxRounds};
+            const float cellWidth = (right - left) / 3.0f;
             for (size_t i = 0; i < 3; ++i) {
-                const float left = centerX - 179 + 122 * static_cast<float>(i);
-                control(box(left, y + next, 32, 30), L"−", Hit::focusAdjust, 2 * i, canLower[i]);
-                text(values[i], font, box(left + 32, y + next, 48, 30), rgb(inkColor));
-                control(box(left + 80, y + next, 32, 30), L"+", Hit::focusAdjust, 2 * i + 1, canRaise[i]);
-                text(captions[i], font, box(left, y + next + 31, 112, 18), rgb(mutedColor));
+                const float group = left + cellWidth * static_cast<float>(i);
+                control(box(group, y + next, 30, 30), L"−", Hit::focusAdjust, 2 * i, canLower[i]);
+                text(values[i], smallFont, box(group + 30, y + next, cellWidth - 64, 30), rgb(inkColor));
+                control(box(group + cellWidth - 34, y + next, 30, 30), L"+", Hit::focusAdjust, 2 * i + 1, canRaise[i]);
             }
-            next += 56;
+            next += 42;
         }
-        line(next, L"Do Not Disturb turns on during Focus.");
-        control(box(centerX - 63, y + next + 30, 126, 32), L"Start", Hit::focusToggle, 0, true, false, true);
+        text(L"☾ Do Not Disturb turns on during Focus", smallFont, box(left, y + next, right - left, 18), rgb(mutedColor));
+        control(box(centerX - 70, y + next + 28, 140, 34), L"Start", Hit::focusToggle, 0, true, false, true);
         return;
     }
 
-    // A running session: where it is, when it ends, and what is quiet.
-    std::wstring status = phaseName(breakPhase_) + L" · round " + std::to_wstring(focusRound_) + L" of " + std::to_wstring(rounds);
-    status += focus_.paused() ? L" · paused" : L" · ends " + clockAfter(sessionSecondsLeft(now));
-    line(136, status);
-    if (!breakPhase_) line(158, focus_.running() ? L"Do Not Disturb is on during Focus." : L"Do Not Disturb resumes with Focus.");
     const auto action = focus_.running() ? L"Pause" : L"Resume";
     if (breakPhase_) {
-        control(box(centerX - 147, y + 204, 94, 32), action, Hit::focusToggle, 0, true, false, true);
-        control(box(centerX - 47, y + 204, 94, 32), L"Skip break", Hit::focusSkip, 0, true, false, false, true);
-        control(box(centerX + 53, y + 204, 94, 32), L"End", Hit::focusReset, 0, true, false, false, true);
+        control(box(centerX - 160, y + 188, 104, 34), action, Hit::focusToggle, 0, true, false, true);
+        control(box(centerX - 50, y + 188, 104, 34), L"Skip break", Hit::focusSkip, 0, true, false, false, true);
+        control(box(centerX + 60, y + 188, 100, 34), L"End session", Hit::focusReset, 0, true, false, false, true);
     } else {
-        control(box(centerX - 110, y + 204, 126, 32), action, Hit::focusToggle, 0, true, false, true);
-        control(box(centerX + 24, y + 204, 86, 32), L"End", Hit::focusReset, 0, true, false, false, true);
+        control(box(centerX - 125, y + 188, 130, 34), action, Hit::focusToggle, 0, true, false, true);
+        control(box(centerX + 13, y + 188, 112, 34), L"End session", Hit::focusReset, 0, true, false, false, true);
     }
 }
 

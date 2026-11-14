@@ -686,6 +686,8 @@ private:
     // Focus timer.
     bool breakPhase_ = false;
     bool quickView_ = true;   // Timers opens on Quick Timer
+    std::optional<std::chrono::system_clock::time_point> focusStarted_;   // wall clock, for "started 18:55"
+    std::optional<std::chrono::system_clock::time_point> quickStarted_;
     int focusRound_ = 1;     // 1..preferences_.focusRounds() in the current session
     Countdown focus_{25 * 60};
     Countdown quick_{60};
@@ -747,6 +749,7 @@ private:
     winrt::com_ptr<IDWriteTextFormat> clockFont_;
     winrt::com_ptr<IDWriteTextFormat> buttonFont_;
     winrt::com_ptr<IDWriteTextFormat> timerTextFont_;   // 13 px, the Timers panel
+    winrt::com_ptr<IDWriteTextFormat> timerSmallFont_, timerAxisStartFont_, timerAxisEndFont_, bigClockFont_;
     winrt::com_ptr<IDWriteTextFormat> glyphFont_;
     winrt::com_ptr<IDWriteTextFormat> letterFont_;
     winrt::com_ptr<IDWriteTextFormat> alertTitleFont_;
