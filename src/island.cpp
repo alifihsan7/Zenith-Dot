@@ -59,7 +59,7 @@ constexpr float panelWidth = 369;
 constexpr float homeRowHeight = 43;
 constexpr float homeModeRowHeight = 36;
 constexpr float mediaPanelWidth = 344;
-constexpr float timersPanelWidth = 430;   // wider than the default so Focus has room
+constexpr float timersPanelWidth = 369;
 constexpr float systemPanelWidth = 530;
 constexpr float brightnessTop = 75;
 constexpr float brightnessHeight = 34;
@@ -1334,10 +1334,10 @@ float Island::screenHeight(Screen screen) const {
     case Screen::timers: {
         const bool quickIdle = !quick_.running() && !quick_.paused();
         const bool focusIdle = !focus_.running() && !focus_.paused();
-        if (quickView_) return quickIdle ? 346.0f : 268.0f;
-        if (!focusIdle) return 268;
+        if (quickView_) return quickIdle ? 318.0f : 242.0f;
+        if (!focusIdle) return 242;
         // Idle Focus: templates, and with Custom the stepper row below them.
-        return preferences_.rhythm == customRhythm ? 392.0f : 340.0f;
+        return preferences_.rhythm == customRhythm ? 364.0f : 312.0f;
     }
     case Screen::scratch: return scratchTasks_ ? 216.0f - 116 + taskFieldHeight : 216.0f;
     case Screen::drop: return dropItems_.empty() ? dropEmptyHeight :
@@ -2874,7 +2874,7 @@ void Island::prepareText() {
     create(timerSmallFont_, L"Segoe UI", 12, normal, center);
     create(timerAxisStartFont_, L"Segoe UI", 12, normal, start);
     create(timerAxisEndFont_, L"Segoe UI", 12, normal, end);
-    create(bigClockFont_, L"Segoe UI", 52, DWRITE_FONT_WEIGHT_LIGHT, center);
+    create(bigClockFont_, L"Segoe UI", 40, DWRITE_FONT_WEIGHT_LIGHT, center);
     create(glyphFont_, L"Segoe UI Symbol", 17, normal, center);
     create(letterFont_, L"Segoe UI", 10, strong, center);
     create(alertTitleFont_, L"Segoe UI", 11, DWRITE_FONT_WEIGHT_BOLD, start);
@@ -4146,9 +4146,9 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         ? easeInOut(progress(timerDigitsStart_, timerDigitMotion, now)) : 1;
     const float direction = timerDigitsTo_ > timerDigitsFrom_ ? 1.0f : -1.0f;
     const float clockTop = y + 46;
-    text(L":", bigClockFont_.get(), box(centerX - 10, clockTop - 4, 20, 64), rgb(mutedColor));
+    text(L":", bigClockFont_.get(), box(centerX - 10, clockTop - 3, 20, 50), rgb(mutedColor));
     for (size_t unit = 0; unit < 2; ++unit) {
-        const auto area = box(unit == 0 ? centerX - 100 : centerX + 12, clockTop, 88, 60);
+        const auto area = box(unit == 0 ? centerX - 84 : centerX + 12, clockTop, 72, 46);
         const auto digits = [unit](int time) {
             const int value = unit == 0 ? time / 60 : time % 60;
             return (value < 10 ? L"0" : L"") + std::to_wstring(value);
@@ -4156,11 +4156,11 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         if (const float level = !adjustable ? 0 : pressed(Hit::timerDuration, unit) ? 1 : hoverLevel(Hit::timerDuration, unit);
             level > 0)
             target_->FillRoundedRectangle(rounded(area, 10), ink(white(0.08f * level)));
-        const auto digitBox = [&](float shift) { return box(area.left, area.top - 2 + shift, 88, 64); };
+        const auto digitBox = [&](float shift) { return box(area.left, area.top - 2 + shift, 72, 50); };
         if (roll < 1 && digits(timerDigitsFrom_) != digits(seconds)) {
             target_->PushAxisAlignedClip(area, D2D1_ANTIALIAS_MODE_ALIASED);
-            text(digits(timerDigitsFrom_), bigClockFont_.get(), digitBox(-direction * 44 * roll), white(1 - roll));
-            text(digits(seconds), bigClockFont_.get(), digitBox(direction * 44 * (1 - roll)), white(roll));
+            text(digits(timerDigitsFrom_), bigClockFont_.get(), digitBox(-direction * 34 * roll), white(1 - roll));
+            text(digits(seconds), bigClockFont_.get(), digitBox(direction * 34 * (1 - roll)), white(roll));
             target_->PopAxisAlignedClip();
         } else {
             text(digits(seconds), bigClockFont_.get(), digitBox(0), rgb(inkColor));
@@ -4180,7 +4180,7 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         if (focus_.paused()) phase += L" · paused";
         if (breakPhase_) phaseTone = breakTone;
     }
-    text(phase, font, box(left, y + 108, width - 2 * padX, 20), phaseTone);
+    text(phase, font, box(left, y + 92, width - 2 * padX, 20), phaseTone);
 
     // The timeline: the whole run to scale, Focus blocks in the accent and Break blocks in green.
     struct Block { float minutes; bool rest; };
@@ -4203,7 +4203,7 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     float total = 0;
     for (const auto& block : blocks) total += block.minutes;
     constexpr float gap = 3;
-    const float barTop = y + 136;
+    const float barTop = y + 116;
     const float usable = (right - left) - gap * static_cast<float>(blocks.size() - 1);
     float cursor = left;
     float run = 0;
@@ -4235,7 +4235,7 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         swprintf_s(value, L"%02d:%02d", local.tm_hour, local.tm_min);
         return std::wstring(value);
     };
-    const float axisTop = y + 156;
+    const float axisTop = y + 135;
     const int remaining = quickView_ ? quick_.seconds(now) : (focusBusy ? sessionSecondsLeft(now) : rhythm.sessionMinutes() * 60);
     const std::wstring startText = busy && started ? L"started " + clockText(*started) : L"now";
     const std::wstring endText = timer.paused() ? L"paused" : L"ends " + clockAfter(remaining);
@@ -4251,7 +4251,7 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     if (quickView_) {
         if (!quickBusy) {
             // Presets in one segmented track, then min and sec steppers.
-            const auto track = box(left, y + 186, right - left, 36);
+            const auto track = box(left, y + 162, right - left, 36);
             target_->FillRoundedRectangle(rounded(track, 11), ink(white(0.045f)));
             const float cell = (track.right - track.left - 6) / static_cast<float>(std::size(timerPresets));
             for (size_t i = 0; i < std::size(timerPresets); ++i) {
@@ -4261,22 +4261,22 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
             }
             const int duration = quick_.duration();
             for (size_t unit = 0; unit < 2; ++unit) {
-                const float group = centerX - 150 + 160 * static_cast<float>(unit);
-                control(box(group, y + 232, 34, 30), L"−", Hit::quickAdjust, 2 * unit, duration > 1);
-                text(unit == 0 ? L"min" : L"sec", font, box(group + 36, y + 232, 68, 30), rgb(mutedColor));
-                control(box(group + 106, y + 232, 34, 30), L"+", Hit::quickAdjust, 2 * unit + 1, duration < timerMaxSeconds);
+                const float group = centerX - 145 + 150 * static_cast<float>(unit);
+                control(box(group, y + 206, 34, 30), L"−", Hit::quickAdjust, 2 * unit, duration > 1);
+                text(unit == 0 ? L"min" : L"sec", font, box(group + 36, y + 206, 68, 30), rgb(mutedColor));
+                control(box(group + 106, y + 206, 34, 30), L"+", Hit::quickAdjust, 2 * unit + 1, duration < timerMaxSeconds);
             }
-            control(box(centerX - 70, y + 276, 140, 34), quick_.done() ? L"Restart" : L"Start", Hit::timerToggle, 0, true, false, true);
+            control(box(centerX - 70, y + 250, 140, 34), quick_.done() ? L"Restart" : L"Start", Hit::timerToggle, 0, true, false, true);
         } else {
-            control(box(centerX - 120, y + 188, 130, 34), quick_.running() ? L"Pause" : L"Resume", Hit::timerToggle, 0, true, false, true);
-            control(box(centerX + 18, y + 188, 102, 34), L"Reset", Hit::timerReset, 0, true, false, false, true);
+            control(box(centerX - 120, y + 162, 130, 34), quick_.running() ? L"Pause" : L"Resume", Hit::timerToggle, 0, true, false, true);
+            control(box(centerX + 18, y + 162, 102, 34), L"Reset", Hit::timerReset, 0, true, false, false, true);
         }
         return;
     }
 
     if (!focusBusy) {
         // Templates and Custom: two lines each, the lengths over the name.
-        const auto track = box(left, y + 186, right - left, 48);
+        const auto track = box(left, y + 162, right - left, 48);
         target_->FillRoundedRectangle(rounded(track, 12), ink(white(0.045f)));
         const float cell = (track.right - track.left - 6) / 4.0f;
         for (size_t i = 0; i <= customRhythm; ++i) {
@@ -4290,10 +4290,10 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
             text(lengths, font, box(rect.left, rect.top + 3, cell, 20), chosen ? accent_ : rgb(inkColor));
             text(name, smallFont, box(rect.left, rect.top + 21, cell, 18), rgb(mutedColor));
         }
-        float next = 246;
+        float next = 220;
         if (rhythm.rhythm == customRhythm) {
-            const std::wstring values[]{std::to_wstring(rhythm.customFocus) + L" min focus",
-                                        std::to_wstring(rhythm.customBreak) + L" min break",
+            const std::wstring values[]{std::to_wstring(rhythm.customFocus) + L"m focus",
+                                        std::to_wstring(rhythm.customBreak) + L"m break",
                                         std::to_wstring(rhythm.customRounds) + (rhythm.customRounds == 1 ? L" round" : L" rounds")};
             const bool canLower[]{rhythm.customFocus > minFocusMinutes, rhythm.customBreak > minBreakMinutes,
                                   rhythm.customRounds > minRounds};
@@ -4302,9 +4302,9 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
             const float cellWidth = (right - left) / 3.0f;
             for (size_t i = 0; i < 3; ++i) {
                 const float group = left + cellWidth * static_cast<float>(i);
-                control(box(group, y + next, 30, 30), L"−", Hit::focusAdjust, 2 * i, canLower[i]);
-                text(values[i], smallFont, box(group + 30, y + next, cellWidth - 64, 30), rgb(inkColor));
-                control(box(group + cellWidth - 34, y + next, 30, 30), L"+", Hit::focusAdjust, 2 * i + 1, canRaise[i]);
+                control(box(group, y + next, 26, 30), L"−", Hit::focusAdjust, 2 * i, canLower[i]);
+                text(values[i], smallFont, box(group + 26, y + next, cellWidth - 56, 30), rgb(inkColor));
+                control(box(group + cellWidth - 30, y + next, 26, 30), L"+", Hit::focusAdjust, 2 * i + 1, canRaise[i]);
             }
             next += 42;
         }
@@ -4315,12 +4315,12 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
 
     const auto action = focus_.running() ? L"Pause" : L"Resume";
     if (breakPhase_) {
-        control(box(centerX - 160, y + 188, 104, 34), action, Hit::focusToggle, 0, true, false, true);
-        control(box(centerX - 50, y + 188, 104, 34), L"Skip break", Hit::focusSkip, 0, true, false, false, true);
-        control(box(centerX + 60, y + 188, 100, 34), L"End session", Hit::focusReset, 0, true, false, false, true);
+        control(box(centerX - 168, y + 162, 104, 34), action, Hit::focusToggle, 0, true, false, true);
+        control(box(centerX - 58, y + 162, 104, 34), L"Skip break", Hit::focusSkip, 0, true, false, false, true);
+        control(box(centerX + 52, y + 162, 116, 34), L"End session", Hit::focusReset, 0, true, false, false, true);
     } else {
-        control(box(centerX - 125, y + 188, 130, 34), action, Hit::focusToggle, 0, true, false, true);
-        control(box(centerX + 13, y + 188, 112, 34), L"End session", Hit::focusReset, 0, true, false, false, true);
+        control(box(centerX - 125, y + 162, 130, 34), action, Hit::focusToggle, 0, true, false, true);
+        control(box(centerX + 13, y + 162, 112, 34), L"End session", Hit::focusReset, 0, true, false, false, true);
     }
 }
 
@@ -5159,7 +5159,7 @@ void Island::drawPrayerSchedule(D2D1_RECT_F panel, bool record) {
     const float axisY = y + 58;
     text(L"00:00", buttonFont_.get(), box(scheduleLeft + 4, axisY, 40, 15), rgb(mutedColor));
     text(L"12:00", buttonFont_.get(), box((scheduleLeft + scheduleRight) / 2 - 20, axisY, 40, 15), rgb(mutedColor));
-    text(L"24:00", buttonFont_.get(), box(scheduleRight - 44, axisY, 40, 15), rgb(mutedColor));
+    text(L"23:59", buttonFont_.get(), box(scheduleRight - 44, axisY, 40, 15), rgb(mutedColor));
 }
 
 void Island::drawAppVolume(AppVolume const& app, size_t index, D2D1_RECT_F row, bool record) {
