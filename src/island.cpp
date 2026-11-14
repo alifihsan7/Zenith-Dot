@@ -199,6 +199,7 @@ constexpr auto segmentSlideTime = 240ms;
 constexpr auto scratchFadeTime = 220ms;
 constexpr auto menuRevealTime = 170ms;
 constexpr auto rowMotionTime = 260ms;
+constexpr auto brightnessTime = 260ms;
 
 constexpr unsigned inkColor = 0xf5f6f8;
 constexpr unsigned mutedColor = 0xa4aab4;
@@ -720,8 +721,17 @@ void Island::setNetwork(NetworkStatus const& status) {
 
 bool Island::setBrightness(std::optional<float> level) {
     if (brightness_ == level) return false;
+    const auto now = Clock::now();
+    const bool slide = animate_ && brightness_ && level && !brightnessDrag_;
+    brightnessFrom_ = slide ? shownBrightness(now) : level.value_or(0.0f);
+    brightnessStart_ = slide ? now : Clock::time_point{};
     brightness_ = level;
     return true;
+}
+
+float Island::shownBrightness(Clock::time_point now) const {
+    if (!brightness_) return 0;
+    return std::lerp(brightnessFrom_, *brightness_, easeInOut(progress(brightnessStart_, brightnessTime, now)));
 }
 
 void Island::updateRowMotion(RowMotion& motion, std::vector<std::wstring> keys, size_t offset) {
@@ -1198,7 +1208,8 @@ bool Island::moving(Clock::time_point now) const {
            now - taskMotionStart_ < taskMotionTime || now - timerSlide_.start < segmentSlideTime ||
            now - scratchSlide_.start < segmentSlideTime || now - scratchModeStart_ < scratchFadeTime ||
            now - sourceMenuMotion_.start < menuRevealTime || now - audioMenuMotion_.start < menuRevealTime ||
-           now - appMotion_.start < rowMotionTime || now - bluetoothMotion_.start < rowMotionTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
+           now - appMotion_.start < rowMotionTime || now - bluetoothMotion_.start < rowMotionTime ||
+           now - brightnessStart_ < brightnessTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
            std::ranges::any_of(captureIndicators_, [now](auto const& item) { return now - item.start < captureTime; }) ||
            now - screenStart_ < shapeTime ||
            now - widthStart_ < shapeTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
@@ -4442,7 +4453,7 @@ void Island::drawBrightness(float x, float top, float fullWidth, bool record) {
              box(card.left + 112, card.top, card.right - card.left - 122, brightnessHeight), rgb(mutedColor));
         return;
     }
-    const float level = brightnessDrag_ ? brightnessDragValue_ : *brightness_;
+    const float level = brightnessDrag_ ? brightnessDragValue_ : shownBrightness(drawNow_);
     const float trackLeft = card.left + 112;
     const float trackRight = card.right - 50;
     const float fill = trackLeft + (trackRight - trackLeft) * clamp01(level);

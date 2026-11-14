@@ -369,6 +369,10 @@ private:
     D2D1_RECT_F appViewport_{};
     std::wstring volumeDragId_;          // the app whose slider is being dragged
     std::optional<float> brightness_;   // the island's display, 0..1
+    // A new reading (monitor buttons, Windows) slides the slider; the user's own drag does not.
+    float brightnessFrom_ = 0;
+    Clock::time_point brightnessStart_{};
+    float shownBrightness(Clock::time_point now) const;
     bool brightnessDrag_ = false;
     float brightnessDragValue_ = 0;
     void drawBrightness(float x, float top, float fullWidth, bool record);
