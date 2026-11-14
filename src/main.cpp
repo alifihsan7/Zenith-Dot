@@ -1,6 +1,7 @@
 #include <initguid.h>
 
 #include "bluetooth.hpp"
+#include "brightness.hpp"
 #include "browser_tabs.hpp"
 #include "desktop.hpp"
 #include "drop_zone.hpp"
@@ -118,6 +119,7 @@ private:
     DesktopMonitor desktop_;
     Notifications notifications_;
     BluetoothMonitor bluetooth_;
+    BrightnessControl brightness_;
     SystemMonitor system_;
     NetworkStatus network_;
     std::optional<bool> lastOnline_;
@@ -201,6 +203,7 @@ int App::run(HINSTANCE instance, std::optional<SettingsTest> test, Feature featu
     desktop_.start(window_);
     notifications_.refresh(window_, settings_.showAppNotifications);
     bluetooth_.start(window_);
+    brightness_.start(window_);
     try {
         using winrt::Windows::Networking::Connectivity::NetworkInformation;
         networkChanged_ = NetworkInformation::NetworkStatusChanged(winrt::auto_revoke, [window = window_](auto const&) {
@@ -266,6 +269,8 @@ void App::frame() {
     }
     if (lyrics_) lyrics_->update(media_, island_.wantsLyrics(), island_.wantsLyricPill());
     if (island_.wantsSystemStats() && now - systemSampled_ >= 1s) {
+        // Opening System re-reads brightness, which the monitor's buttons can change.
+        if (systemSampled_ == std::chrono::steady_clock::time_point{}) brightness_.refresh();
         island_.setSystem(system_.sample());
         island_.setAppVolumes(desktop_.appVolumes());
         island_.setAudioOutputs(desktop_.audioOutputs());
@@ -537,6 +542,10 @@ void App::run(IslandCommand const& command) {
         break;
     case IslandCommand::Kind::notificationSettings:
         ShellExecuteW(window_, L"open", L"ms-settings:notifications", nullptr, nullptr, SW_SHOWNORMAL);
+        break;
+    case IslandCommand::Kind::setBrightness:
+        brightness_.set(static_cast<float>(command.seconds));
+        island_.setBrightness(brightness_.level());
         break;
     case IslandCommand::Kind::appVolume:
         // Moving the slider unmutes, as in the Windows volume mixer.
@@ -1149,6 +1158,9 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     case DesktopMonitor::captureChanged:
         refreshCapture();
         return 0;
+    case BrightnessControl::changed:
+        if (island_.setBrightness(brightness_.level())) frame();
+        return 0;
     case BluetoothMonitor::changed:
         announceBluetooth();
         return 0;
@@ -1336,6 +1348,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         desktop_.stop();
         notifications_.stop();
         bluetooth_.stop();
+        brightness_.stop();
         if (lyrics_) lyrics_->stop();
         RemoveClipboardFormatListener(window_);
         if (monitor_) monitor_->stop();

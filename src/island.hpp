@@ -37,7 +37,8 @@ struct IslandCommand {
     enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, adjustLyricsDelay, editScratchpad,
                       selectAudioOutput, soundSettings, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute,
                       autoCycle, prayerLocation, editTimerDuration, openSettings, overlapMode,
-                      addTask, toggleTask, removeTask, clearDoneTasks };
+                      addTask, toggleTask, removeTask, clearDoneTasks,
+                      setBrightness };
     Kind kind = Kind::none;
     double seconds = 0;              // seek position; appVolume: level 0..1; appMute, autoCycle: 1 = on
     std::wstring appId;
@@ -84,6 +85,7 @@ public:
     void setSystem(SystemStats const& stats);
     void setNetwork(NetworkStatus const& status);
     void setBluetoothDevices(std::vector<ConnectedBluetoothDevice> devices);
+    bool setBrightness(std::optional<float> level);
     void setPrayerSchedule(std::optional<PrayerSchedule> const& schedule);
     void setPrayerLoad(PrayerLoad state) { prayerLoad_ = state; }
     void setAudioOutput(std::wstring const& output);
@@ -149,7 +151,8 @@ private:
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
                      appVolume, appMute, autoCycle, prayerLocationPicker,
                      audioOutputMenu, audioOutputChoice, soundSettings, navHome, homeSettings, homeStartTimer, homeOverlapMode,
-                     scratchMode, taskAdd, taskToggle, taskRemove, taskClearDone };
+                     scratchMode, taskAdd, taskToggle, taskRemove, taskClearDone,
+                     brightness };
     using Screen = Feature;
     Settings preferences_;
     std::vector<Screen> screens_{Screen::home, Screen::media, Screen::timers, Screen::scratch, Screen::drop, Screen::system};
@@ -363,6 +366,10 @@ private:
     int appWheelRemainder_ = 0;
     D2D1_RECT_F appViewport_{};
     std::wstring volumeDragId_;          // the app whose slider is being dragged
+    std::optional<float> brightness_;   // the island's display, 0..1
+    bool brightnessDrag_ = false;
+    float brightnessDragValue_ = 0;
+    void drawBrightness(float x, float top, float fullWidth, bool record);
     float volumeDragValue_ = 0;
     D2D1_RECT_F volumeTrack_{};
     std::optional<IslandCommand> liveCommand_;

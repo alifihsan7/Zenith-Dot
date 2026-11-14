@@ -18,6 +18,7 @@ add_executable(Zenula WIN32
     src/system.cpp
     src/desktop.cpp
     src/bluetooth.cpp
+    src/brightness.cpp
     src/scratchpad.cpp
     src/tasks.cpp
     src/settings.cpp

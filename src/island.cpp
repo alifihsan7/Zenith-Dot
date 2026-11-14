@@ -52,7 +52,9 @@ constexpr float homeRowHeight = 43;
 constexpr float homeModeRowHeight = 36;
 constexpr float mediaPanelWidth = 344;
 constexpr float systemPanelWidth = 530;
-constexpr float systemStatsBottom = 75;
+constexpr float brightnessTop = 75;
+constexpr float brightnessHeight = 34;
+constexpr float systemStatsBottom = brightnessTop + brightnessHeight + 8;
 constexpr float storageCardsTop = systemStatsBottom + 21;
 constexpr size_t storageColumns = 4;
 constexpr float storageCardPitch = 58;
@@ -709,6 +711,12 @@ void Island::setPrayerSchedule(std::optional<PrayerSchedule> const& schedule) {
 
 void Island::setNetwork(NetworkStatus const& status) {
     network_ = status;
+}
+
+bool Island::setBrightness(std::optional<float> level) {
+    if (brightness_ == level) return false;
+    brightness_ = level;
+    return true;
 }
 
 void Island::setBluetoothDevices(std::vector<ConnectedBluetoothDevice> devices) {
@@ -1508,6 +1516,7 @@ void Island::setOpen(bool open, Clock::time_point now) {
     hovered_ = pressed_ = Hit::none;
     timerRepeatAt_ = {};
     dragging_ = false;
+    brightnessDrag_ = false;
     volumeDragId_.clear();
     buttonWasDown_ = true;
     updatePill(now);
@@ -1863,6 +1872,14 @@ bool Island::pointerMove(POINT client) {
         adjustTimer(pressedIndex_ * 2 + 1, steps);
         return true;
     }
+    if (dragging_ && brightnessDrag_) {
+        const float value = volumeFraction(point);
+        if (value != brightnessDragValue_) {
+            brightnessDragValue_ = value;
+            liveCommand_ = IslandCommand{IslandCommand::Kind::setBrightness, value};
+        }
+        return true;
+    }
     if (dragging_ && !volumeDragId_.empty()) {
         const float value = volumeFraction(point);
         if (value != volumeDragValue_) {
@@ -2079,6 +2096,14 @@ bool Island::pointerDown(POINT client) {
         dragFraction_ = timelineFraction(point);
         return true;
     }
+    if (target->hit == Hit::brightness && brightness_) {
+        dragging_ = true;
+        brightnessDrag_ = true;
+        volumeTrack_ = grow(target->rect, -6, 0);
+        brightnessDragValue_ = volumeFraction(point);
+        liveCommand_ = IslandCommand{IslandCommand::Kind::setBrightness, brightnessDragValue_};
+        return true;
+    }
     if (target->hit == Hit::appVolume && target->index < appVolumes_.size()) {
         dragging_ = true;
         volumeDragId_ = appVolumes_[target->index].id;
@@ -2106,6 +2131,13 @@ bool Island::pointerDown(POINT client) {
 IslandCommand Island::pointerUp(POINT client) {
     const auto now = Clock::now();
     IslandCommand command;
+    if (dragging_ && brightnessDrag_) {
+        dragging_ = false;
+        brightnessDrag_ = false;
+        command = {IslandCommand::Kind::setBrightness, volumeFraction(stagePoint(client))};
+        liveCommand_.reset();
+        return command;
+    }
     if (dragging_ && !volumeDragId_.empty()) {
         dragging_ = false;
         command = {IslandCommand::Kind::appVolume, volumeFraction(stagePoint(client)), std::move(volumeDragId_)};
@@ -2286,6 +2318,7 @@ void Island::pointerCancel() {
     timerRepeatAt_ = {};
     pressed_ = Hit::none;
     dragging_ = false;
+    brightnessDrag_ = false;
     volumeDragId_.clear();
 }
 
@@ -4094,6 +4127,7 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
     metric(0, L"CPU", system_.cpu);
     metric(1, L"RAM", system_.memory);
     metric(2, L"GPU", system_.gpu);
+    drawBrightness(x, y + brightnessTop, fullWidth, record);
 
     if (!system_.disks.empty())
         text(L"Storage", bodyFont_.get(), box(x, y + systemStatsBottom, fullWidth, 18), rgb(inkColor));
@@ -4175,6 +4209,41 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
                                   connectionTop + bluetoothRowsTop + static_cast<float>(devices) * bluetoothRowHeight + 29);
     target_->FillRectangle(box(divider, top + 1, 1, height - 2), ink(white(0.08f)));
     drawConnection(box(right, top + connectionTop, width, height - connectionTop), record);
+}
+
+// Brightness of the island's display: a sun glyph, a slider like App Volume, and the percentage.
+void Island::drawBrightness(float x, float top, float fullWidth, bool record) {
+    const auto card = box(x, top, fullWidth, brightnessHeight);
+    target_->FillRoundedRectangle(rounded(card, 8), ink(white(0.055f)));
+    const float middle = (card.top + card.bottom) / 2;
+    const auto sun = pt(card.left + 17, middle);
+    const auto sunColor = brightness_ ? rgb(inkColor) : rgb(mutedColor);
+    target_->DrawEllipse(D2D1::Ellipse(sun, 3.2f, 3.2f), ink(sunColor), 1.3f);
+    for (int ray = 0; ray < 8; ++ray) {
+        const float angle = static_cast<float>(ray) * pi / 4;
+        const float dx = std::cos(angle), dy = std::sin(angle);
+        target_->DrawLine(pt(sun.x + 5.4f * dx, sun.y + 5.4f * dy), pt(sun.x + 7.2f * dx, sun.y + 7.2f * dy),
+                          ink(sunColor), 1.2f, roundStroke_.get());
+    }
+    text(L"Brightness", bodyFont_.get(), box(card.left + 32, card.top, 80, brightnessHeight),
+         rgb(brightness_ ? inkColor : mutedColor));
+    if (!brightness_) {
+        text(L"Not supported by this display", bodyEndFont_.get(),
+             box(card.left + 112, card.top, card.right - card.left - 122, brightnessHeight), rgb(mutedColor));
+        return;
+    }
+    const float level = brightnessDrag_ ? brightnessDragValue_ : *brightness_;
+    const float trackLeft = card.left + 112;
+    const float trackRight = card.right - 50;
+    const float fill = trackLeft + (trackRight - trackLeft) * clamp01(level);
+    target_->FillRoundedRectangle(rounded(D2D1::RectF(trackLeft, middle - 2, trackRight, middle + 2), 2), ink(white(0.17f)));
+    if (fill > trackLeft)
+        target_->FillRoundedRectangle(rounded(D2D1::RectF(trackLeft, middle - 2, fill, middle + 2), 2), ink(accent_));
+    const float thumb = brightnessDrag_ || hovered(Hit::brightness) ? 7.0f : 6.0f;
+    target_->FillEllipse(D2D1::Ellipse(pt(fill, middle), thumb, thumb), ink(accent_));
+    if (record) addTarget(D2D1::RectF(trackLeft - 6, card.top, trackRight + 6, card.bottom), Hit::brightness);
+    text(std::to_wstring(std::lround(level * 100)) + L"%", bodyEndFont_.get(),
+         box(card.right - 46, card.top, 38, brightnessHeight), rgb(inkColor));
 }
 
 void Island::drawAudioGlyph(D2D1_POINT_2F center, bool headphones, D2D1_COLOR_F color) {
