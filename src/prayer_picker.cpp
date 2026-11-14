@@ -4,10 +4,12 @@
 #include <dwmapi.h>
 #include <commctrl.h>
 #include <uxtheme.h>
+#include <windowsx.h>
 #include <algorithm>
 #include <cwctype>
 #include <string>
 #include <numeric>
+#include <optional>
 #include <vector>
 
 namespace zenith {
@@ -40,12 +42,54 @@ std::wstring titleCase(std::wstring_view text) {
     return result;
 }
 
+constexpr wchar_t hoverProperty[] = L"Zenula.HoverRow";
+
+// The row under the pointer, stored on the list as index + 1 (0 means none).
+int hoveredRow(HWND list) {
+    return static_cast<int>(reinterpret_cast<INT_PTR>(GetPropW(list, hoverProperty))) - 1;
+}
+
+void redrawRow(HWND list, int row) {
+    RECT area{};
+    if (row >= 0 && SendMessageW(list, LB_GETITEMRECT, row, reinterpret_cast<LPARAM>(&area)) != LB_ERR)
+        InvalidateRect(list, &area, FALSE);
+}
+
+void hover(HWND list, std::optional<POINT> client) {
+    int row = -1;
+    if (client) {
+        const auto hit = SendMessageW(list, LB_ITEMFROMPOINT, 0, MAKELPARAM(client->x, client->y));
+        if (HIWORD(hit) == 0) row = LOWORD(hit);
+    }
+    const int previous = hoveredRow(list);
+    if (row == previous) return;
+    SetPropW(list, hoverProperty, reinterpret_cast<HANDLE>(static_cast<INT_PTR>(row + 1)));
+    redrawRow(list, previous);
+    redrawRow(list, row);
+}
+
 // A single click on a row chooses it; the dialog does not need a separate Select button.
 LRESULT CALLBACK resultsInput(HWND list, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR, DWORD_PTR) {
+    if (message == WM_NCDESTROY) RemovePropW(list, hoverProperty);
     const auto result = DefSubclassProc(list, message, wparam, lparam);
     if (message == WM_LBUTTONUP) {
         const auto hit = SendMessageW(list, LB_ITEMFROMPOINT, 0, lparam);
         if (HIWORD(hit) == 0) PostMessageW(GetParent(list), WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
+    }
+    if (message == WM_MOUSEMOVE) {
+        TRACKMOUSEEVENT leave{sizeof(leave), TME_LEAVE, list, 0};
+        TrackMouseEvent(&leave);
+        hover(list, POINT{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
+    }
+    if (message == WM_MOUSELEAVE) hover(list, std::nullopt);
+    // Scrolling moves a different row under a pointer that stays still.
+    if (message == WM_MOUSEWHEEL || message == WM_VSCROLL) {
+        POINT pointer{};
+        GetCursorPos(&pointer);
+        RECT client{};
+        GetClientRect(list, &client);
+        ScreenToClient(list, &pointer);
+        hover(list, PtInRect(&client, pointer) ? std::optional<POINT>(pointer) : std::nullopt);
     }
     if (message == WM_SETFOCUS || message == WM_KILLFOCUS) InvalidateRect(list, nullptr, FALSE);
     return result;
@@ -183,6 +227,7 @@ void updateList(HWND window, Picker const& picker) {
     const auto list = GetDlgItem(window, IDC_PRAYER_RESULTS);
     SendMessageW(list, WM_SETREDRAW, FALSE, 0);
     SendMessageW(list, LB_RESETCONTENT, 0, 0);
+    RemovePropW(list, hoverProperty);
     if (contains(L"Off", search)) {
         const auto row = SendMessageW(list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Off"));
         if (row >= 0) SendMessageW(list, LB_SETITEMDATA, row, 0);
@@ -286,7 +331,10 @@ INT_PTR CALLBACK pickerDialog(HWND window, UINT message, WPARAM wparam, LPARAM l
         }
         auto tile = item.rcItem;
         InflateRect(&tile, -px(window, 2), -px(window, 2));
-        if (current || selected) rounded(item.hDC, tile, px(window, 12), current ? chipColor : hoverColor);
+        // Current location: the blue chip. Keyboard row (Enter picks it): a step lighter than the pointer's row.
+        const bool hot = static_cast<int>(item.itemID) == hoveredRow(item.hwndItem);
+        if (current || selected || hot)
+            rounded(item.hDC, tile, px(window, 12), current ? chipColor : selected ? pressColor : hoverColor);
         if (focused) ring(item.hDC, tile, px(window, 12), px(window, 2), accentColor);
         SetBkMode(item.hDC, TRANSPARENT);
         auto label = item.rcItem;
