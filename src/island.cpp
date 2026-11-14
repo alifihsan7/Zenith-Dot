@@ -1925,38 +1925,6 @@ void Island::adjustTimer(size_t index, int steps) {
     setTimerDuration(timer.duration() + delta * steps);
 }
 
-std::wstring Island::timerDurationText() const {
-    return timestamp(quickView_ ? quick_.duration() : focus_.duration());
-}
-
-bool Island::setTimerDurationText(std::wstring_view text) {
-    int minutes = 0, seconds = 0;
-    bool colon = false;
-    size_t minuteDigits = 0, secondDigits = 0;
-    for (const auto digit : text) {
-        if (digit == L':' && !colon && minuteDigits > 0) {
-            colon = true;
-        } else if (digit >= L'0' && digit <= L'9') {
-            auto& count = colon ? secondDigits : minuteDigits;
-            if (++count > (colon ? 2u : 3u)) return false;
-            auto& value = colon ? seconds : minutes;
-            value = 10 * value + (digit - L'0');
-        } else {
-            return false;
-        }
-    }
-    if (minuteDigits == 0 || (colon && (secondDigits == 0 || seconds >= 60))) return false;
-    setTimerDuration(minutes * 60 + seconds);
-    return true;
-}
-
-std::optional<RECT> Island::timerEditorRect() const {
-    if (!open_ || screen_ != Screen::timers || !timerEditor_) return std::nullopt;
-    const auto area = *timerEditor_;
-    return RECT{anchor_.x + std::lround(area.left * scale_), anchor_.y + std::lround(area.top * scale_),
-                anchor_.x + std::lround(area.right * scale_), anchor_.y + std::lround(area.bottom * scale_)};
-}
-
 void Island::tick() {
     const auto now = Clock::now();
     if (timerRepeatAt_ != Clock::time_point{} && now >= timerRepeatAt_) {
@@ -2553,9 +2521,6 @@ IslandCommand Island::pointerUp(POINT client) {
     case Hit::focusAdjust:
     case Hit::quickAdjust:
         if (!timerRepeated_) adjustTimer(index);
-        break;
-    case Hit::timerDuration:
-        if (!timerDragged_) command.kind = IslandCommand::Kind::editTimerDuration;
         break;
     case Hit::timerPreset:
         if (index < std::size(timerPresets) && !quick_.running() && !quick_.paused()) {
@@ -4135,7 +4100,6 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         }
         if (record && adjustable) addTarget(area, Hit::timerDuration, unit);
     }
-    if (record && adjustable) timerEditor_ = clock;
     if (quickView_) {
         for (size_t i = 0; i < std::size(timerPresets); ++i) {
             const auto minutes = timerPresets[i];
@@ -5802,7 +5766,6 @@ void Island::draw(HWND window) {
     taskViewport_ = {};
     prayerSearch_.reset();
     prayerResultsViewport_ = {};
-    timerEditor_.reset();
     lyricViewport_ = {};
     dropViewport_ = {};
     appViewport_ = {};

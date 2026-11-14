@@ -36,7 +36,7 @@ class SettingsExample;
 struct IslandCommand {
     enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, adjustLyricsDelay, editScratchpad,
                       selectAudioOutput, soundSettings, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute,
-                      autoCycle, prayerLocation, editTimerDuration, openSettings, overlapMode,
+                      autoCycle, prayerLocation, openSettings, overlapMode,
                       addTask, toggleTask, removeTask, clearDoneTasks,
                       setBrightness, openPrayerSearch };
     Kind kind = Kind::none;
@@ -127,9 +127,6 @@ public:
     COLORREF taskInputColor() const;
     COLORREF prayerSearchColor() const;
     D2D1_COLOR_F scratchSurface() const;
-    std::optional<RECT> timerEditorRect() const;
-    std::wstring timerDurationText() const;
-    bool setTimerDurationText(std::wstring_view text);
     bool wantsLyrics() const;
     bool wantsLyricPill() const;
     void notify(IslandAlert alert);
@@ -663,7 +660,6 @@ private:
     Clock::time_point timerRepeatAt_{};
     int timerWheelRemainder_ = 0;
     size_t timerWheelUnit_ = 0;
-    std::optional<D2D1_RECT_F> timerEditor_;
     int timerDigitsFrom_ = 0;
     int timerDigitsTo_ = 0;
     Clock::time_point timerDigitsStart_{};

@@ -28,8 +28,6 @@ constexpr wchar_t appName[] = L"Zenula";
 constexpr UINT trayMessage = WM_APP + 2;
 constexpr UINT redrawMessage = WM_APP + 3;
 constexpr UINT networkChangedMessage = WM_APP + 21;
-constexpr UINT timerEditFinished = WM_APP + 22;
-constexpr wchar_t timerEditFresh[] = L"Zenula.TimerEditFresh";
 constexpr UINT taskEditFinished = WM_APP + 24;
 constexpr UINT prayerEditKey = WM_APP + 26;
 constexpr UINT_PTR powerTimer = 1;
@@ -64,8 +62,6 @@ private:
     void updateMedia();
     void control(MediaCommand command);
     void run(IslandCommand const& command);
-    void openTimerEdit();
-    void closeTimerEdit(bool commit, bool restoreFocus = false);
     void openTaskEdit();
     void openPrayerEdit();
     void closePrayerEdit(bool restoreFocus = false);
@@ -74,8 +70,6 @@ private:
                                             UINT_PTR id, DWORD_PTR context);
     void closeTaskEdit(bool restoreFocus = false);
     static LRESULT CALLBACK taskEditInput(HWND edit, UINT message, WPARAM wparam, LPARAM lparam,
-                                          UINT_PTR id, DWORD_PTR context);
-    static LRESULT CALLBACK timerEditInput(HWND edit, UINT message, WPARAM wparam, LPARAM lparam,
                                           UINT_PTR id, DWORD_PTR context);
     void refreshPower();
     void queueNetworkRefresh();
@@ -103,11 +97,7 @@ private:
     std::optional<IslandAlert> clipboardAlert(bool& busy, HBITMAP& image, std::wstring& stagedText);
 
     HWND window_ = nullptr;
-    HWND timerEdit_ = nullptr;
     HWND timerPreviousFocus_ = nullptr;
-    HFONT timerEditFont_ = nullptr;
-    HBRUSH timerEditBrush_ = nullptr;
-    COLORREF timerEditColor_ = 0;
     HWND taskEdit_ = nullptr;
     HWND taskPreviousFocus_ = nullptr;
     HFONT taskEditFont_ = nullptr;
@@ -297,17 +287,6 @@ void App::frame() {
     const bool shown = IsWindowVisible(window_) != FALSE;
     const bool visible = island_.visible() && (shown || !suppressed());
     if (visible) island_.draw(window_);
-    if (timerEdit_) {
-        if (const auto bounds = island_.timerEditorRect(); visible && bounds) {
-            RECT current{};
-            GetWindowRect(timerEdit_, &current);
-            if (!EqualRect(&current, &*bounds))
-                SetWindowPos(timerEdit_, nullptr, bounds->left, bounds->top, bounds->right - bounds->left,
-                             bounds->bottom - bounds->top, SWP_NOACTIVATE | SWP_NOZORDER);
-        } else {
-            closeTimerEdit(false);
-        }
-    }
     if (scratchpad_.window()) {
         if (const auto bounds = island_.scratchEditorRect()) scratchpad_.place(*bounds);
         scratchpad_.setBackground(island_.scratchEditorColor());
@@ -374,55 +353,6 @@ void App::updateMedia() {
 void App::control(MediaCommand command) {
     if (!media_.sourceId.empty()) browserTabs_.control(media_.sourceId, command);
     else if (monitor_) monitor_->control(command);
-}
-
-void App::openTimerEdit() {
-    const auto bounds = island_.timerEditorRect();
-    if (!bounds || timerEdit_) return;
-    timerPreviousFocus_ = GetForegroundWindow();
-    const int height = bounds->bottom - bounds->top;
-    timerEdit_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"EDIT", island_.timerDurationText().c_str(),
-        WS_POPUP | ES_CENTER | ES_AUTOHSCROLL, bounds->left, bounds->top,
-        bounds->right - bounds->left, height, window_, nullptr, GetModuleHandleW(nullptr), nullptr);
-    if (!timerEdit_) return;
-    if (!SetWindowSubclass(timerEdit_, timerEditInput, 1, reinterpret_cast<DWORD_PTR>(window_))) {
-        closeTimerEdit(false);
-        return;
-    }
-    timerEditFont_ = CreateFontW(-height * 2 / 3, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    SendMessageW(timerEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(timerEditFont_), FALSE);
-    SendMessageW(timerEdit_, EM_SETLIMITTEXT, 6, 0);
-    // Same field colour as the Tasks input, instead of the white Windows default.
-    timerEditColor_ = island_.taskInputColor();
-    timerEditBrush_ = CreateSolidBrush(timerEditColor_);
-    island_.setPopupOpen(true);
-    ShowWindow(timerEdit_, SW_SHOW);
-    SetForegroundWindow(timerEdit_);
-    SetFocus(timerEdit_);
-    // No select-all: Windows paints a selection in its own blue. The caret sits at the end
-    // and the first typed digit replaces the duration, which is what select-all did.
-    SendMessageW(timerEdit_, EM_SETSEL, 6, 6);
-    SetPropW(timerEdit_, timerEditFresh, reinterpret_cast<HANDLE>(1));
-}
-
-void App::closeTimerEdit(bool commit, bool restoreFocus) {
-    if (!timerEdit_) return;
-    const HWND closing = std::exchange(timerEdit_, nullptr);
-    if (commit && island_.timerEditorRect()) {
-        wchar_t input[7]{};
-        GetWindowTextW(closing, input, static_cast<int>(std::size(input)));
-        island_.setTimerDurationText(input);
-    }
-    const bool restore = restoreFocus && GetForegroundWindow() == closing;
-    RemoveWindowSubclass(closing, timerEditInput, 1);
-    RemovePropW(closing, timerEditFresh);
-    DestroyWindow(closing);
-    if (timerEditFont_) DeleteObject(std::exchange(timerEditFont_, nullptr));
-    if (timerEditBrush_) DeleteObject(std::exchange(timerEditBrush_, nullptr));
-    island_.setPopupOpen(false);
-    if (restore && IsWindow(timerPreviousFocus_)) SetForegroundWindow(timerPreviousFocus_);
-    timerPreviousFocus_ = nullptr;
 }
 
 void App::openTaskEdit() {
@@ -560,28 +490,6 @@ LRESULT CALLBACK App::taskEditInput(HWND edit, UINT message, WPARAM wparam, LPAR
     return DefSubclassProc(edit, message, wparam, lparam);
 }
 
-LRESULT CALLBACK App::timerEditInput(HWND edit, UINT message, WPARAM wparam, LPARAM lparam,
-                                    UINT_PTR, DWORD_PTR context) {
-    const auto owner = reinterpret_cast<HWND>(context);
-    if (message == WM_KEYDOWN && (wparam == VK_RETURN || wparam == VK_ESCAPE)) {
-        PostMessageW(owner, timerEditFinished, reinterpret_cast<WPARAM>(edit), wparam == VK_RETURN ? 2 : 0);
-        return 0;
-    }
-    if (message == WM_CHAR && wparam >= 32 && wparam != L':' && (wparam < L'0' || wparam > L'9')) return 0;
-    if (GetPropW(edit, timerEditFresh)) {
-        // The first digit starts a new duration; moving the caret or deleting edits the old one.
-        if (message == WM_CHAR && wparam >= 32) {
-            RemovePropW(edit, timerEditFresh);
-            SetWindowTextW(edit, L"");
-        } else if (message == WM_LBUTTONDOWN || (message == WM_KEYDOWN && (wparam == VK_LEFT || wparam == VK_RIGHT ||
-                   wparam == VK_HOME || wparam == VK_END || wparam == VK_BACK || wparam == VK_DELETE))) {
-            RemovePropW(edit, timerEditFresh);
-        }
-    }
-    if (message == WM_KILLFOCUS) PostMessageW(owner, timerEditFinished, reinterpret_cast<WPARAM>(edit), 1);
-    return DefSubclassProc(edit, message, wparam, lparam);
-}
-
 void App::run(IslandCommand const& command) {
     switch (command.kind) {
     case IslandCommand::Kind::overlapMode: {
@@ -625,7 +533,6 @@ void App::run(IslandCommand const& command) {
     case IslandCommand::Kind::adjustLyricsDelay:
         if (lyrics_) lyrics_->adjustDelay(command.index == 0 ? -1 : 1);
         break;
-    case IslandCommand::Kind::editTimerDuration: openTimerEdit(); break;
     case IslandCommand::Kind::addTask: openTaskEdit(); break;
     case IslandCommand::Kind::toggleTask:
         if (tasks_.toggle(command.index)) island_.setTasks(tasks_.view());
@@ -1345,7 +1252,6 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     }
     case WM_LBUTTONDOWN: {
         if (example_) return 0;
-        closeTimerEdit(true);
         closeTaskEdit();
         // A click elsewhere on the island ends note editing (the note is saved) but keeps the panel open.
         if (scratchpad_.window()) {
@@ -1427,12 +1333,6 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
             SetBkColor(dc, prayerEditColor_);
             return reinterpret_cast<LRESULT>(prayerEditBrush_);
         }
-        if (timerEdit_ && reinterpret_cast<HWND>(lparam) == timerEdit_) {
-            const auto dc = reinterpret_cast<HDC>(wparam);
-            SetTextColor(dc, RGB(0xf2, 0xf5, 0xf8));
-            SetBkColor(dc, timerEditColor_);
-            return reinterpret_cast<LRESULT>(timerEditBrush_);
-        }
         if (taskEdit_ && reinterpret_cast<HWND>(lparam) == taskEdit_) {
             const auto dc = reinterpret_cast<HDC>(wparam);
             SetTextColor(dc, RGB(0xf2, 0xf5, 0xf8));
@@ -1440,12 +1340,6 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
             return reinterpret_cast<LRESULT>(taskEditBrush_);
         }
         break;
-    case timerEditFinished:
-        if (timerEdit_ == reinterpret_cast<HWND>(wparam)) {
-            closeTimerEdit(lparam != 0, lparam != 1);
-            frame();
-        }
-        return 0;
     case Scratchpad::dismissed:
         if (scratchpad_.window() == reinterpret_cast<HWND>(wparam)) {
             const bool explicitClose = lparam == Scratchpad::explicitDismiss;
@@ -1484,7 +1378,6 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         }
         return 0;
     case WM_DESTROY:
-        closeTimerEdit(false);
         closeTaskEdit();
         closePrayerEdit();
         cancelPrayerRequest();
