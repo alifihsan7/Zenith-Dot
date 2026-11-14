@@ -29,6 +29,7 @@ constexpr UINT trayMessage = WM_APP + 2;
 constexpr UINT redrawMessage = WM_APP + 3;
 constexpr UINT networkChangedMessage = WM_APP + 21;
 constexpr UINT timerEditFinished = WM_APP + 22;
+constexpr wchar_t timerEditFresh[] = L"Zenula.TimerEditFresh";
 constexpr UINT taskEditFinished = WM_APP + 24;
 constexpr UINT prayerEditKey = WM_APP + 26;
 constexpr UINT_PTR powerTimer = 1;
@@ -105,6 +106,8 @@ private:
     HWND timerEdit_ = nullptr;
     HWND timerPreviousFocus_ = nullptr;
     HFONT timerEditFont_ = nullptr;
+    HBRUSH timerEditBrush_ = nullptr;
+    COLORREF timerEditColor_ = 0;
     HWND taskEdit_ = nullptr;
     HWND taskPreviousFocus_ = nullptr;
     HFONT taskEditFont_ = nullptr;
@@ -390,11 +393,17 @@ void App::openTimerEdit() {
                                 OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     SendMessageW(timerEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(timerEditFont_), FALSE);
     SendMessageW(timerEdit_, EM_SETLIMITTEXT, 6, 0);
+    // Same field colour as the Tasks input, instead of the white Windows default.
+    timerEditColor_ = island_.taskInputColor();
+    timerEditBrush_ = CreateSolidBrush(timerEditColor_);
     island_.setPopupOpen(true);
     ShowWindow(timerEdit_, SW_SHOW);
     SetForegroundWindow(timerEdit_);
     SetFocus(timerEdit_);
-    SendMessageW(timerEdit_, EM_SETSEL, 0, -1);
+    // No select-all: Windows paints a selection in its own blue. The caret sits at the end
+    // and the first typed digit replaces the duration, which is what select-all did.
+    SendMessageW(timerEdit_, EM_SETSEL, 6, 6);
+    SetPropW(timerEdit_, timerEditFresh, reinterpret_cast<HANDLE>(1));
 }
 
 void App::closeTimerEdit(bool commit, bool restoreFocus) {
@@ -407,8 +416,10 @@ void App::closeTimerEdit(bool commit, bool restoreFocus) {
     }
     const bool restore = restoreFocus && GetForegroundWindow() == closing;
     RemoveWindowSubclass(closing, timerEditInput, 1);
+    RemovePropW(closing, timerEditFresh);
     DestroyWindow(closing);
     if (timerEditFont_) DeleteObject(std::exchange(timerEditFont_, nullptr));
+    if (timerEditBrush_) DeleteObject(std::exchange(timerEditBrush_, nullptr));
     island_.setPopupOpen(false);
     if (restore && IsWindow(timerPreviousFocus_)) SetForegroundWindow(timerPreviousFocus_);
     timerPreviousFocus_ = nullptr;
@@ -557,6 +568,16 @@ LRESULT CALLBACK App::timerEditInput(HWND edit, UINT message, WPARAM wparam, LPA
         return 0;
     }
     if (message == WM_CHAR && wparam >= 32 && wparam != L':' && (wparam < L'0' || wparam > L'9')) return 0;
+    if (GetPropW(edit, timerEditFresh)) {
+        // The first digit starts a new duration; moving the caret or deleting edits the old one.
+        if (message == WM_CHAR && wparam >= 32) {
+            RemovePropW(edit, timerEditFresh);
+            SetWindowTextW(edit, L"");
+        } else if (message == WM_LBUTTONDOWN || (message == WM_KEYDOWN && (wparam == VK_LEFT || wparam == VK_RIGHT ||
+                   wparam == VK_HOME || wparam == VK_END || wparam == VK_BACK || wparam == VK_DELETE))) {
+            RemovePropW(edit, timerEditFresh);
+        }
+    }
     if (message == WM_KILLFOCUS) PostMessageW(owner, timerEditFinished, reinterpret_cast<WPARAM>(edit), 1);
     return DefSubclassProc(edit, message, wparam, lparam);
 }
@@ -1405,6 +1426,12 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
             SetTextColor(dc, RGB(0xf2, 0xf5, 0xf8));
             SetBkColor(dc, prayerEditColor_);
             return reinterpret_cast<LRESULT>(prayerEditBrush_);
+        }
+        if (timerEdit_ && reinterpret_cast<HWND>(lparam) == timerEdit_) {
+            const auto dc = reinterpret_cast<HDC>(wparam);
+            SetTextColor(dc, RGB(0xf2, 0xf5, 0xf8));
+            SetBkColor(dc, timerEditColor_);
+            return reinterpret_cast<LRESULT>(timerEditBrush_);
         }
         if (taskEdit_ && reinterpret_cast<HWND>(lparam) == taskEdit_) {
             const auto dc = reinterpret_cast<HDC>(wparam);
