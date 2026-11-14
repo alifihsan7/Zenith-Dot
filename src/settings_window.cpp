@@ -595,6 +595,10 @@ private:
     std::vector<Item> items_;
 };
 
+// Dark dialogs in the Settings style (defined further down).
+bool ask(HWND owner, wchar_t const* heading, wchar_t const* body, wchar_t const* action);
+void tell(HWND owner, wchar_t const* heading, wchar_t const* body);
+
 struct View {
     int page = IDC_SETTINGS_GENERAL;
     int detail = 0;
@@ -1052,7 +1056,7 @@ void SettingsWindow::runTest(SettingsTest test) {
         DWORD_PTR accepted = 0;
         if (SendMessageTimeoutW(overlay, settingsTestMessage, static_cast<WPARAM>(test), static_cast<LPARAM>(target),
                                 SMTO_ABORTIFHUNG, 1500, &accepted) && accepted) return;
-        MessageBoxW(window_, L"Restart Zenula with this build to run the test.", title, MB_OK | MB_ICONINFORMATION);
+        tell(window_, L"Restart Zenula to try this", L"The Zenula that’s running is an older build without this test.");
         return;
     }
     std::wstring executable(32768, L'\0');
@@ -1062,7 +1066,7 @@ void SettingsWindow::runTest(SettingsTest test) {
     if (!length || length >= executable.size() ||
         reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", executable.c_str(), args.c_str(),
                                                nullptr, SW_SHOWNOACTIVATE)) <= 32) {
-        MessageBoxW(window_, L"Couldn’t start Zenula to run the test.", title, MB_OK | MB_ICONWARNING);
+        tell(window_, L"Couldn’t run the test", L"Zenula didn’t start. Try again.");
     }
 }
 
@@ -1079,7 +1083,7 @@ bool SettingsWindow::commandChoice(int id) {
         updated.customAccent = (GetRValue(picker.rgbResult) << 16) | (GetGValue(picker.rgbResult) << 8) |
             GetBValue(picker.rgbResult);
         if (updated.saveAccent()) notifyOverlay();
-        else MessageBoxW(window_, L"Couldn’t save this color.", title, MB_OK | MB_ICONWARNING);
+        else tell(window_, L"Couldn’t save this color", L"The change wasn’t written for this Windows user. Try again.");
         sync();
         return true;
     }
@@ -1101,7 +1105,7 @@ bool SettingsWindow::commandChoice(int id) {
     const bool saved = id == IDC_QUIET_MODE || id == IDC_PRAYER_EARLY
         ? updated.saveNotifications() : updated.saveIsland();
     if (!saved) {
-        MessageBoxW(window_, L"Couldn’t save this setting.", title, MB_OK | MB_ICONWARNING);
+        tell(window_, L"Couldn’t save this setting", L"The change wasn’t written for this Windows user. Try again.");
         return true;
     }
     const auto now = Clock::now();
@@ -1122,14 +1126,14 @@ void SettingsWindow::completeNotificationAccess(NotificationAccess access) {
     notificationRequest_ = nullptr;
     if (access != NotificationAccess::Allowed) {
         relayout();
-        MessageBoxW(window_, L"Allow Zenula in Windows Settings under Privacy & security > Notifications.",
-                    title, MB_OK | MB_ICONINFORMATION);
+        tell(window_, L"Notifications are blocked",
+             L"Allow Zenula in Windows Settings under Privacy & security > Notifications.");
         return;
     }
     auto updated = Settings::load();
     updated.showAppNotifications = true;
     if (updated.saveNotifications()) notifyOverlay();
-    else MessageBoxW(window_, L"Couldn’t save this setting.", title, MB_OK | MB_ICONWARNING);
+    else tell(window_, L"Couldn’t save this setting", L"The change wasn’t written for this Windows user. Try again.");
     sync();
 }
 
@@ -1156,7 +1160,7 @@ void SettingsWindow::toggle(int id) {
     }
     if (!saved) {
         sync();
-        MessageBoxW(window_, L"Couldn’t save this setting.", title, MB_OK | MB_ICONWARNING);
+        tell(window_, L"Couldn’t save this setting", L"The change wasn’t written for this Windows user. Try again.");
         return;
     }
     switches_[id].set(next, animate_, Clock::now());
@@ -1172,7 +1176,7 @@ void SettingsWindow::move(Feature which, int step, int via) {
     if (next < 0 || next >= static_cast<ptrdiff_t>(updated.features.size())) return;
     std::swap(updated.features[current], updated.features[next]);
     if (!updated.saveFeatures()) {
-        MessageBoxW(window_, L"Couldn’t save the feature order.", title, MB_OK | MB_ICONWARNING);
+        tell(window_, L"Couldn’t save the feature order", L"The change wasn’t written for this Windows user. Try again.");
         sync();
         return;
     }
@@ -1190,6 +1194,7 @@ void SettingsWindow::move(Feature which, int step, int via) {
 struct Question {
     wchar_t const* heading;
     wchar_t const* body;
+    wchar_t const* action = nullptr;   // nullptr: a notice with one OK button
     HBRUSH fill = CreateSolidBrush(background);
     HFONT strong{};
     HFONT normal{};
@@ -1260,7 +1265,8 @@ INT_PTR CALLBACK questionProc(HWND window, UINT message, WPARAM wparam, LPARAM l
         SendDlgItemMessageW(window, IDC_CONFIRM_TITLE, WM_SETFONT, reinterpret_cast<WPARAM>(question->strong), FALSE);
         SendDlgItemMessageW(window, IDC_CONFIRM_BODY, WM_SETFONT, reinterpret_cast<WPARAM>(question->normal), FALSE);
         for (const int id : {IDCANCEL, IDOK}) SetWindowSubclass(GetDlgItem(window, id), enterPresses, 0, 0);
-        SetFocus(GetDlgItem(window, IDCANCEL));
+        if (!question->action) ShowWindow(GetDlgItem(window, IDCANCEL), SW_HIDE);
+        SetFocus(GetDlgItem(window, question->action ? IDCANCEL : IDOK));
         return FALSE;
     }
     case WM_CTLCOLORDLG:
@@ -1297,7 +1303,8 @@ INT_PTR CALLBACK questionProc(HWND window, UINT message, WPARAM wparam, LPARAM l
         SetTextColor(item.hDC, action ? background : ink);
         const auto previous = SelectObject(item.hDC, question->normal);
         RECT label = item.rcItem;
-        DrawTextW(item.hDC, action ? L"Reset" : L"Cancel", -1, &label, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        DrawTextW(item.hDC, !action ? L"Cancel" : question->action ? question->action : L"OK", -1, &label,
+                  DT_CENTER | DT_SINGLELINE | DT_VCENTER);
         SelectObject(item.hDC, previous);
         return TRUE;
     }
@@ -1314,12 +1321,20 @@ INT_PTR CALLBACK questionProc(HWND window, UINT message, WPARAM wparam, LPARAM l
     return FALSE;
 }
 
+bool ask(HWND owner, wchar_t const* heading, wchar_t const* body, wchar_t const* action) {
+    Question question{heading, body, action};
+    return DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_CONFIRM), owner, questionProc,
+                           reinterpret_cast<LPARAM>(&question)) == 1;
+}
+
+void tell(HWND owner, wchar_t const* heading, wchar_t const* body) {
+    ask(owner, heading, body, nullptr);
+}
+
 void SettingsWindow::reset() {
-    Question question{L"Reset all settings?",
-        L"Your prayer location, Start with Windows, and the Windows notification connection stay as they are. "
-        L"This can’t be undone."};
-    if (DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_CONFIRM), window_, questionProc,
-                        reinterpret_cast<LPARAM>(&question)) != 1) return;
+    if (!ask(window_, L"Reset all settings?",
+             L"Your prayer location, Start with Windows, and the Windows notification connection stay as they are. "
+             L"This can’t be undone.", L"Reset")) return;
     const auto current = Settings::load();
     Settings defaults;
     defaults.prayerCity = current.prayerCity;
@@ -1330,7 +1345,7 @@ void SettingsWindow::reset() {
         saved = (defaults.*save)() && saved;
     notifyOverlay();
     sync();
-    if (!saved) MessageBoxW(window_, L"Couldn’t reset every setting. Try again.", title, MB_OK | MB_ICONWARNING);
+    if (!saved) tell(window_, L"Couldn’t reset every setting", L"Some settings kept their old values. Try again.");
 }
 
 bool SettingsWindow::command(int id) {
@@ -1367,7 +1382,7 @@ bool SettingsWindow::command(int id) {
             auto updated = Settings::load();
             updated.prayerCity = *city;
             if (updated.saveNotifications()) notifyOverlay();
-            else MessageBoxW(window_, L"Couldn’t save the prayer location.", title, MB_OK | MB_ICONWARNING);
+            else tell(window_, L"Couldn’t save the prayer location", L"The change wasn’t written for this Windows user. Try again.");
             sync();
         }
         return true;
@@ -1380,7 +1395,7 @@ bool SettingsWindow::command(int id) {
             auto updated = Settings::load();
             updated.showAppNotifications = false;
             if (updated.saveNotifications()) notifyOverlay();
-            else MessageBoxW(window_, L"Couldn’t save this setting.", title, MB_OK | MB_ICONWARNING);
+            else tell(window_, L"Couldn’t save this setting", L"The change wasn’t written for this Windows user. Try again.");
             sync();
         }
         return true;
