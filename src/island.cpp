@@ -218,6 +218,7 @@ constexpr float taskFieldHeight = taskBarHeight + taskRowHeight * visibleTaskRow
 constexpr auto taskMotionTime = moveMotion;
 constexpr auto segmentSlideTime = moveMotion;
 constexpr auto scratchFadeTime = moveMotion;
+constexpr float focusRecapHeight = 40;   // "Today: 1h 40m focus · 4 rounds" under the idle Focus controls
 // Scratchpad, from the content top: header, then the note and its footer, or the progress row and the task list.
 constexpr float scratchBodyTop = 36;
 constexpr float scratchNoteHeight = 116;
@@ -1351,10 +1352,12 @@ Island::PillMode Island::homeTimer() const {
     return PillMode::dot;
 }
 
-std::array<Island::Screen, 3> Island::homeRows() const {
+std::array<Island::Screen, 4> Island::homeRows() const {
+    const bool openTasks = tasks_ && std::ranges::any_of(tasks_->items, [](Task const& task) { return !task.done; });
     return {
         preferences_.enabled(Screen::media) && media_.hasSession ? Screen::media : Screen::home,
         homeTimer() != PillMode::dot ? Screen::timers : Screen::home,
+        preferences_.enabled(Screen::scratch) && openTasks ? Screen::scratch : Screen::home,
         preferences_.enabled(Screen::drop) && !dropItems_.empty() ? Screen::drop : Screen::home,
     };
 }
@@ -1364,7 +1367,7 @@ float Island::screenHeight(Screen screen) const {
     switch (screen) {
     case Screen::home: {
         const auto rows = homeRows();
-        const auto count = std::min<std::ptrdiff_t>(3, std::ssize(rows) - std::ranges::count(rows, Screen::home));
+        const auto count = std::ssize(rows) - std::ranges::count(rows, Screen::home);
         // Header, the clock, then one card per running thing (or the quiet card).
         return navHeight + homeCardsTop + (count ? homeCardStep * static_cast<float>(count) - homeCardGap : homeQuietHeight) + padBottom + 4;
     }
@@ -1374,9 +1377,9 @@ float Island::screenHeight(Screen screen) const {
         const bool quickIdle = !quick_.running() && !quick_.paused();
         const bool focusIdle = !focus_.running() && !focus_.paused();
         if (quickView_) return quickIdle ? 318.0f : 242.0f;
-        if (!focusIdle) return 242;
-        // Idle Focus: templates, and with Custom the stepper row below them.
-        return preferences_.rhythm == customRhythm ? 364.0f : 312.0f;
+        if (!focusIdle) return 242 + 26;
+        // Idle Focus: templates, and with Custom the stepper row below them, then today's recap.
+        return (preferences_.rhythm == customRhythm ? 364.0f : 312.0f) + focusRecapHeight;
     }
     case Screen::scratch: return scratchTasks_ ? scratchTasksHeight : scratchNotesHeight;
     case Screen::drop: return dropItems_.empty() ? dropEmptyHeight :
@@ -1915,6 +1918,7 @@ void Island::skipBreak(Clock::time_point now) {
 // the long break after the last round ends it.
 void Island::finishFocus(Clock::time_point now, bool fromCompanion) {
     const bool rested = breakPhase_;
+    if (!rested) focusLogged_ += phaseSeconds(false) / 60;
     const bool sessionDone = rested && lastRound();
     std::wstring title = rested ? L"Break done" : L"Focus done";
     std::wstring next;
@@ -1981,6 +1985,13 @@ void Island::adjustRhythm(size_t index) {
 
 bool Island::takeFinishedCountdown() {
     return std::exchange(countdownFinished_, false);
+}
+
+int Island::takeFocusLogged() { return std::exchange(focusLogged_, 0); }
+
+void Island::setFocusToday(unsigned minutes, unsigned rounds) {
+    focusTodayMinutes_ = minutes;
+    focusTodayRounds_ = rounds;
 }
 
 void Island::completeCountdown(Clock::time_point now, PillMode mode, IslandAlert alert) {
@@ -2575,7 +2586,10 @@ IslandCommand Island::pointerUp(POINT client) {
         if (screen_ == Screen::home && index == 1) quickView_ = homeTimer() == PillMode::timer;
         showScreen(Screen::timers, now);
         break;
-    case Hit::navScratch: showScreen(Screen::scratch, now); break;
+    case Hit::navScratch:
+        if (screen_ == Screen::home && index == 1) setScratchMode(true, now);   // the Tasks card on Home
+        showScreen(Screen::scratch, now);
+        break;
     case Hit::navDrop: showScreen(Screen::drop, now); break;
     case Hit::navSystem: showScreen(Screen::system, now); break;
     case Hit::navPrayer: showScreen(Screen::prayer, now); break;
@@ -3810,6 +3824,14 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
             detail = countdownTime(timer.seconds(now)) + (done ? L" · done" : timer.paused() ? L" · paused" : L" left");
             if (!done) action = quick ? Hit::timerToggle : Hit::focusToggle;
             if (timer.duration() > 0) fraction = 1.0f - static_cast<float>(timer.seconds(now)) / static_cast<float>(timer.duration());
+        } else if (feature == Screen::scratch && tasks_) {
+            // Open tasks: how many are left, and how far the list is done.
+            const auto& items = tasks_->items;
+            const auto finished = static_cast<size_t>(std::ranges::count_if(items, &Task::done));
+            label = L"Tasks · " + std::to_wstring(items.size() - finished) + L" left";
+            const auto first = std::ranges::find_if(items, [](Task const& task) { return !task.done; });
+            detail = first != items.end() ? first->text : std::wstring{};
+            if (!items.empty()) fraction = static_cast<float>(finished) / static_cast<float>(items.size());
         } else if (feature == Screen::drop) {
             detail = std::to_wstring(dropItems_.size()) + (dropItems_.size() == 1 ? L" item" : L" items");
         }
@@ -4178,6 +4200,16 @@ void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double positio
     target_->PopAxisAlignedClip();
 }
 
+// Today's finished Focus, centered under the Focus controls.
+void Island::drawFocusRecap(D2D1_RECT_F line) {
+    std::wstring recap = L"Today: no Focus yet";
+    if (focusTodayRounds_) {
+        recap = L"Today: " + durationText(static_cast<int>(focusTodayMinutes_)) + L" focus · " +
+                std::to_wstring(focusTodayRounds_) + (focusTodayRounds_ == 1 ? L" round" : L" rounds");
+    }
+    text(recap, timerSmallFont_.get(), line, rgb(mutedColor));
+}
+
 // Timer and Focus share one layout: a big clock, a timeline of the run, and the controls under it.
 void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     constexpr float width = timersPanelWidth;
@@ -4401,6 +4433,7 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         }
         text(L"☾ Do Not Disturb turns on during Focus", smallFont, box(left, y + next, right - left, 18), rgb(mutedColor));
         control(box(centerX - 70, y + next + 28, 140, 34), L"Start", Hit::focusToggle, 0, true, false, true);
+        drawFocusRecap(box(left, y + next + 72, right - left, 18));
         return;
     }
 
@@ -4413,6 +4446,7 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         control(box(centerX - 125, y + 162, 130, 34), action, Hit::focusToggle, 0, true, false, true);
         control(box(centerX + 13, y + 162, 112, 34), L"End session", Hit::focusReset, 0, true, false, false, true);
     }
+    drawFocusRecap(box(left, y + 208, right - left, 18));
 }
 
 // Seconds until the whole session ends: what is left of this phase plus every phase after it.

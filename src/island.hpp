@@ -102,6 +102,10 @@ public:
     bool soundsQuiet() const { return alertsQuiet() || focusQuiet(); }
     // True once after Focus, Break, or a timer ends; the app plays the chime.
     bool takeFinishedCountdown();
+    // Minutes of Focus finished since the last call (each finished Focus phase adds its length); the app logs them.
+    int takeFocusLogged();
+    // Today's finished Focus, for the recap under the Focus controls.
+    void setFocusToday(unsigned minutes, unsigned rounds);
     bool setWindowsNotificationsQuiet(std::optional<bool> quiet);
     void setSuppressed(bool suppressed);
     bool setDotOnly(bool on);
@@ -247,7 +251,7 @@ private:
     void setOpen(bool open, Clock::time_point now);
     void openFromCompact(Clock::time_point now);
     PillMode homeTimer() const;
-    std::array<Screen, 3> homeRows() const;
+    std::array<Screen, 4> homeRows() const;
     void showScreen(Screen screen, Clock::time_point now);
     void toggleFocus(Clock::time_point now);
     void selectTimerView(size_t index);
@@ -306,6 +310,7 @@ private:
                           std::optional<bool> headphones = {});
     void drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double position);
     void prepareLyricLayout(float width);
+    void drawFocusRecap(D2D1_RECT_F line);
     void drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record);
     void drawScratchpad(D2D1_RECT_F panel, bool record);
     void drawTasks(float x, float top, bool record);
@@ -632,6 +637,9 @@ private:
     bool panelPinned_ = false;
     bool dotOnly_ = false;
     bool countdownFinished_ = false;
+    int focusLogged_ = 0;
+    unsigned focusTodayMinutes_ = 0;
+    unsigned focusTodayRounds_ = 0;
     ScratchpadView const* scratchpad_ = nullptr;
     std::optional<D2D1_RECT_F> scratchEditor_;
     winrt::com_ptr<IDWriteTextLayout> scratchLayout_;

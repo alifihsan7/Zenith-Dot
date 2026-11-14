@@ -12,6 +12,7 @@
 #include "settings_example.hpp"
 #include "sounds.hpp"
 #include <commctrl.h>
+#include <fstream>
 #include <hidusage.h>
 #include <ole2.h>
 #include <set>
@@ -132,6 +133,14 @@ private:
     winrt::Windows::Foundation::IAsyncAction networkRequest_{nullptr};
     Scratchpad scratchpad_;
     TaskList tasks_;
+    // Today's finished Focus, saved so a restart keeps the recap.
+    std::wstring focusDay_;
+    unsigned focusMinutes_ = 0;
+    unsigned focusRounds_ = 0;
+    std::filesystem::path focusFile_;
+    void loadFocusToday();
+    void logFocus(int minutes);
+    bool rollFocusDay();
     DropZone dropZone_;
     Settings settings_;
     unsigned prayerCity_ = 0;
@@ -225,6 +234,7 @@ int App::run(HINSTANCE instance, std::optional<SettingsTest> test, Feature featu
     island_.setScratchpad(scratchpad_.view());
     tasks_.load();
     island_.setTasks(tasks_.view());
+    loadFocusToday();
     refreshFullscreen();
     refreshCapture(false);
     addTray();
@@ -324,6 +334,55 @@ void App::frame() {
     }
     scheduleFrames(island_.frameInterval());
     if (island_.takeFinishedCountdown() && settings_.timerSound && !island_.alertsQuiet()) playChime(IDW_TIMER_SOUND);
+    if (const int minutes = island_.takeFocusLogged()) logFocus(minutes);
+    else if (rollFocusDay()) island_.setFocusToday(0, 0);
+}
+
+std::wstring focusToday() {
+    SYSTEMTIME local{};
+    GetLocalTime(&local);
+    wchar_t day[16]{};
+    swprintf_s(day, L"%04u-%02u-%02u", local.wYear, local.wMonth, local.wDay);
+    return day;
+}
+
+void App::loadFocusToday() {
+    wchar_t folder[MAX_PATH]{};
+    const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", folder, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) return;
+    focusFile_ = std::filesystem::path(folder) / L"Zenith Dot" / L"focus.txt";
+    focusDay_ = focusToday();
+    std::wifstream input(focusFile_);
+    std::wstring day;
+    unsigned minutes = 0, rounds = 0;
+    if (input >> day >> minutes >> rounds && day == focusDay_ && minutes <= 24 * 60 && rounds <= 1000) {
+        focusMinutes_ = minutes;
+        focusRounds_ = rounds;
+    }
+    island_.setFocusToday(focusMinutes_, focusRounds_);
+}
+
+// True when the date changed since the count was taken; the count starts again from zero.
+bool App::rollFocusDay() {
+    if (focusDay_.empty()) return false;
+    SYSTEMTIME local{};
+    GetLocalTime(&local);
+    if (static_cast<unsigned>(_wtoi(focusDay_.c_str() + 8)) == local.wDay) return false;
+    focusDay_ = focusToday();
+    focusMinutes_ = focusRounds_ = 0;
+    return true;
+}
+
+void App::logFocus(int minutes) {
+    rollFocusDay();
+    focusMinutes_ += static_cast<unsigned>(minutes);
+    ++focusRounds_;
+    island_.setFocusToday(focusMinutes_, focusRounds_);
+    if (focusFile_.empty()) return;
+    std::error_code error;
+    std::filesystem::create_directories(focusFile_.parent_path(), error);
+    std::wofstream output(focusFile_, std::ios::trunc);
+    output << focusDay_ << L' ' << focusMinutes_ << L' ' << focusRounds_ << L'\n';
 }
 
 void App::scheduleFrames(UINT interval) {
