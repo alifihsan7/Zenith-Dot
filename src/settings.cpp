@@ -42,6 +42,7 @@ constexpr DWORD hideCameraBit = 1;
 constexpr DWORD hideMicrophoneBit = 2;
 constexpr wchar_t timerValue[] = L"TimerOptions";
 constexpr DWORD autoCycleBit = 1;
+constexpr DWORD timerMutedBit = 2;
 constexpr wchar_t displayValue[] = L"DisplayOptions";
 constexpr DWORD hideInFullscreenBit = 2;
 constexpr DWORD dotOnlyBit = 8;   // bit 4 was Auto-shrink, which Dot only replaced
@@ -80,7 +81,10 @@ Settings Settings::load() {
         settings.showCameraIndicator = (*value & hideCameraBit) == 0;
         settings.showMicrophoneIndicator = (*value & hideMicrophoneBit) == 0;
     }
-    if (const auto value = read(timerValue)) settings.autoCycle = (*value & autoCycleBit) != 0;
+    if (const auto value = read(timerValue)) {
+        settings.autoCycle = (*value & autoCycleBit) != 0;
+        settings.timerSound = (*value & timerMutedBit) == 0;
+    }
     if (const auto value = read(displayValue)) {
         settings.hideInFullscreen = (*value & hideInFullscreenBit) != 0;
         settings.dotOnly = (*value & dotOnlyBit) != 0;
@@ -107,6 +111,7 @@ Settings Settings::load() {
         const auto lead = (*value >> 17) & 127u;
         if (lead <= maxPrayerLeadMinutes) settings.prayerLeadMinutes = lead;
         settings.prayerReminders = (*value & 16u) == 0;
+        settings.prayerSound = (*value & (1u << 24)) == 0;
         settings.showAppNotifications = (*value & 32u) != 0;
     }
     if (const auto value = read(accentValue)) settings.customAccent = *value & 0xffffff;
@@ -144,7 +149,7 @@ bool Settings::savePrivacy() const {
 }
 
 bool Settings::saveTimer() const {
-    return write(timerValue, autoCycle ? autoCycleBit : 0);
+    return write(timerValue, (autoCycle ? autoCycleBit : 0) | (timerSound ? 0 : timerMutedBit));
 }
 
 bool Settings::saveDisplay() const {
@@ -173,7 +178,8 @@ bool Settings::saveAccent() const {
 
 bool Settings::saveNotifications() const {
     return write(notificationsValue, static_cast<DWORD>(quietMode) | (1u << 6) | (prayerCity << 7) | (prayerLeadMinutes << 17) |
-                                     (prayerReminders ? 0u : 16u) | (showAppNotifications ? 32u : 0u));
+                                     (prayerReminders ? 0u : 16u) | (showAppNotifications ? 32u : 0u) |
+                                     (prayerSound ? 0u : 1u << 24));
 }
 
 std::wstring startupShortcut() {

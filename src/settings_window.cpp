@@ -3,6 +3,7 @@
 #include "resource.h"
 #include "notifications.hpp"
 #include "prayer.hpp"
+#include "sounds.hpp"
 
 #include <commctrl.h>
 #include <commdlg.h>
@@ -121,6 +122,8 @@ constexpr Toggle toggles[]{
     {IDC_CAMERA_INDICATOR, &Settings::showCameraIndicator, &Settings::savePrivacy},
     {IDC_MICROPHONE_INDICATOR, &Settings::showMicrophoneIndicator, &Settings::savePrivacy},
     {IDC_PRAYER_REMINDERS, &Settings::prayerReminders, &Settings::saveNotifications},
+    {IDC_PRAYER_SOUND, &Settings::prayerSound, &Settings::saveNotifications},
+    {IDC_TIMER_SOUND, &Settings::timerSound, &Settings::saveTimer},
 };
 
 constexpr int featureCount = static_cast<int>(featureOrder.size());
@@ -842,6 +845,8 @@ void SettingsWindow::content(Builder& b, View view) const {
             b.row({.title = L"Break length"}, {tryIt(SettingsTest::resting), choice(IDC_BREAK_DURATION)});
             b.row({.title = L"Cycle Focus and Break", .detail = L"Start the next phase automatically.",
                    .click = IDC_AUTO_CYCLE}, {tryIt(SettingsTest::cycle), toggle(IDC_AUTO_CYCLE)});
+            b.row({.title = L"Sound", .detail = L"Play a short chime when Focus, Break, or a timer ends.",
+                   .click = IDC_TIMER_SOUND}, {part(Draw::tryButton, IDC_PLAY_TIMER_SOUND), toggle(IDC_TIMER_SOUND)});
             b.close();
         } else {
             b.label(L"Clipboard");
@@ -974,6 +979,8 @@ void SettingsWindow::content(Builder& b, View view) const {
                .click = IDC_PRAYER_REMINDERS}, {toggle(IDC_PRAYER_REMINDERS, city != 0)});
         const bool early = city && settings_.prayerReminders;
         b.row({.title = L"Remind me", .enabled = early}, {choice(IDC_PRAYER_EARLY, early)});
+        b.row({.title = L"Sound", .detail = L"Play a soft chime with each reminder.", .enabled = early,
+               .click = IDC_PRAYER_SOUND}, {part(Draw::tryButton, IDC_PLAY_PRAYER_SOUND), toggle(IDC_PRAYER_SOUND, early)});
         b.close();
         b.note(L"Times come from SIHAT Kemenag RI for " + std::to_wstring(prayerLocations.size()) + L" regencies and cities.");
         break;
@@ -1376,6 +1383,10 @@ bool SettingsWindow::command(int id) {
     }
     if (isMoveDown(id)) {
         move(static_cast<Feature>(id - IDC_FEATURE_MOVE_DOWN), 1, id);
+        return true;
+    }
+    if (id == IDC_PLAY_PRAYER_SOUND || id == IDC_PLAY_TIMER_SOUND) {
+        playChime(id == IDC_PLAY_PRAYER_SOUND ? IDW_PRAYER_SOUND : IDW_TIMER_SOUND);
         return true;
     }
     if (isTry(id)) {

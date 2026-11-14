@@ -95,6 +95,8 @@ public:
     // A command produced while dragging (an app volume slider), to apply before the button is released.
     std::optional<IslandCommand> takeLiveCommand();
     bool alertsQuiet() const;
+    // True once after Focus, Break, or a timer ends; the app plays the chime.
+    bool takeFinishedCountdown();
     bool setWindowsNotificationsQuiet(std::optional<bool> quiet);
     void setSuppressed(bool suppressed);
     bool setDotOnly(bool on);
@@ -603,6 +605,7 @@ private:
     D2D1_RECT_F dropViewport_{};
     bool panelPinned_ = false;
     bool dotOnly_ = false;
+    bool countdownFinished_ = false;
     ScratchpadView const* scratchpad_ = nullptr;
     std::optional<D2D1_RECT_F> scratchEditor_;
     winrt::com_ptr<IDWriteTextLayout> scratchLayout_;

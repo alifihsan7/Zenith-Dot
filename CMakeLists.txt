@@ -38,7 +38,7 @@ target_compile_options(Zenula PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:/W4;/permissive
 target_link_options(Zenula PRIVATE /MANIFEST:NO)
 set_property(TARGET Zenula PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_link_libraries(Zenula PRIVATE d2d1 dwrite gdi32 user32 shell32 ole32 oleaut32 windowsapp advapi32 dwmapi comctl32 version)
-target_link_libraries(Zenula PRIVATE mfplat mfsensorgroup windowscodecs comdlg32 mmdevapi pdh)
+target_link_libraries(Zenula PRIVATE mfplat mfsensorgroup windowscodecs comdlg32 mmdevapi pdh winmm)
 install(TARGETS Zenula RUNTIME DESTINATION .)
 install(FILES scripts/install.ps1 scripts/uninstall.ps1 DESTINATION .)
 install(FILES scripts/enable-browser-tabs.ps1 DESTINATION .)

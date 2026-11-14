@@ -10,6 +10,7 @@
 #include "resource.h"
 #include "settings.hpp"
 #include "settings_example.hpp"
+#include "sounds.hpp"
 #include <commctrl.h>
 #include <hidusage.h>
 #include <ole2.h>
@@ -320,6 +321,7 @@ void App::frame() {
         if (visible) maintainZOrder();
     }
     scheduleFrames(island_.frameInterval());
+    if (island_.takeFinishedCountdown() && settings_.timerSound && !island_.alertsQuiet()) playChime(IDW_TIMER_SOUND);
 }
 
 void App::scheduleFrames(UINT interval) {
@@ -738,6 +740,7 @@ bool App::refreshPrayers() {
     const auto notify = [&](size_t index, std::wstring detail) {
         if (suppressed()) return;
         island_.notify({IslandAlert::Kind::prayer, prayerNames[index], std::move(detail), std::nullopt, 3});
+        if (settings_.prayerSound && !island_.alertsQuiet()) playChime(IDW_PRAYER_SOUND);
         notified = true;
     };
     for (size_t i = 0; i < prayers_->times.size(); ++i) {

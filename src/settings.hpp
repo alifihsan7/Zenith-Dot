@@ -32,6 +32,7 @@ struct Settings {
     QuietMode quietMode = QuietMode::off;
     unsigned prayerCity = 0;
     bool prayerReminders = true;
+    bool prayerSound = true;   // a chime with each prayer reminder
     unsigned prayerLeadMinutes = 0;
     bool showAppNotifications = false;
     bool autoAddText = false;
@@ -41,6 +42,7 @@ struct Settings {
     bool showCameraIndicator = true;
     bool showMicrophoneIndicator = true;
     bool autoCycle = false;   // Focus and Break follow each other automatically
+    bool timerSound = true;   // a chime when Focus, Break, or a timer ends
     bool hideInFullscreen = true;
     bool dotOnly = false;   // the island stays a dot; hovering still opens it
     bool fixedPillMinimum = false;

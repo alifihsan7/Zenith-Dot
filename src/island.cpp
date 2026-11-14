@@ -1855,7 +1855,12 @@ void Island::finishFocus(Clock::time_point now, bool fromCompanion) {
     completeCountdown(now, PillMode::focus, std::move(alert));
 }
 
+bool Island::takeFinishedCountdown() {
+    return std::exchange(countdownFinished_, false);
+}
+
 void Island::completeCountdown(Clock::time_point now, PillMode mode, IslandAlert alert) {
+    countdownFinished_ = true;
     if (!suppressed_ && !open_ && !dotOnly_ && pillMode_ == mode && alertAllowed(alert.kind)) {
         const auto reveal = animate_ ? countdownCompletionMotion : 0ms;
         countdownCompletion_ = {now, now + reveal + alertHoldTime(alert), mode, std::move(alert.title)};
