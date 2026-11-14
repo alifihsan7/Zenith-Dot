@@ -1572,7 +1572,8 @@ void Island::updatePillLayout(Clock::time_point now, float workWidth) {
         target.width = 46 + timerLabelWidth_ + clock;
     } else if (pillMode_ == PillMode::media) {
         const float trackWidth = std::max(pillWidth, workWidth - maxBubble - 60 - reserved);
-        const float minimum = preferences_.fixedPillMinimum ? pillWidth : 114;
+        // Fit to title really fits: a short title like "9" no longer pads the pill with empty space.
+        const float minimum = preferences_.fixedPillMinimum ? pillWidth : 0;
         const float right = trackRightSpace();
         if (pillTrackTitle_.text != pillTitle_ || pillTrackMaxWidth_ != trackWidth || pillTrackMinimum_ != minimum ||
             pillTrackRight_ != right) {
