@@ -33,17 +33,22 @@ constexpr float privacyIconPitch = 18;
 constexpr float privacyBadgeHeight = 25;
 constexpr std::array<size_t, 3> privacyIconOrder{1, 2, 0};
 constexpr wchar_t const* privacyLabels[]{L"Screen sharing", L"Camera", L"Microphone"};
-constexpr auto dotHoverTime = 180ms;
+// Shared motion tiers for content inside the island. The island's own shape uses springs (shapeTime);
+// a few motions keep their own tuned timing (bubbles, lyric lines, the clock roll, activity handoffs).
+constexpr auto fastMotion = 120ms;     // hover feedback
+constexpr auto baseMotion = 180ms;     // small state changes: toggles, menus, digits, dot hover
+constexpr auto moveMotion = 260ms;     // things that travel: rows, highlights, crossfades, sliders
+constexpr auto dotHoverTime = baseMotion;
 constexpr float activityDotGap = 8;
 constexpr auto activitySwapTime = 440ms;
 constexpr auto activityHandoffTime = 980ms;
 constexpr auto idleBeforePausedMedia = 110ms;
-constexpr auto activityDotExitTime = 240ms;
-constexpr auto countdownCompletionMotion = 280ms;
-constexpr auto navSelectionTime = 240ms;
-constexpr auto hoverFadeTime = 120ms;
-constexpr auto toggleTime = 180ms;
-constexpr auto timerDigitMotion = 170ms;
+constexpr auto activityDotExitTime = moveMotion;
+constexpr auto countdownCompletionMotion = moveMotion;
+constexpr auto navSelectionTime = moveMotion;
+constexpr auto hoverFadeTime = fastMotion;
+constexpr auto toggleTime = baseMotion;
+constexpr auto timerDigitMotion = baseMotion;
 constexpr float timerDragStep = 12;
 constexpr float activitySwapDrop = 31;
 constexpr float activitySwapLift = 7;
@@ -128,7 +133,7 @@ constexpr float padBottom = 8;
 constexpr float innerWidth = panelWidth - 2 * padX;
 constexpr float navHeight = 31;
 constexpr float compactNavHeight = 20;
-constexpr auto navRevealTime = 150ms;
+constexpr auto navRevealTime = baseMotion;
 constexpr float keepOpenMargin = 28;
 constexpr float pi = 3.14159265f;
 
@@ -145,8 +150,8 @@ constexpr auto openDelay = 50ms;
 constexpr auto closeDelay = 185ms;
 constexpr auto featurePreviewTime = 850ms;
 constexpr auto shapeTime = 500ms;
-constexpr auto screenFadeTime = 310ms;
-constexpr auto captureTime = 230ms;
+constexpr auto screenFadeTime = moveMotion;
+constexpr auto captureTime = moveMotion;
 constexpr float captureSlot = 19;
 constexpr float privacyHeight = 30;
 constexpr float privacyPadding = 6;
@@ -167,8 +172,8 @@ auto alertHoldTime(IslandAlert const& alert) {
     const bool brief = alert.kind == IslandAlert::Kind::camera || isCountdownAlert(alert.kind);
     return std::min(alert.hold, brief ? shortBubbleHoldTime : bubbleHoldTime);
 }
-constexpr auto visibilityTime = 200ms;
-constexpr auto lyricScrollTime = 190ms;
+constexpr auto visibilityTime = baseMotion;
+constexpr auto lyricScrollTime = baseMotion;
 constexpr auto pillLyricTime = 250ms;
 constexpr auto pillLyricSwitchTime = 750ms;
 
@@ -185,8 +190,8 @@ constexpr size_t visibleDropRows = 4;
 constexpr float dropRowHeight = 43;
 constexpr float dropEmptyHeight = 222;
 constexpr float dropFilledBaseHeight = 154;
-constexpr auto dropMotionTime = 260ms;
-constexpr auto homeRowTime = 280ms;
+constexpr auto dropMotionTime = moveMotion;
+constexpr auto homeRowTime = moveMotion;
 constexpr auto homeClockTime = 320ms;
 constexpr float dropEmptyField = 112;
 constexpr float dropFilledField = 36;
@@ -194,12 +199,12 @@ constexpr float taskRowHeight = 28;
 constexpr size_t visibleTaskRows = 4;
 constexpr float taskBarHeight = 34;
 constexpr float taskFieldHeight = taskBarHeight + taskRowHeight * visibleTaskRows + 4;
-constexpr auto taskMotionTime = 260ms;
-constexpr auto segmentSlideTime = 240ms;
-constexpr auto scratchFadeTime = 220ms;
-constexpr auto menuRevealTime = 170ms;
-constexpr auto rowMotionTime = 260ms;
-constexpr auto brightnessTime = 260ms;
+constexpr auto taskMotionTime = moveMotion;
+constexpr auto segmentSlideTime = moveMotion;
+constexpr auto scratchFadeTime = moveMotion;
+constexpr auto menuRevealTime = baseMotion;
+constexpr auto rowMotionTime = moveMotion;
+constexpr auto brightnessTime = moveMotion;
 
 constexpr unsigned inkColor = 0xf5f6f8;
 constexpr unsigned mutedColor = 0xa4aab4;
@@ -734,8 +739,10 @@ float Island::shownBrightness(Clock::time_point now) const {
     return std::lerp(brightnessFrom_, *brightness_, easeInOut(progress(brightnessStart_, brightnessTime, now)));
 }
 
-void Island::updateRowMotion(RowMotion& motion, std::vector<std::wstring> keys, size_t offset) {
-    if (keys == motion.keys && offset == motion.offset) return;
+std::optional<std::vector<std::pair<size_t, float>>> Island::updateRowMotion(
+        RowMotion& motion, std::vector<std::wstring> keys, size_t offset, size_t visible) {
+    if (keys == motion.keys && offset == motion.offset) return std::nullopt;
+    const float shown = animate_ ? easeInOut(progress(motion.start, rowMotionTime, Clock::now())) : 1.0f;
     std::vector<bool> kept(motion.keys.size());
     std::vector<float> from(keys.size(), 0.0f);
     std::vector<bool> entering(keys.size(), false);
@@ -749,30 +756,47 @@ void Island::updateRowMotion(RowMotion& motion, std::vector<std::wstring> keys, 
             continue;
         }
         kept[match] = true;
+        const float running = match < motion.fromSlot.size() && !motion.entering[match]
+            ? motion.fromSlot[match] * (1 - shown) : 0.0f;
         from[i] = (static_cast<float>(match) - static_cast<float>(motion.offset)) -
-                  (static_cast<float>(i) - static_cast<float>(offset));
+                  (static_cast<float>(i) - static_cast<float>(offset)) + running;
     }
     // A scroll alone moves the window, not the rows, so it stays instant.
     const bool membership = keys != motion.keys;
+    std::vector<std::pair<size_t, float>> removed;
+    const size_t oldEnd = std::min(motion.keys.size(), motion.offset + visible);
+    for (size_t j = motion.offset; j < oldEnd; ++j) {
+        if (!kept[j]) removed.emplace_back(j, static_cast<float>(j - motion.offset));
+    }
     motion.keys = std::move(keys);
     motion.fromSlot = std::move(from);
     motion.entering = std::move(entering);
     motion.offset = offset;
     motion.start = animate_ && membership ? Clock::now() : Clock::time_point{};
+    if (!membership) removed.clear();
+    return removed;
 }
 
-std::pair<float, float> Island::rowMotion(RowMotion const& motion, size_t index) const {
+std::pair<float, float> Island::rowMotion(RowMotion const& motion, size_t index, float rowHeight) const {
     const float t = easeInOut(progress(motion.start, rowMotionTime, drawNow_));
     if (t >= 1 || index >= motion.fromSlot.size()) return {0.0f, 1.0f};
-    if (motion.entering[index]) return {0.2f * (1 - t), t};
-    return {motion.fromSlot[index] * (1 - t), 1.0f};
+    if (motion.entering[index]) return {6 * (1 - t), t};
+    return {motion.fromSlot[index] * rowHeight * (1 - t), 1.0f};
+}
+
+float Island::rowGhostOpacity(RowMotion const& motion) const {
+    const float t = easeInOut(progress(motion.start, rowMotionTime, drawNow_));
+    return 1 - easeInOut(lin(0, 0.6f, t));
 }
 
 void Island::setBluetoothDevices(std::vector<ConnectedBluetoothDevice> devices) {
     bluetoothOffset_ = std::min(bluetoothOffset_, devices.size() - std::min(devices.size(), visibleBluetoothRows));
     std::vector<std::wstring> keys;
     for (const auto& device : devices) keys.push_back(device.name);
-    updateRowMotion(bluetoothMotion_, std::move(keys), bluetoothOffset_);
+    if (const auto removed = updateRowMotion(bluetoothMotion_, std::move(keys), bluetoothOffset_, visibleBluetoothRows)) {
+        bluetoothGhosts_.clear();
+        for (const auto& [index, slot] : *removed) bluetoothGhosts_.emplace_back(bluetoothDevices_[index], slot);
+    }
     bluetoothDevices_ = std::move(devices);
 }
 
@@ -796,7 +820,10 @@ void Island::setAppVolumes(std::vector<AppVolume> apps) {
         apps[pressedIndex_].id != appVolumes_[pressedIndex_].id)) pressed_ = Hit::none;
     std::vector<std::wstring> keys;
     for (const auto& app : apps) keys.push_back(app.id);
-    updateRowMotion(appMotion_, std::move(keys), appOffset_);
+    if (const auto removed = updateRowMotion(appMotion_, std::move(keys), appOffset_, visibleAppRows)) {
+        appGhosts_.clear();
+        for (const auto& [index, slot] : *removed) appGhosts_.emplace_back(appVolumes_[index], slot);
+    }
     appVolumes_ = std::move(apps);
 }
 
@@ -829,6 +856,7 @@ void Island::setTasks(TaskView const& tasks) {
     tasksOffset_ = count > tasksSeen_ ? limit : std::min(tasksOffset_, limit);
     tasksSeen_ = count;
 
+    const float taskMotionShown = animate_ ? easeInOut(progress(taskMotionStart_, taskMotionTime, Clock::now())) : 1.0f;
     // TaskList edits its view in place, so compare with the copy taken at the last update.
     const auto& items = tasks.items;
     std::vector<bool> kept(tasksShown_.size());
@@ -847,7 +875,9 @@ void Island::setTasks(TaskView const& tasks) {
         kept[match] = true;
         const float oldSlot = static_cast<float>(match) - static_cast<float>(oldOffset);
         const float newSlot = static_cast<float>(i) - static_cast<float>(tasksOffset_);
-        motion[i].fromOffset = (oldSlot - newSlot) * taskRowHeight;
+        const float running = match < taskMotion_.size() && !taskMotion_[match].entering
+            ? taskMotion_[match].fromOffset * (1 - taskMotionShown) : 0.0f;
+        motion[i].fromOffset = (oldSlot - newSlot) * taskRowHeight + running;
         motion[i].checkChanged = tasksShown_[match].done != items[i].done;
         changed = changed || motion[i].fromOffset != 0 || motion[i].checkChanged;
     }
@@ -893,6 +923,7 @@ void Island::setScratchMode(bool tasks, Clock::time_point now) {
 
 void Island::setDropItems(std::vector<DropPreview> items) {
     const auto now = Clock::now();
+    const float dropMotionShown = animate_ ? easeInOut(progress(dropMotionStart_, dropMotionTime, now)) : 1.0f;
     const float before = panelHeight(now);
     const float oldTarget = screenHeight(Screen::drop);
     const size_t limit = items.size() - std::min(items.size(), visibleDropRows);
@@ -919,7 +950,10 @@ void Island::setDropItems(std::vector<DropPreview> items) {
         kept[match] = true;
         const float oldSlot = static_cast<float>(match) - static_cast<float>(oldOffset);
         const float newSlot = static_cast<float>(i) - static_cast<float>(dropOffset_);
-        motion[i].fromOffset = (oldSlot - newSlot) * dropRowHeight;
+        // Start from where the row is drawn now, so a second change mid-slide does not make it jump.
+        const float running = match < dropMotion_.size() && !dropMotion_[match].entering
+            ? dropMotion_[match].fromOffset * (1 - dropMotionShown) : 0.0f;
+        motion[i].fromOffset = (oldSlot - newSlot) * dropRowHeight + running;
         if (motion[i].fromOffset != 0) changed = true;
     }
     dropGhosts_.clear();
@@ -4414,11 +4448,18 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
         text(L"No apps are playing audio", bodyFont_.get(), box(x, rows.top, width, appRowHeight), rgb(mutedColor));
     }
     target_->PushAxisAlignedClip(grow(rows, 8, 0), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    if (const float ghost = rowGhostOpacity(appMotion_); ghost > 0) {
+        pushLayer(nullptr, ghost);
+        for (const auto& [app, slot] : appGhosts_)
+            drawAppVolume(app, static_cast<size_t>(-1), box(x, rows.top + appRowHeight * slot, width, appRowHeight), false);
+        popLayer();
+    }
     for (size_t index = appOffset_; index < end; ++index) {
-        const auto [shift, opacity] = rowMotion(appMotion_, index);
+        const auto [shift, opacity] = rowMotion(appMotion_, index, appRowHeight);
         if (opacity < 1) pushLayer(nullptr, opacity);
-        drawAppVolume(index, box(x, rows.top + appRowHeight * (static_cast<float>(index - appOffset_) + shift),
-                                 width, appRowHeight), record);
+        drawAppVolume(appVolumes_[index], index,
+                      box(x, rows.top + appRowHeight * static_cast<float>(index - appOffset_) + shift, width, appRowHeight),
+                      record);
         if (opacity < 1) popLayer();
     }
     target_->PopAxisAlignedClip();
@@ -4597,11 +4638,7 @@ void Island::drawConnection(D2D1_RECT_F column, bool record) {
     const auto outputName = output != std::wstring::npos && audioOutput_.ends_with(L')')
         ? audioOutput_.substr(output + 1, audioOutput_.size() - output - 2) : audioOutput_;
     target_->PushAxisAlignedClip(grow(viewport, 4, 0), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    for (size_t i = bluetoothOffset_; i < end; ++i) {
-        const auto& device = bluetoothDevices_[i];
-        const auto [shift, opacity] = rowMotion(bluetoothMotion_, i);
-        const float top = viewport.top + bluetoothRowHeight * (static_cast<float>(i - bluetoothOffset_) + shift);
-        if (opacity < 1) pushLayer(nullptr, opacity);
+    const auto drawDevice = [&](ConnectedBluetoothDevice const& device, float top) {
         const bool active = device.audio && _wcsicmp(outputName.c_str(), device.name.c_str()) == 0;
         drawAlertIcon(device.audio ? IslandAlert::Kind::bluetoothAudio : IslandAlert::Kind::bluetooth,
                       pt(x + 1, top + 8), accent_);
@@ -4613,6 +4650,16 @@ void Island::drawConnection(D2D1_RECT_F column, bool record) {
             text(std::to_wstring(*device.battery) + L"%", bodyEndFont_.get(),
                  box(column.right - 36, top, 36, bluetoothRowHeight), accent_);
         }
+    };
+    if (const float ghost = rowGhostOpacity(bluetoothMotion_); ghost > 0) {
+        pushLayer(nullptr, ghost);
+        for (const auto& [device, slot] : bluetoothGhosts_) drawDevice(device, viewport.top + bluetoothRowHeight * slot);
+        popLayer();
+    }
+    for (size_t i = bluetoothOffset_; i < end; ++i) {
+        const auto [shift, opacity] = rowMotion(bluetoothMotion_, i, bluetoothRowHeight);
+        if (opacity < 1) pushLayer(nullptr, opacity);
+        drawDevice(bluetoothDevices_[i], viewport.top + bluetoothRowHeight * static_cast<float>(i - bluetoothOffset_) + shift);
         if (opacity < 1) popLayer();
     }
     target_->PopAxisAlignedClip();
@@ -4714,8 +4761,7 @@ void Island::drawPrayerSchedule(D2D1_RECT_F panel, bool record) {
     text(L"24:00", buttonFont_.get(), box(scheduleRight - 44, axisY, 40, 15), rgb(mutedColor));
 }
 
-void Island::drawAppVolume(size_t index, D2D1_RECT_F row, bool record) {
-    const auto& app = appVolumes_[index];
+void Island::drawAppVolume(AppVolume const& app, size_t index, D2D1_RECT_F row, bool record) {
     const bool dragged = !volumeDragId_.empty() && volumeDragId_ == app.id;
     const bool muted = app.muted && !dragged;
     const float level = dragged ? volumeDragValue_ : app.volume;

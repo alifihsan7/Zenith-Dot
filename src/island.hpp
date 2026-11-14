@@ -296,7 +296,7 @@ private:
     void drawCompanionShell(D2D1_RECT_F shape, float pinch);
     void drawSystem(D2D1_RECT_F panel, bool record);
     void drawPrayerSchedule(D2D1_RECT_F panel, bool record);
-    void drawAppVolume(size_t index, D2D1_RECT_F row, bool record);
+    void drawAppVolume(AppVolume const& app, size_t index, D2D1_RECT_F row, bool record);
     float volumeFraction(D2D1_POINT_2F point) const;
     float navExpansion(Clock::time_point now) const;
     float navSelection(Clock::time_point now) const;
@@ -538,9 +538,14 @@ private:
     };
     RowMotion appMotion_;
     RowMotion bluetoothMotion_;
-    void updateRowMotion(RowMotion& motion, std::vector<std::wstring> keys, size_t offset);
-    // Row top shift in slots and opacity for the row at index, for the current frame.
-    std::pair<float, float> rowMotion(RowMotion const& motion, size_t index) const;
+    // Returns the rows that left the visible window (old index, slot) when membership changed.
+    std::optional<std::vector<std::pair<size_t, float>>> updateRowMotion(RowMotion& motion, std::vector<std::wstring> keys,
+                                                                         size_t offset, size_t visible);
+    // Row top shift in pixels and opacity for the row at index, for the current frame.
+    std::pair<float, float> rowMotion(RowMotion const& motion, size_t index, float rowHeight) const;
+    float rowGhostOpacity(RowMotion const& motion) const;
+    std::vector<std::pair<AppVolume, float>> appGhosts_;
+    std::vector<std::pair<ConnectedBluetoothDevice, float>> bluetoothGhosts_;
     void drawTaskRow(Task const& task, size_t index, float top, float left, float width, float check, bool record);
     bool dropHover_ = false;
     bool popupOpen_ = false;
