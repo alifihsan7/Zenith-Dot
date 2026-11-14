@@ -1218,7 +1218,25 @@ LRESULT CALLBACK enterPresses(HWND button, UINT message, WPARAM wparam, LPARAM l
         return 0;
     }
     if (message == WM_CHAR && wparam == VK_RETURN) return 0;
-    if (message == WM_NCDESTROY) RemoveWindowSubclass(button, enterPresses, id);
+    if (message == WM_SETCURSOR && LOWORD(lparam) == HTCLIENT) {
+        SetCursor(LoadCursorW(nullptr, IDC_HAND));
+        return TRUE;
+    }
+    // Hover repaints the button once on enter and once on leave; nothing runs in between.
+    if (message == WM_MOUSEMOVE && !GetPropW(button, L"Zenula.Hot")) {
+        SetPropW(button, L"Zenula.Hot", reinterpret_cast<HANDLE>(1));
+        TRACKMOUSEEVENT leave{sizeof(leave), TME_LEAVE, button, 0};
+        TrackMouseEvent(&leave);
+        InvalidateRect(button, nullptr, FALSE);
+    }
+    if (message == WM_MOUSELEAVE) {
+        RemovePropW(button, L"Zenula.Hot");
+        InvalidateRect(button, nullptr, FALSE);
+    }
+    if (message == WM_NCDESTROY) {
+        RemovePropW(button, L"Zenula.Hot");
+        RemoveWindowSubclass(button, enterPresses, id);
+    }
     return DefSubclassProc(button, message, wparam, lparam);
 }
 
@@ -1271,7 +1289,10 @@ INT_PTR CALLBACK questionProc(HWND window, UINT message, WPARAM wparam, LPARAM l
             roundedGdi(item.hDC, face, scale(10), background);
             InflateRect(&face, -scale(1), -scale(1));
         }
-        roundedGdi(item.hDC, face, scale(10), action ? (pressed ? RGB(119, 170, 220) : accent) : pressed ? pressColor : hoverColor);
+        const bool hot = GetPropW(item.hwndItem, L"Zenula.Hot") != nullptr;
+        const COLORREF fill = action ? (pressed ? RGB(119, 170, 220) : hot ? RGB(178, 218, 255) : accent)
+                                     : (pressed ? RGB(58, 59, 65) : hot ? pressColor : hoverColor);
+        roundedGdi(item.hDC, face, scale(10), fill);
         SetBkMode(item.hDC, TRANSPARENT);
         SetTextColor(item.hDC, action ? background : ink);
         const auto previous = SelectObject(item.hDC, question->normal);
