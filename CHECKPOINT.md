@@ -6,6 +6,7 @@ Serah terima untuk sesi berikutnya. Kode adalah acuan perilaku; README cuma ring
 
 - `main` sinkron dengan `origin/main` di `2ace78e`. Build Release bersih (nol warning, `/W4`).
 - Sesi 2026-11-13/14 menambah: ikon burung hantu dan logo di Home, jam Home dengan zona (WIB/WITA/WIT), Scratchpad dua mode (Notes dan Tasks), slider brightness di System, picker lokasi sholat dengan pencarian di dalam panel Prayer, island yang opaque, warna Scratchpad/Drop Zone yang ikut aksen sesi, dan redesign Settings (palet netral, halaman Prayer sendiri).
+- Settings di-redesign total (2026-11-14): lima halaman (General, Island, Features, Alerts & privacy, Prayer), kartu bergaris tipis, segmented satu track, tombol Try di dalam baris, urutan fitur langsung di daftar, preview pill statis. Dialog lokasi ikut gaya yang sama. Mockup: `experiments/zenula-settings-redesign.html` (folder `experiments` di-ignore git).
 - Fitur yang sengaja dibuang: bubble privasi (Camera/Mic/Screen cuma jadi ikon), agenda kalender di Home, tile Wi-Fi/Bluetooth/mode daya.
 - RAM dan CPU (2026-11-14, musik diputar, pill dengan visualizer): private memory ~15 MB dan CPU ~0,5% satu core, sama dengan awal sesi. Tanpa musik, timer frame mati total.
 
@@ -25,6 +26,7 @@ cmake --build out\Zenula --config Release --parallel
 Start-Process out\Zenula\Release\Zenula.exe
 ```
 
+- Kalau Zenula sedang jalan, exe di `out\Zenula` terkunci. Untuk cek build tanpa mematikan Zenula user, build ke `out\Redesign` (`cmake -S . -B out\Redesign`).
 - Build directory yang dipakai `out\Zenula` (`out\CMakeCache.txt` masih menunjuk ke folder lama `zenith-dot`). Kalau menambah file `.cpp`, jalankan `cmake -S . -B out\Zenula` dulu.
 - User belum memasang installer; Zenula jalan langsung dari `out\Zenula\Release\Zenula.exe`.
 - Settings dibuka dengan `[Diagnostics.Process]::Start($exe, '--settings')`. `Start-Process -ArgumentList '--settings'` tidak dikenali.
@@ -36,7 +38,7 @@ Start-Process out\Zenula\Release\Zenula.exe
 |---|---|
 | `src/island.*` | Seluruh UI island: state, animasi, hit testing, Direct2D |
 | `src/main.cpp` | `App`: jendela, tray, timer, input, popup edit (timer, task, cari lokasi), integrasi Windows |
-| `src/settings_window.cpp` | Jendela Settings (dialog Win32 owner-draw) |
+| `src/settings_window.cpp` | Jendela Settings: satu pass Direct2D menggambar semua; tombol tak terlihat cuma memegang fokus, Tab, Alt+huruf, dan nama untuk screen reader |
 | `src/prayer_picker.cpp` | Dialog lokasi sholat untuk Settings |
 | `src/tasks.*` | Daftar Tasks, disimpan di `%LOCALAPPDATA%\Zenith Dot\tasks.txt` |
 | `src/scratchpad.*` | Editor dan file catatan `scratchpad.txt` |
@@ -60,6 +62,8 @@ Tidak ada test otomatis. Verifikasi lewat skrip PowerShell di desktop user:
 - **Keyboard: cek dulu jendela foreground milik proses Zenula sebelum `keybd_event`.** Tanpa cek ini, ketikan pernah masuk ke chat user.
 - Jangan ubah data user tanpa backup: `scratchpad.txt`, `tasks.txt`, clipboard, brightness monitor, dan registry `HKCU\Software\Zenith Dot`. Kembalikan setelah tes.
 - Jendela overlay tidak terlihat dari shell yang di-sandbox; jalankan skrip interaksi tanpa sandbox.
+- ID untuk `BM_CLICK` di Settings: halaman 1010 General, 1011 Island, 1012 Features, 1015 Alerts & privacy, 1017 Prayer; detail fitur 1040–1044, kembali 1025; ganti lokasi 1071; pindah urutan 1080+fitur (naik) dan 1085+fitur (turun); pilihan segmented 1300 + baris × 4 + opsi.
+- `reg import` tidak menghapus value yang baru dibuat selama tes (misalnya `FeatureOrderV3` setelah tes urutan). Cek dan hapus value itu, lalu kirim `WM_APP + 13` ke `ZenithDot.Overlay` supaya island memuat ulang. Dari PowerShell, `FindWindowW` butuh `[NullString]::Value`, bukan `$null`.
 
 ## Aturan main dari user
 
