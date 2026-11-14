@@ -621,6 +621,7 @@ private:
     bool commandChoice(int id);
     void toggle(int id);
     void move(Feature feature, int step, int via);
+    void reset();
     void runTest(SettingsTest test);
     void completeNotificationAccess(NotificationAccess access);
     unsigned currentChoice(int id) const;
@@ -858,6 +859,11 @@ void SettingsWindow::content(Builder& b, View view) const {
         b.row({.title = L"Start with Windows", .detail = canStart ? L"Launch Zenula when you sign in."
             : L"Not available for this copy of Zenula.", .enabled = canStart, .click = IDC_START_WITH_WINDOWS},
             {toggle(IDC_START_WITH_WINDOWS, canStart)});
+        b.close();
+        b.label(L"Reset");
+        b.open();
+        b.row({.title = L"Reset settings", .detail = L"Restore the defaults. Your prayer location and startup stay."},
+              {part(Draw::button, IDC_SETTINGS_RESET, L"Reset…")});
         b.close();
         b.label(L"About");
         b.open();
@@ -1179,6 +1185,23 @@ void SettingsWindow::move(Feature which, int step, int via) {
         SetFocus(proxy(IDC_FEATURE_MEDIA + static_cast<int>(which)));
 }
 
+void SettingsWindow::reset() {
+    if (MessageBoxW(window_, L"Reset all Zenula settings to their defaults?\n\n"
+                    L"Your prayer location, Start with Windows, and the Windows notification connection stay as "
+                    L"they are. This can’t be undone.", title, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+    const auto current = Settings::load();
+    Settings defaults;
+    defaults.prayerCity = current.prayerCity;
+    defaults.showAppNotifications = current.showAppNotifications;
+    bool saved = true;
+    for (const auto save : {&Settings::saveClipboard, &Settings::savePrivacy, &Settings::saveTimer, &Settings::saveDisplay,
+                            &Settings::saveIsland, &Settings::saveFeatures, &Settings::saveAccent, &Settings::saveNotifications})
+        saved = (defaults.*save)() && saved;
+    notifyOverlay();
+    sync();
+    if (!saved) MessageBoxW(window_, L"Couldn’t reset every setting. Try again.", title, MB_OK | MB_ICONWARNING);
+}
+
 bool SettingsWindow::command(int id) {
     if (std::ranges::find(pages, id, &Page::id) != std::end(pages)) {
         show({id, 0});
@@ -1233,6 +1256,10 @@ bool SettingsWindow::command(int id) {
     }
     if (id == IDC_SETTINGS_GITHUB) {
         ShellExecuteW(window_, L"open", repository, nullptr, nullptr, SW_SHOWNORMAL);
+        return true;
+    }
+    if (id == IDC_SETTINGS_RESET) {
+        reset();
         return true;
     }
     if (commandChoice(id)) return true;
