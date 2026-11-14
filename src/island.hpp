@@ -481,6 +481,22 @@ private:
     bool taskInputOpen_ = false;
     std::optional<D2D1_RECT_F> taskInput_;
     D2D1_RECT_F taskViewport_{};
+    // Task list motion, like Drop Zone: kept rows slide, new rows fade in, removed rows fade out where
+    // they were, and a row whose mark changed fills (or empties) its checkbox and draws its strike.
+    struct TaskMotion {
+        float fromOffset = 0;
+        bool entering = false;
+        bool checkChanged = false;
+    };
+    struct TaskGhost {
+        Task task;
+        float slotY = 0;
+    };
+    std::vector<Task> tasksShown_;
+    std::vector<TaskMotion> taskMotion_;
+    std::vector<TaskGhost> taskGhosts_;
+    Clock::time_point taskMotionStart_{};
+    void drawTaskRow(Task const& task, size_t index, float top, float left, float width, float check, bool record);
     bool dropHover_ = false;
     bool popupOpen_ = false;
     std::vector<DropPreview> dropItems_;

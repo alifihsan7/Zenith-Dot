@@ -194,6 +194,7 @@ constexpr float taskRowHeight = 28;
 constexpr size_t visibleTaskRows = 4;
 constexpr float taskBarHeight = 34;
 constexpr float taskFieldHeight = taskBarHeight + taskRowHeight * visibleTaskRows + 4;
+constexpr auto taskMotionTime = 260ms;
 
 constexpr unsigned inkColor = 0xf5f6f8;
 constexpr unsigned mutedColor = 0xa4aab4;
@@ -769,9 +770,41 @@ void Island::setTasks(TaskView const& tasks) {
     tasks_ = &tasks;
     const auto count = tasks.items.size();
     const size_t limit = count - std::min(count, visibleTaskRows);
+    const size_t oldOffset = tasksOffset_;
     // A newly added task scrolls into view; removals keep the list where it was.
     tasksOffset_ = count > tasksSeen_ ? limit : std::min(tasksOffset_, limit);
     tasksSeen_ = count;
+
+    // TaskList edits its view in place, so compare with the copy taken at the last update.
+    const auto& items = tasks.items;
+    std::vector<bool> kept(tasksShown_.size());
+    std::vector<TaskMotion> motion(items.size());
+    bool changed = items.size() != tasksShown_.size();
+    for (size_t i = 0; i < items.size(); ++i) {
+        size_t match = tasksShown_.size();
+        for (size_t j = 0; j < tasksShown_.size(); ++j) {
+            if (!kept[j] && tasksShown_[j].text == items[i].text) { match = j; break; }
+        }
+        if (match == tasksShown_.size()) {
+            motion[i].entering = true;
+            changed = true;
+            continue;
+        }
+        kept[match] = true;
+        const float oldSlot = static_cast<float>(match) - static_cast<float>(oldOffset);
+        const float newSlot = static_cast<float>(i) - static_cast<float>(tasksOffset_);
+        motion[i].fromOffset = (oldSlot - newSlot) * taskRowHeight;
+        motion[i].checkChanged = tasksShown_[match].done != items[i].done;
+        changed = changed || motion[i].fromOffset != 0 || motion[i].checkChanged;
+    }
+    taskGhosts_.clear();
+    const size_t oldEnd = std::min(tasksShown_.size(), oldOffset + visibleTaskRows);
+    for (size_t j = oldOffset; j < oldEnd; ++j) {
+        if (!kept[j]) taskGhosts_.push_back({tasksShown_[j], static_cast<float>(j - oldOffset) * taskRowHeight});
+    }
+    taskMotion_ = std::move(motion);
+    tasksShown_ = items;
+    if (changed) taskMotionStart_ = animate_ ? Clock::now() : Clock::time_point{};
 }
 
 void Island::setTaskInputOpen(bool open) { taskInputOpen_ = open; }
@@ -1101,7 +1134,8 @@ bool Island::moving(Clock::time_point now) const {
            now - dotExitStart_ < activityDotExitTime || now - dotHoverStart_ < dotHoverTime ||
            now - hoverStart_ < hoverFadeTime || now - shrinkStart_ < toggleTime ||
            now - dropMotionStart_ < dropMotionTime || now - dropFieldStart_ < dropMotionTime ||
-           now - homeRowsStart_ < homeRowTime || now - homeClockStart_ < homeClockTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
+           now - homeRowsStart_ < homeRowTime || now - homeClockStart_ < homeClockTime ||
+           now - taskMotionStart_ < taskMotionTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
            std::ranges::any_of(captureIndicators_, [now](auto const& item) { return now - item.start < captureTime; }) ||
            now - screenStart_ < shapeTime ||
            now - widthStart_ < shapeTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
@@ -3910,50 +3944,49 @@ void Island::drawTasks(float x, float top, float headerY, float statusLeft, floa
     const auto list = box(field.left + 4, field.top + taskBarHeight, innerWidth - 8, taskRowHeight * visibleTaskRows);
     if (record) taskViewport_ = list;
     if (items.empty()) {
+        const float t = animate_ ? easeInOut(progress(taskMotionStart_, taskMotionTime, drawNow_)) : 1;
+        if (t < 1) {
+            target_->PushAxisAlignedClip(grow(list, 2, 0), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            pushLayer(nullptr, 1 - easeInOut(lin(0, 0.6f, t)));
+            for (const auto& removed : taskGhosts_)
+                drawTaskRow(removed.task, 0, list.top + removed.slotY, list.left, list.right - list.left, 1, false);
+            popLayer();
+            target_->PopAxisAlignedClip();
+        }
         text(L"No tasks yet", bodyFont_.get(), box(list.left + 10, list.top + 4, list.right - list.left - 20, 22),
-             rgb(mutedColor));
+             rgb(mutedColor, easeInOut(lin(0.4f, 1, t))));
         return;
     }
+    const float t = animate_ ? easeInOut(progress(taskMotionStart_, taskMotionTime, drawNow_)) : 1;
     const auto end = std::min(items.size(), tasksOffset_ + visibleTaskRows);
-    for (size_t index = tasksOffset_; index < end; ++index) {
-        const auto& task = items[index];
-        const auto row = box(list.left, list.top + taskRowHeight * static_cast<float>(index - tasksOffset_),
-                             list.right - list.left, taskRowHeight);
-        const auto remove = box(row.right - 27, row.top + 3, 25, taskRowHeight - 6);
-        const float toggle = pressed(Hit::taskToggle, index) ? 1 : hoverLevel(Hit::taskToggle, index);
-        const float rowHot = std::max(toggle, hoverLevel(Hit::taskRemove, index));
-        if (rowHot > 0) target_->FillRoundedRectangle(rounded(row, 6), ink(white(0.06f * rowHot)));
-        if (record) addTarget(box(row.left, row.top, remove.left - row.left, taskRowHeight), Hit::taskToggle, index);
-
-        const float size = 14;
-        const float middle = (row.top + row.bottom) / 2;
-        const auto mark = box(row.left + 8, middle - size / 2, size, size);
-        if (task.done) {
-            target_->FillRoundedRectangle(rounded(mark, 4), ink(accent_));
-            PathBuilder tick(graphics_.get());
-            const auto c = pt((mark.left + mark.right) / 2, middle);
-            tick.move(pt(c.x - 3.5f, c.y), false).line(pt(c.x - 1, c.y + 2.5f)).line(pt(c.x + 3.5f, c.y - 2.5f));
-            target_->DrawGeometry(tick.finish().get(), ink(rgb(0x101318)), 1.6f, roundStroke_.get());
-        } else {
-            target_->DrawRoundedRectangle(rounded(grow(mark, -0.6f, -0.6f), 3.5f), ink(rgb(mutedColor)), 1.2f);
-        }
-        const float textLeft = mark.right + 9;
-        const float textWidth = remove.left - 4 - textLeft;
-        text(task.text, bodyFont_.get(), box(textLeft, row.top, textWidth, taskRowHeight),
-             task.done ? rgb(mutedColor) : rgb(inkColor));
-        if (task.done) {
-            const float width = std::min(textWidth, measure(task.text, bodyFont_.get()));
-            target_->DrawLine(pt(textLeft, middle + 0.5f), pt(textLeft + width, middle + 0.5f), ink(rgb(mutedColor)), 1);
-        }
-        // The remove button shows on hover, but stays clickable so the pointer can reach it.
-        if (rowHot > 0) {
-            pushLayer(nullptr, rowHot);
-            drawButton(remove, L"\u00d7", Hit::taskRemove, record, index);
+    target_->PushAxisAlignedClip(grow(list, 2, 0), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    if (t < 1) {
+        const float ghost = 1 - easeInOut(lin(0, 0.6f, t));
+        for (const auto& removed : taskGhosts_) {
+            if (ghost <= 0) break;
+            pushLayer(nullptr, ghost);
+            drawTaskRow(removed.task, items.size(), list.top + removed.slotY, list.left, list.right - list.left, 1, false);
             popLayer();
-        } else if (record) {
-            addTarget(remove, Hit::taskRemove, index);
         }
     }
+    for (size_t index = tasksOffset_; index < end; ++index) {
+        float rowTop = list.top + taskRowHeight * static_cast<float>(index - tasksOffset_);
+        float opacity = 1;
+        float check = 1;
+        if (t < 1 && index < taskMotion_.size()) {
+            const auto& motion = taskMotion_[index];
+            rowTop += motion.fromOffset * (1 - t);
+            if (motion.entering) {
+                opacity = t;
+                rowTop += 6 * (1 - t);
+            }
+            if (motion.checkChanged) check = t;
+        }
+        if (opacity < 1) pushLayer(nullptr, opacity);
+        drawTaskRow(items[index], index, rowTop, list.left, list.right - list.left, check, record);
+        if (opacity < 1) popLayer();
+    }
+    target_->PopAxisAlignedClip();
     if (items.size() > visibleTaskRows) {
         // A thin scroll thumb on the right edge of the list.
         const float span = list.bottom - list.top;
@@ -3961,6 +3994,51 @@ void Island::drawTasks(float x, float top, float headerY, float statusLeft, floa
         const float travel = span - thumb;
         const float at = travel * static_cast<float>(tasksOffset_) / static_cast<float>(items.size() - visibleTaskRows);
         target_->FillRoundedRectangle(rounded(box(field.right - 3, list.top + at, 2, thumb), 1), ink(white(0.18f)));
+    }
+}
+
+// check runs 0..1 after the mark changed: the box fills (or empties) with a small pop, and the strike
+// draws across the text (or retracts). index == the list size draws a row that is leaving.
+void Island::drawTaskRow(Task const& task, size_t index, float top, float left, float width, float check, bool record) {
+    const bool live = tasks_ && index < tasks_->items.size();
+    record = record && live;
+    const auto row = box(left, top, width, taskRowHeight);
+    const auto remove = box(row.right - 27, row.top + 3, 25, taskRowHeight - 6);
+    const float toggle = !live ? 0 : pressed(Hit::taskToggle, index) ? 1 : hoverLevel(Hit::taskToggle, index);
+    const float rowHot = live ? std::max(toggle, hoverLevel(Hit::taskRemove, index)) : 0;
+    if (rowHot > 0) target_->FillRoundedRectangle(rounded(row, 6), ink(white(0.06f * rowHot)));
+    if (record) addTarget(box(row.left, row.top, remove.left - row.left, taskRowHeight), Hit::taskToggle, index);
+
+    const float middle = (row.top + row.bottom) / 2;
+    const float filled = task.done ? check : 1 - check;          // how far the box is filled
+    const float pop = task.done && check < 1 ? std::sin(pi * check) * 0.18f : 0.0f;
+    const float size = 14 * (1 + pop);
+    const auto mark = box(row.left + 15 - size / 2, middle - size / 2, size, size);
+    target_->DrawRoundedRectangle(rounded(grow(mark, -0.6f, -0.6f), 3.5f), ink(rgb(mutedColor, 1 - filled)), 1.2f);
+    if (filled > 0) {
+        target_->FillRoundedRectangle(rounded(mark, 4), ink(withAlpha(accent_, filled)));
+        PathBuilder tick(graphics_.get());
+        const auto c = pt((mark.left + mark.right) / 2, middle);
+        tick.move(pt(c.x - 3.5f, c.y), false).line(pt(c.x - 1, c.y + 2.5f)).line(pt(c.x + 3.5f, c.y - 2.5f));
+        target_->DrawGeometry(tick.finish().get(), ink(rgb(0x101318, filled)), 1.6f, roundStroke_.get());
+    }
+    const float textLeft = row.left + 31;
+    const float textWidth = remove.left - 4 - textLeft;
+    text(task.text, bodyFont_.get(), box(textLeft, row.top, textWidth, taskRowHeight),
+         mixColor(rgb(inkColor), rgb(mutedColor), filled));
+    const float strike = task.done ? easeOut(check) : 1 - easeOut(check);
+    if (strike > 0) {
+        const float line = std::min(textWidth, measure(task.text, bodyFont_.get())) * strike;
+        target_->DrawLine(pt(textLeft, middle + 0.5f), pt(textLeft + line, middle + 0.5f), ink(rgb(mutedColor)), 1);
+    }
+    if (!live) return;
+    // The remove button shows on hover, but stays clickable so the pointer can reach it.
+    if (rowHot > 0) {
+        pushLayer(nullptr, rowHot);
+        drawButton(remove, L"\u00d7", Hit::taskRemove, record, index);
+        popLayer();
+    } else if (record) {
+        addTarget(remove, Hit::taskRemove, index);
     }
 }
 
