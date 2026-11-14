@@ -33,7 +33,8 @@ constexpr COLORREF selected = RGB(38, 48, 60);
 constexpr COLORREF foreground = RGB(243, 244, 246);
 constexpr COLORREF muted = RGB(160, 165, 174);
 constexpr COLORREF accent = RGB(145, 202, 255);
-constexpr COLORREF border = RGB(56, 58, 64);
+// An Off switch track needs 3:1 against its card to read as a control (3.3:1 on surface).
+constexpr COLORREF border = RGB(106, 110, 119);
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
 constexpr auto pageDuration = 180ms;
@@ -887,7 +888,7 @@ void SettingsWindow::drawOption(HWND control, HDC dc, Option const& option) {
     const float knob = std::lerp(static_cast<float>(track.left + px(3)), static_cast<float>(track.right - px(17)), checked);
     const float radius = static_cast<float>(px(7));
     canvas_.rounded(D2D1::RectF(knob, middle - radius, knob + 2 * radius, middle + radius),
-                    radius, blend(muted, selected, active));
+                    radius, blend(foreground, selected, active));
 
     wchar_t label[96]{};
     GetWindowTextW(control, label, ARRAYSIZE(label));

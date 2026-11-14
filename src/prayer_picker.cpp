@@ -164,6 +164,8 @@ INT_PTR CALLBACK pickerDialog(HWND window, UINT message, WPARAM wparam, LPARAM l
         SetWindowLongPtrW(window, DWLP_USER, lparam);
         const BOOL dark = TRUE;
         DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+        if (const auto icon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_ZENITH_DOT)))
+            SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
         SendDlgItemMessageW(window, IDC_PRAYER_SEARCH, EM_SETLIMITTEXT, 95, 0);
         SendDlgItemMessageW(window, IDC_PRAYER_SEARCH, EM_SETCUEBANNER, TRUE,
                             reinterpret_cast<LPARAM>(L"e.g. Bandung, Aceh, WITA"));
