@@ -43,6 +43,7 @@ SettingsExample::SettingsExample(SettingsTest test, Feature feature, Settings co
     case SettingsTest::focus:
     case SettingsTest::resting:
     case SettingsTest::cycle:
+        island_.quickView_ = false;
         island_.selectFocusPhase(test == SettingsTest::resting);
         if (test == SettingsTest::cycle) {
             island_.focus_.configure(1);

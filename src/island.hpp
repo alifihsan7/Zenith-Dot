@@ -36,13 +36,16 @@ class SettingsExample;
 struct IslandCommand {
     enum class Kind { none, previous, toggle, next, seek, selectSource, openSource, retryLyrics, adjustLyricsDelay, editScratchpad,
                       selectAudioOutput, soundSettings, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute,
-                      autoCycle, prayerLocation, openSettings, overlapMode,
+                      focusRhythm, prayerLocation, openSettings, overlapMode,
                       addTask, toggleTask, removeTask, clearDoneTasks,
                       setBrightness, openPrayerSearch };
     Kind kind = Kind::none;
-    double seconds = 0;              // seek position; appVolume: level 0..1; appMute, autoCycle: 1 = on
+    double seconds = 0;              // seek position; appVolume: level 0..1; appMute: 1 = on
     std::wstring appId;
-    size_t index = 0;
+    size_t index = 0;                // focusRhythm: the rhythm (3 = Custom)
+    unsigned focusMinutes = 0;       // focusRhythm: Custom lengths and rounds
+    unsigned breakMinutes = 0;
+    unsigned rounds = 0;
 };
 
 // A short notice that splits off the pill as a liquid bubble (or shows inside the open panel).
@@ -91,10 +94,12 @@ public:
     void setAudioOutput(std::wstring const& output);
     void setAudioOutputs(std::vector<AudioOutput> outputs);
     void setAppVolumes(std::vector<AppVolume> apps);
-    void setAutoCycle(bool enabled);
     // A command produced while dragging (an app volume slider), to apply before the button is released.
     std::optional<IslandCommand> takeLiveCommand();
     bool alertsQuiet() const;
+    // Focus keeps the island quiet: other bubbles and prayer chimes wait while a Focus phase runs.
+    bool focusQuiet() const;
+    bool soundsQuiet() const { return alertsQuiet() || focusQuiet(); }
     // True once after Focus, Break, or a timer ends; the app plays the chime.
     bool takeFinishedCountdown();
     bool setWindowsNotificationsQuiet(std::optional<bool> quiet);
@@ -156,7 +161,7 @@ private:
                      navScratch, navSystem, navPrayer, focusToggle, focusReset, timerView, focusAdjust, timerPreset,
                      timerToggle, timerReset, quickAdjust, timerDuration, lyrics, lyricLine, retryLyrics, lyricsDelay, scratchEdit,
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
-                     appVolume, appMute, autoCycle, prayerLocationPicker,
+                     appVolume, appMute, focusRhythm, focusSkip, prayerLocationPicker,
                      audioOutputMenu, audioOutputChoice, soundSettings, navHome, homeSettings, homeStartTimer, homeOverlapMode,
                      scratchMode, taskAdd, taskToggle, taskRemove, taskClearDone,
                      brightness, prayerResult, prayerSearchField };
@@ -251,6 +256,14 @@ private:
     int timerDurationLimit() const;
     int phaseSeconds(bool resting) const;
     std::wstring phaseName(bool resting) const;
+    bool lastRound() const;
+    void skipBreak(Clock::time_point now);
+    void endFocusSession();
+    IslandCommand chooseRhythm(unsigned rhythm);
+    void adjustRhythm(size_t index);
+    IslandCommand rhythmCommand() const;
+    void resizeTimers(Clock::time_point now);
+    int sessionSecondsLeft(Clock::time_point now) const;
     void finishFocus(Clock::time_point now, bool fromCompanion);
     void completeCountdown(Clock::time_point now, PillMode mode, IslandAlert alert);
     D2D1_POINT_2F stagePoint(POINT client) const;
@@ -671,13 +684,9 @@ private:
     D2D1_RECT_F panelWheel_{};
 
     // Focus timer.
-    int focusSeconds_ = 25 * 60;
-    int breakSeconds_ = 5 * 60;
-    std::optional<int> longBreakSeconds_;
     bool breakPhase_ = false;
     bool quickView_ = true;   // Timers opens on Quick Timer
-    bool autoCycle_ = false;
-    int focusRound_ = 1;     // 1..focusRounds while the automatic cycle is on
+    int focusRound_ = 1;     // 1..preferences_.focusRounds() in the current session
     Countdown focus_{25 * 60};
     Countdown quick_{60};
 

@@ -114,7 +114,6 @@ constexpr Toggle toggles[]{
     {IDC_DOT_ONLY, &Settings::dotOnly, &Settings::saveDisplay},
     {IDC_SHOW_WAVEFORM, &Settings::showWaveform, &Settings::saveIsland},
     {IDC_PILL_LYRICS, &Settings::showPillLyrics, &Settings::saveIsland},
-    {IDC_AUTO_CYCLE, &Settings::autoCycle, &Settings::saveTimer},
     {IDC_ADD_COPIED_TEXT, &Settings::autoAddText, &Settings::saveClipboard},
     {IDC_ADD_SCREENSHOTS, &Settings::autoAddScreenshots, &Settings::saveClipboard},
     {IDC_CLIPBOARD_BUBBLE, &Settings::showClipboardBubble, &Settings::saveClipboard},
@@ -143,13 +142,12 @@ constexpr wchar_t const* widthChoices[]{L"Fit to title", L"147 px minimum"};
 constexpr wchar_t const* sizeChoices[]{L"Compact", L"Default", L"Large"};
 constexpr wchar_t const* accentChoices[]{L"Album artwork", L"Zenula blue", L"Custom"};
 constexpr wchar_t const* pauseChoices[]{L"Now", L"3 s", L"5 s", L"Keep title"};
-constexpr wchar_t const* focusChoices[]{L"15 min", L"25 min", L"45 min"};
-constexpr wchar_t const* breakChoices[]{L"5 min", L"10 min", L"15 min"};
+constexpr wchar_t const* rhythmChoices[]{L"Pomodoro", L"Deep work", L"Long focus", L"Custom"};
 constexpr wchar_t const* quietChoices[]{L"Off", L"Follow Windows", L"On"};
 constexpr wchar_t const* earlyChoices[]{L"On time", L"5 min", L"10 min", L"15 min"};
 constexpr unsigned earlyMinutes[]{0, 5, 10, 15};
 constexpr int choiceControls[]{IDC_PILL_WIDTH, IDC_ISLAND_SIZE, IDC_ACCENT_MODE, IDC_PAUSE_DELAY,
-    IDC_FOCUS_DURATION, IDC_BREAK_DURATION, IDC_QUIET_MODE, IDC_PRAYER_EARLY};
+    IDC_FOCUS_RHYTHM, IDC_QUIET_MODE, IDC_PRAYER_EARLY};
 constexpr int choicesPerRow = 4;
 
 size_t choiceRow(int control) {
@@ -172,8 +170,7 @@ std::span<wchar_t const* const> choices(int id) {
     case IDC_ISLAND_SIZE: return sizeChoices;
     case IDC_ACCENT_MODE: return accentChoices;
     case IDC_PAUSE_DELAY: return pauseChoices;
-    case IDC_FOCUS_DURATION: return focusChoices;
-    case IDC_BREAK_DURATION: return breakChoices;
+    case IDC_FOCUS_RHYTHM: return rhythmChoices;
     default: return {};
     }
 }
@@ -537,7 +534,8 @@ private:
         case Draw::button: return {measure(part.text, Font::button) + px(24), px(28)};
         case Draw::icon: return {px(26), px(26)};
         case Draw::swatch: return {px(16), px(16)};
-        case Draw::value: return {measure(part.text, Font::body), px(16)};
+        // A fixed width keeps the - and + of stacked steppers lined up.
+        case Draw::value: return {std::max(measure(part.text, Font::body), px(56)), px(16)};
         case Draw::track: {
             int width = px(6);
             for (const auto option : choices(part.id)) width += measure(option, Font::segment) + px(24);
@@ -779,8 +777,7 @@ unsigned SettingsWindow::currentChoice(int id) const {
     case IDC_ISLAND_SIZE: return settings_.islandSize;
     case IDC_ACCENT_MODE: return settings_.accentMode;
     case IDC_PAUSE_DELAY: return settings_.compactPause;
-    case IDC_FOCUS_DURATION: return settings_.focusPreset;
-    case IDC_BREAK_DURATION: return settings_.breakPreset;
+    case IDC_FOCUS_RHYTHM: return settings_.rhythm;
     default: return 0;
     }
 }
@@ -793,8 +790,8 @@ std::wstring SettingsWindow::summary(Feature feature) const {
         return std::wstring(L"Visualizer") + onOff(settings_.showWaveform) + L" · Lyrics" + onOff(settings_.showPillLyrics) +
             L" · " + std::array{L"Compact right away", L"Compact after 3 s", L"Compact after 5 s", L"Keeps the title"}[settings_.compactPause];
     case Feature::timers:
-        return L"Focus " + std::to_wstring(settings_.focusMinutes()) + L" min · Break " +
-            std::to_wstring(settings_.breakMinutes()) + L" min" + (settings_.autoCycle ? L" · Cycles" : L"");
+        return std::to_wstring(settings_.focusMinutes()) + L" + " + std::to_wstring(settings_.breakMinutes()) + L" min × " +
+            std::to_wstring(settings_.focusRounds()) + L" · " + durationText(settings_.sessionMinutes()) + L" total";
     case Feature::scratch: return L"Notes and Tasks";
     case Feature::drop:
         return std::wstring(L"Screenshots") + onOff(settings_.autoAddScreenshots) + L" · Copied text" + onOff(settings_.autoAddText);
@@ -839,15 +836,30 @@ void SettingsWindow::content(Builder& b, View view) const {
             b.row({.title = L"Compact after pausing"}, {tryIt(SettingsTest::pause), choice(IDC_PAUSE_DELAY)});
             b.close();
         } else if (which == Feature::timers) {
-            b.label(L"Defaults");
+            const int rounds = settings_.focusRounds();
+            b.label(L"Focus session");
             b.open();
-            b.row({.title = L"Focus length"}, {tryIt(SettingsTest::focus), choice(IDC_FOCUS_DURATION)});
-            b.row({.title = L"Break length"}, {tryIt(SettingsTest::resting), choice(IDC_BREAK_DURATION)});
-            b.row({.title = L"Cycle Focus and Break", .detail = L"Start the next phase automatically.",
-                   .click = IDC_AUTO_CYCLE}, {tryIt(SettingsTest::cycle), toggle(IDC_AUTO_CYCLE)});
+            b.row({.title = L"Rhythm", .detail = std::to_wstring(rounds) + (rounds == 1 ? L" round · " : L" rounds · ") +
+                   durationText(settings_.sessionMinutes()) + L" total"}, {tryIt(SettingsTest::cycle), choice(IDC_FOCUS_RHYTHM)});
+            if (settings_.rhythm == customRhythm) {
+                const auto stepper = [&](int index, std::wstring const& name, std::wstring value, bool lower, bool raise) {
+                    auto down = part(Draw::icon, IDC_CUSTOM_STEP + 2 * index, L"Less " + name, lower);
+                    down.glyph = 0xE738;
+                    auto up = part(Draw::icon, IDC_CUSTOM_STEP + 2 * index + 1, L"More " + name, raise);
+                    up.glyph = 0xE710;
+                    b.row({.title = name, .indent = true}, {down, part(Draw::value, 0, std::move(value)), up});
+                };
+                stepper(0, L"Focus", std::to_wstring(settings_.customFocus) + L" min",
+                        settings_.customFocus > minFocusMinutes, settings_.customFocus < maxFocusMinutes);
+                stepper(1, L"Break", std::to_wstring(settings_.customBreak) + L" min",
+                        settings_.customBreak > minBreakMinutes, settings_.customBreak < maxBreakMinutes);
+                stepper(2, L"Rounds", std::to_wstring(settings_.customRounds),
+                        settings_.customRounds > minRounds, settings_.customRounds < maxRounds);
+            }
             b.row({.title = L"Sound", .detail = L"Play a short chime when Focus, Break, or a timer ends.",
                    .click = IDC_TIMER_SOUND}, {part(Draw::tryButton, IDC_PLAY_TIMER_SOUND), toggle(IDC_TIMER_SOUND)});
             b.close();
+            b.note(L"The last break is 3× longer (up to 30 min). Do Not Disturb turns on during Focus.");
         } else {
             b.label(L"Clipboard");
             b.open();
@@ -1112,11 +1124,10 @@ bool SettingsWindow::commandChoice(int id) {
     case IDC_ISLAND_SIZE: updated.islandSize = index; break;
     case IDC_ACCENT_MODE: updated.accentMode = index; break;
     case IDC_PAUSE_DELAY: updated.compactPause = index; break;
-    case IDC_FOCUS_DURATION: updated.focusPreset = index; break;
-    case IDC_BREAK_DURATION: updated.breakPreset = index; break;
+    case IDC_FOCUS_RHYTHM: updated.rhythm = index; break;
     }
-    const bool saved = id == IDC_QUIET_MODE || id == IDC_PRAYER_EARLY
-        ? updated.saveNotifications() : updated.saveIsland();
+    const bool saved = id == IDC_QUIET_MODE || id == IDC_PRAYER_EARLY ? updated.saveNotifications()
+        : id == IDC_FOCUS_RHYTHM ? updated.saveTimer() : updated.saveIsland();
     if (!saved) {
         tell(window_, L"Couldn’t save this setting", L"The change wasn’t written for this Windows user. Try again.");
         return true;
@@ -1383,6 +1394,24 @@ bool SettingsWindow::command(int id) {
     }
     if (isMoveDown(id)) {
         move(static_cast<Feature>(id - IDC_FEATURE_MOVE_DOWN), 1, id);
+        return true;
+    }
+    if (id >= IDC_CUSTOM_STEP && id < IDC_CUSTOM_STEP + 6) {
+        const int index = id - IDC_CUSTOM_STEP;
+        const int sign = index % 2 ? 1 : -1;
+        auto updated = Settings::load();
+        const auto step = [sign](unsigned value, int by, unsigned low, unsigned high) {
+            return static_cast<unsigned>(std::clamp(static_cast<int>(value) + by * sign, static_cast<int>(low), static_cast<int>(high)));
+        };
+        if (index < 2) updated.customFocus = step(updated.customFocus, 5, minFocusMinutes, maxFocusMinutes);
+        else if (index < 4) updated.customBreak = step(updated.customBreak, 1, minBreakMinutes, maxBreakMinutes);
+        else updated.customRounds = step(updated.customRounds, 1, minRounds, maxRounds);
+        if (updated.saveTimer()) notifyOverlay();
+        else tell(window_, L"Couldn’t save this setting", L"The change wasn’t written for this Windows user. Try again.");
+        sync();
+        // At a limit the button turns off, so keep focus on the row's other button.
+        if (const auto button = proxy(id); GetFocus() == button && !IsWindowEnabled(button))
+            SetFocus(proxy(id ^ 1));
         return true;
     }
     if (id == IDC_PLAY_PRAYER_SOUND || id == IDC_PLAY_TIMER_SOUND) {
@@ -1659,7 +1688,7 @@ void SettingsWindow::drawItem(Item const& item, std::vector<Item> const& items, 
         canvas_.rounded(r, pxf(4), color(hexColor(settings_.customAccent)));
         break;
     case Draw::value:
-        canvas_.text(r, item.text, Font::body, color(muted));
+        canvas_.text(r, item.text, Font::body, color(muted), DWRITE_TEXT_ALIGNMENT_CENTER);
         break;
     }
 }

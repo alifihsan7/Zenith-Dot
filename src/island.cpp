@@ -189,9 +189,6 @@ bool isCaptureAlert(IslandAlert::Kind kind) {
 }
 constexpr int timerPresets[]{1, 5, 10};
 constexpr int timerMaxSeconds = 120 * 60;
-constexpr int breakMaxSeconds = 30 * 60;
-constexpr int focusRounds = 4;        // the last break of a round is a long one
-constexpr int longBreakFactor = 3;
 constexpr size_t visibleDropRows = 4;
 constexpr float dropRowHeight = 43;
 constexpr float dropEmptyHeight = 222;
@@ -535,6 +532,15 @@ std::wstring timestamp(double seconds, bool showHours = false) {
     return std::to_wstring(total / 60) + L":" + padded(total % 60);
 }
 
+std::wstring clockAfter(int seconds) {
+    const auto at = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now() + std::chrono::seconds(seconds));
+    std::tm local{};
+    if (localtime_s(&local, &at) != 0) return {};
+    wchar_t text[8]{};
+    swprintf_s(text, L"%02d:%02d", local.tm_hour, local.tm_min);
+    return text;
+}
+
 std::wstring countdownTime(int seconds) {
     auto value = timestamp(seconds);
     if (seconds < 600) value.insert(value.begin(), L'0');
@@ -640,18 +646,13 @@ void Island::setAnimate(bool animate) {
 }
 
 void Island::setPreferences(Settings const& settings) {
-    const bool newFocus = settings.focusPreset != preferences_.focusPreset;
-    const bool newBreak = settings.breakPreset != preferences_.breakPreset;
+    const bool newRhythm = settings.focusMinutes() != preferences_.focusMinutes() ||
+        settings.breakMinutes() != preferences_.breakMinutes() || settings.focusRounds() != preferences_.focusRounds();
     const bool hideClipboardPreview = preferences_.showClipboardPreviews && !settings.showClipboardPreviews;
     preferences_ = settings;
     setDotOnly(settings.dotOnly);
-    if (newFocus) focusSeconds_ = settings.focusMinutes() * 60;
-    if (newBreak) {
-        breakSeconds_ = settings.breakMinutes() * 60;
-        longBreakSeconds_.reset();
-    }
-    setAutoCycle(settings.autoCycle);
-    if (newFocus || newBreak) selectFocusPhase(breakPhase_);
+    // A new rhythm only resets an idle session; a running one keeps its lengths until it ends.
+    if (newRhythm && !focus_.running() && !focus_.paused()) endFocusSession();
     screens_.clear();
     screens_.push_back(Screen::home);
     for (const auto feature : settings.features) {
@@ -1328,7 +1329,11 @@ float Island::screenHeight(Screen screen) const {
         if (sourcePickerOpen_) return std::max(mediaPanelHeight,
             navHeight + sourceMenuTop + sourcePickerHeight(std::min(media_.sources.size(), visibleSources)) + padBottom);
         return mediaPanelHeight;
-    case Screen::timers: return 268;
+    case Screen::timers:
+        // Focus with Custom adds the stepper row; an idle Focus view lays out from the template row down.
+        if (!quickView_ && !focus_.running() && !focus_.paused())
+            return preferences_.rhythm == customRhythm ? 328.0f : 284.0f;
+        return 268;
     case Screen::scratch: return scratchTasks_ ? 216.0f - 116 + taskFieldHeight : 216.0f;
     case Screen::drop: return dropItems_.empty() ? dropEmptyHeight :
         dropFilledBaseHeight + dropRowHeight * static_cast<float>(std::min(dropItems_.size(), visibleDropRows));
@@ -1519,8 +1524,8 @@ void Island::updatePill(Clock::time_point now, bool keepActivity) {
         pillContent_ = mode;
         if (mode == PillMode::media) pillTitle_ = title();
         else if (mode == PillMode::focus) {
-            pillTitle_ = breakPhase_ ? L"Break" : L"Focus";
-            if (autoCycle_) pillTitle_ += L" " + std::to_wstring(focusRound_) + L"/" + std::to_wstring(focusRounds);
+            pillTitle_ = (breakPhase_ ? L"Break " : L"Focus ") + std::to_wstring(focusRound_) + L"/" +
+                std::to_wstring(preferences_.focusRounds());
         }
         else if (mode == PillMode::timer) pillTitle_ = L"Timer";
         else if (mode == PillMode::privacy) pillTitle_.clear();
@@ -1812,7 +1817,7 @@ void Island::showScreen(Screen screen, Clock::time_point now) {
 void Island::toggleFocus(Clock::time_point now) {
     if (countdownCompletion_.mode == PillMode::focus) countdownCompletion_ = {};
     if (focus_.done()) {
-        if (autoCycle_ && breakPhase_) focusRound_ = focusRound_ % focusRounds + 1;
+        if (breakPhase_) focusRound_ = lastRound() ? 1 : focusRound_ + 1;
         selectFocusPhase(!breakPhase_);
     }
     if (focus_.running()) retirePausedActivity(PillMode::focus, now);
@@ -1820,40 +1825,108 @@ void Island::toggleFocus(Clock::time_point now) {
     focus_.toggle(now);
 }
 
-void Island::setAutoCycle(bool enabled) {
-    if (autoCycle_ == enabled) return;
-    autoCycle_ = enabled;
-    focusRound_ = 1;
-    // An idle Break picks up (or drops) the long-break length of the new mode.
-    if (breakPhase_) selectFocusPhase(true);
+bool Island::lastRound() const {
+    return focusRound_ >= preferences_.focusRounds();
 }
 
 int Island::phaseSeconds(bool resting) const {
-    if (!resting) return focusSeconds_;
-    if (autoCycle_ && focusRound_ == focusRounds)
-        return longBreakSeconds_.value_or(breakSeconds_ * longBreakFactor);
-    return breakSeconds_;
+    if (!resting) return preferences_.focusMinutes() * 60;
+    return (lastRound() ? preferences_.longBreakMinutes() : preferences_.breakMinutes()) * 60;
 }
 
 std::wstring Island::phaseName(bool resting) const {
     if (!resting) return L"Focus";
-    return autoCycle_ && focusRound_ == focusRounds ? L"Long break" : L"Break";
+    return lastRound() ? L"Long break" : L"Break";
 }
 
-// The end of a Focus or Break countdown. With the automatic cycle on, the next phase starts right away.
+// Back to round 1, Focus, not running.
+void Island::endFocusSession() {
+    if (countdownCompletion_.mode == PillMode::focus) countdownCompletion_ = {};
+    focus_.reset();
+    focusRound_ = 1;
+    breakPhase_ = false;
+    focus_.configure(phaseSeconds(false));
+}
+
+void Island::skipBreak(Clock::time_point now) {
+    if (!breakPhase_) return;
+    if (lastRound()) {
+        endFocusSession();
+        return;
+    }
+    focus_.reset();
+    ++focusRound_;
+    selectFocusPhase(false);
+    preferredPill_ = PillMode::focus;
+    focus_.toggle(now);
+}
+
+// The end of a Focus or Break countdown. A session runs Focus and Break in turn for its rounds;
+// the long break after the last round ends it.
 void Island::finishFocus(Clock::time_point now, bool fromCompanion) {
     const bool rested = breakPhase_;
+    const bool sessionDone = rested && lastRound();
+    std::wstring title = rested ? L"Break done" : L"Focus done";
     std::wstring next;
-    if (autoCycle_) {
-        if (rested) focusRound_ = focusRound_ % focusRounds + 1;
+    if (sessionDone) {
+        const int rounds = preferences_.focusRounds();
+        title = L"Session done";
+        next = std::to_wstring(rounds) + (rounds == 1 ? L" round · " : L" rounds · ") +
+            durationText(rounds * preferences_.focusMinutes()) + L" focus";
+        endFocusSession();
+    } else {
+        if (rested) ++focusRound_;
         selectFocusPhase(!rested);
         focus_.toggle(now);
         next = phaseName(breakPhase_) + L" · " + timestamp(phaseSeconds(breakPhase_));
     }
     IslandAlert alert{rested ? IslandAlert::Kind::breakDone : IslandAlert::Kind::focusDone,
-                      rested ? L"Break done" : L"Focus done", std::move(next), std::nullopt, 3, 2600ms};
+                      std::move(title), std::move(next), std::nullopt, 3, 2600ms};
     alert.fromCompanion = fromCompanion;
     completeCountdown(now, PillMode::focus, std::move(alert));
+}
+
+IslandCommand Island::rhythmCommand() const {
+    IslandCommand command{IslandCommand::Kind::focusRhythm};
+    command.index = preferences_.rhythm;
+    command.focusMinutes = preferences_.customFocus;
+    command.breakMinutes = preferences_.customBreak;
+    command.rounds = preferences_.customRounds;
+    return command;
+}
+
+// The Timers panel changes height with the view (Timer, Focus, Focus with Custom).
+void Island::resizeTimers(Clock::time_point now) {
+    if (!open_ || screen_ != Screen::timers) return;
+    heightFrom_ = panelHeight(now);
+    screenFrom_ = screen_;
+    screenStart_ = animate_ ? now : Clock::time_point{};
+    widthFrom_ = panelWidthAt(now);
+    widthStart_ = screenStart_;
+}
+
+// The island updates at once; the app saves the choice and sends the settings back.
+IslandCommand Island::chooseRhythm(unsigned rhythm) {
+    if (!focus_.running() && !focus_.paused() && rhythm <= customRhythm && rhythm != preferences_.rhythm) {
+        resizeTimers(Clock::now());
+        preferences_.rhythm = rhythm;
+        endFocusSession();
+    }
+    return rhythmCommand();
+}
+
+// Custom steppers: 0/1 Focus -/+ 5 min, 2/3 Break -/+ 1 min, 4/5 Rounds -/+ 1.
+void Island::adjustRhythm(size_t index) {
+    if (focus_.running() || focus_.paused() || preferences_.rhythm != customRhythm) return;
+    const int sign = index % 2 ? 1 : -1;
+    auto& p = preferences_;
+    const auto step = [sign](unsigned value, int by, unsigned low, unsigned high) {
+        return static_cast<unsigned>(std::clamp(static_cast<int>(value) + by * sign, static_cast<int>(low), static_cast<int>(high)));
+    };
+    if (index < 2) p.customFocus = step(p.customFocus, 5, minFocusMinutes, maxFocusMinutes);
+    else if (index < 4) p.customBreak = step(p.customBreak, 1, minBreakMinutes, maxBreakMinutes);
+    else p.customRounds = step(p.customRounds, 1, minRounds, maxRounds);
+    endFocusSession();
 }
 
 bool Island::takeFinishedCountdown() {
@@ -1875,12 +1948,8 @@ void Island::completeCountdown(Clock::time_point now, PillMode mode, IslandAlert
 }
 
 void Island::selectTimerView(size_t index) {
-    const bool quick = index == 2;
-    const bool resting = index == 1;
-    if (!quick && resting != breakPhase_) {
-        if (focus_.running() || focus_.paused()) return;
-        selectFocusPhase(resting);
-    }
+    const bool quick = index == 0;   // 0 Timer, 1 Focus
+    if (quick != quickView_) resizeTimers(Clock::now());
     quickView_ = quick;
     preferredPill_ = quick ? PillMode::timer : PillMode::focus;
 }
@@ -1892,12 +1961,12 @@ void Island::selectFocusPhase(bool resting) {
 }
 
 int Island::timerDurationLimit() const {
-    if (quickView_ || !breakPhase_) return timerMaxSeconds;
-    return autoCycle_ && focusRound_ == focusRounds ? breakMaxSeconds * longBreakFactor : breakMaxSeconds;
+    return timerMaxSeconds;
 }
 
+// The Quick Timer's length. Focus lengths come from the rhythm.
 void Island::setTimerDuration(int seconds) {
-    auto& timer = quickView_ ? quick_ : focus_;
+    auto& timer = quick_;
     if (timer.running() || timer.paused()) return;
     seconds = std::clamp(seconds, 1, timerDurationLimit());
     if (timer.duration() == seconds && !timer.done()) return;
@@ -1905,16 +1974,11 @@ void Island::setTimerDuration(int seconds) {
     timerDigitsFrom_ = timer.seconds(now);
     timerDigitsTo_ = seconds;
     timerDigitsStart_ = now;
-    if (!quickView_) {
-        if (!breakPhase_) focusSeconds_ = seconds;
-        else if (autoCycle_ && focusRound_ == focusRounds) longBreakSeconds_ = seconds;
-        else breakSeconds_ = seconds;
-    }
     timer.configure(seconds);
 }
 
 void Island::adjustTimer(size_t index, int steps) {
-    const auto& timer = quickView_ ? quick_ : focus_;
+    const auto& timer = quick_;
     const int step = index < 2 ? 60 : 1;
     const int delta = index % 2 == 0 ? -step : step;
     setTimerDuration(timer.duration() + delta * steps);
@@ -1923,7 +1987,8 @@ void Island::adjustTimer(size_t index, int steps) {
 void Island::tick() {
     const auto now = Clock::now();
     if (timerRepeatAt_ != Clock::time_point{} && now >= timerRepeatAt_) {
-        adjustTimer(pressedIndex_);
+        if (pressed_ == Hit::focusAdjust) adjustRhythm(pressedIndex_);
+        else adjustTimer(pressedIndex_);
         timerRepeated_ = true;
         timerRepeatAt_ = now + 85ms;
     }
@@ -2450,7 +2515,7 @@ IslandCommand Island::pointerUp(POINT client) {
         break;
     case Hit::homeSettings: command.kind = IslandCommand::Kind::openSettings; break;
     case Hit::homeStartTimer:
-        selectTimerView(0);
+        selectTimerView(1);
         showScreen(Screen::timers, now);
         if (!focus_.running()) toggleFocus(now);
         break;
@@ -2499,21 +2564,14 @@ IslandCommand Island::pointerUp(POINT client) {
         closeAt_.reset();
         break;
     case Hit::focusToggle: toggleFocus(now); break;
-    case Hit::focusReset:
-        if (countdownCompletion_.mode == PillMode::focus) countdownCompletion_ = {};
-        focus_.reset();
-        if (autoCycle_) {
-            focusRound_ = 1;
-            selectFocusPhase(false);
-        }
-        break;
-    case Hit::autoCycle:
-        setAutoCycle(!autoCycle_);
-        command.kind = IslandCommand::Kind::autoCycle;
-        command.seconds = autoCycle_ ? 1 : 0;
-        break;
+    case Hit::focusReset: endFocusSession(); break;
+    case Hit::focusSkip: skipBreak(now); break;
+    case Hit::focusRhythm: command = chooseRhythm(static_cast<unsigned>(index)); break;
     case Hit::timerView: selectTimerView(index); break;
     case Hit::focusAdjust:
+        if (!timerRepeated_) adjustRhythm(index);
+        command = rhythmCommand();
+        break;
     case Hit::quickAdjust:
         if (!timerRepeated_) adjustTimer(index);
         break;
@@ -4015,9 +4073,8 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     const float y = panel.top;
     const float centerX = x + panelWidth / 2;
     text(L"Timers", titleFont_.get(), box(x + padX, y + padTop, innerWidth, 22.4f), rgb(inkColor));
-    constexpr wchar_t const* labels[]{L"Focus", L"Break", L"Quick Timer"};
-    const size_t phase = breakPhase_ ? 1 : 0;
-    const size_t selected = quickView_ ? 2 : phase;
+    constexpr wchar_t const* labels[]{L"Timer", L"Focus"};
+    const size_t selected = quickView_ ? 0 : 1;
     const bool focusBusy = focus_.running() || focus_.paused();
 
     const auto control = [&](D2D1_RECT_F rect, std::wstring_view label, Hit hit, size_t index = 0,
@@ -4043,13 +4100,11 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     };
 
 
-    // Auto toggle at the top right; with it on, four dots show the round (filled = Focus finished).
-    const auto autoButton = box(x + panelWidth - padX - 46, y + 11, 46, 25);
-    control(autoButton, L"Auto", Hit::autoCycle, 0, true, autoCycle_);
-    if (autoCycle_) {
-        for (int i = 0; i < focusRounds; ++i) {
-            const auto center = pt(autoButton.left - 12 - 12.0f * static_cast<float>(focusRounds - 1 - i),
-                                   (autoButton.top + autoButton.bottom) / 2);
+    // In the Focus view, one dot per round at the top right (filled = that round's Focus is done).
+    const int rounds = preferences_.focusRounds();
+    if (!quickView_) {
+        for (int i = 0; i < rounds; ++i) {
+            const auto center = pt(x + panelWidth - padX - 4 - 11.0f * static_cast<float>(rounds - 1 - i), y + padTop + 11);
             const bool finished = i < focusRound_ - (breakPhase_ ? 0 : 1);
             const bool current = i == focusRound_ - 1 && focusBusy && !finished;
             const float radius = finished || current ? 3.5f : 2.5f;
@@ -4059,15 +4114,15 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     }
     target_->FillRoundedRectangle(rounded(box(centerX - 120, y + 39, 240, 36), 11), ink(white(0.045f)));
     const float slide = slidePosition(timerSlide_, selected, now);
-    target_->FillRoundedRectangle(rounded(box(centerX - 116 + 79 * slide, y + 43, 74, 28), 8), ink(withAlpha(accent_, 0.18f)));
+    target_->FillRoundedRectangle(rounded(box(centerX - 116 + 118 * slide, y + 43, 114, 28), 8), ink(withAlpha(accent_, 0.18f)));
     for (size_t i = 0; i < std::size(labels); ++i) {
-        const bool selectable = i == 2 || !focusBusy || i == phase;
-        control(box(centerX - 116 + 79 * static_cast<float>(i), y + 43, 74, 28),
-                labels[i], Hit::timerView, i, selectable, i == selected, false, true, true);
+        control(box(centerX - 116 + 118 * static_cast<float>(i), y + 43, 114, 28),
+                labels[i], Hit::timerView, i, true, i == selected, false, true, true);
     }
 
     const auto& timer = quickView_ ? quick_ : focus_;
-    const bool adjustable = !timer.running() && !timer.paused();
+    // Only the Quick Timer's digits can be dragged; Focus lengths come from the rhythm.
+    const bool adjustable = quickView_ && !timer.running() && !timer.paused();
     const auto clock = box(centerX - 79, y + 77, 158, 44);
     const int seconds = timer.seconds(now);
     const float roll = adjustable && animate_ && timerDigitsTo_ == seconds
@@ -4095,6 +4150,7 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         }
         if (record && adjustable) addTarget(area, Hit::timerDuration, unit);
     }
+
     if (quickView_) {
         for (size_t i = 0; i < std::size(timerPresets); ++i) {
             const auto minutes = timerPresets[i];
@@ -4102,32 +4158,87 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
                     std::to_wstring(minutes) + L" min", Hit::timerPreset, i, adjustable,
                     quick_.duration() == minutes * 60);
         }
-    } else {
-        const auto detail = autoCycle_
-            ? phaseName(breakPhase_) + L" · round " + std::to_wstring(focusRound_) + L" of " + std::to_wstring(focusRounds)
-            : timestamp(focus_.duration()) + L" set";
-        text(detail, buttonFont_.get(), box(x + padX, y + 126, innerWidth, 26), rgb(mutedColor));
-    }
-    if (adjustable) {
-        const auto hit = quickView_ ? Hit::quickAdjust : Hit::focusAdjust;
-        const int duration = timer.duration();
-        const int limit = timerDurationLimit();
-        for (size_t unit = 0; unit < 2; ++unit) {
-            const float left = centerX - 111 + 117 * static_cast<float>(unit);
-            control(box(left, y + 157, 28, 26), L"−", hit, 2 * unit, duration > 1);
-            text(unit == 0 ? L"min" : L"sec", buttonFont_.get(),
-                 box(left + 30, y + 157, 45, 26), rgb(mutedColor));
-            control(box(left + 77, y + 157, 28, 26), L"+", hit, 2 * unit + 1, duration < limit);
+        if (adjustable) {
+            const int duration = quick_.duration();
+            for (size_t unit = 0; unit < 2; ++unit) {
+                const float left = centerX - 111 + 117 * static_cast<float>(unit);
+                control(box(left, y + 157, 28, 26), L"−", Hit::quickAdjust, 2 * unit, duration > 1);
+                text(unit == 0 ? L"min" : L"sec", buttonFont_.get(), box(left + 30, y + 157, 45, 26), rgb(mutedColor));
+                control(box(left + 77, y + 157, 28, 26), L"+", Hit::quickAdjust, 2 * unit + 1, duration < timerMaxSeconds);
+            }
         }
+        auto action = L"Start";
+        if (quick_.running()) action = L"Pause";
+        else if (quick_.paused()) action = L"Resume";
+        else if (quick_.done()) action = L"Restart";
+        control(box(centerX - 93, y + 191, 106, 29), action, Hit::timerToggle, 0, true, false, true);
+        control(box(centerX + 21, y + 191, 72, 29), L"Reset", Hit::timerReset, 0, true, false, false, true);
+        return;
     }
-    auto action = L"Start";
-    if (timer.running()) action = L"Pause";
-    else if (timer.paused()) action = L"Resume";
-    else if (timer.done()) action = quickView_ ? L"Restart" : (breakPhase_ ? L"Start Focus" : L"Start Break");
-    control(box(centerX - 93, y + 191, 106, 29), action,
-            quickView_ ? Hit::timerToggle : Hit::focusToggle, 0, true, false, true);
-    control(box(centerX + 21, y + 191, 72, 29), L"Reset",
-            quickView_ ? Hit::timerReset : Hit::focusReset, 0, true, false, false, true);
+
+    const auto& rhythm = preferences_;
+    const auto line = [&](float top, std::wstring const& value) {
+        text(value, buttonFont_.get(), box(x + padX, y + top, innerWidth, 18), rgb(mutedColor));
+    };
+    if (!focusBusy) {
+        line(124, std::to_wstring(rounds) + (rounds == 1 ? L" round · " : L" rounds · ") +
+                  durationText(rounds * rhythm.focusMinutes()) + L" focus · " + durationText(rhythm.sessionMinutes()) + L" total");
+        // Templates and Custom.
+        for (size_t i = 0; i <= customRhythm; ++i) {
+            const auto label = i == customRhythm ? std::wstring(L"Custom")
+                : std::to_wstring(rhythms[i].focus) + L" + " + std::to_wstring(rhythms[i].rest);
+            control(box(centerX - 118 + 60 * static_cast<float>(i), y + 146, 56, 26), label, Hit::focusRhythm, i,
+                    true, rhythm.rhythm == i);
+        }
+        float next = 180;
+        if (rhythm.rhythm == customRhythm) {
+            const std::wstring values[]{std::to_wstring(rhythm.customFocus) + L"m", std::to_wstring(rhythm.customBreak) + L"m",
+                                        std::to_wstring(rhythm.customRounds) + L"×"};
+            constexpr wchar_t const* captions[]{L"Focus", L"Break", L"Rounds"};
+            const bool canLower[]{rhythm.customFocus > minFocusMinutes, rhythm.customBreak > minBreakMinutes,
+                                  rhythm.customRounds > minRounds};
+            const bool canRaise[]{rhythm.customFocus < maxFocusMinutes, rhythm.customBreak < maxBreakMinutes,
+                                  rhythm.customRounds < maxRounds};
+            for (size_t i = 0; i < 3; ++i) {
+                const float left = centerX - 118 + 80 * static_cast<float>(i);
+                control(box(left, y + next, 22, 24), L"−", Hit::focusAdjust, 2 * i, canLower[i]);
+                text(values[i], buttonFont_.get(), box(left + 22, y + next, 32, 24), rgb(inkColor));
+                control(box(left + 54, y + next, 22, 24), L"+", Hit::focusAdjust, 2 * i + 1, canRaise[i]);
+                text(captions[i], buttonFont_.get(), box(left, y + next + 25, 76, 14), rgb(mutedColor));
+            }
+            next += 44;
+        }
+        line(next, L"Do Not Disturb turns on during Focus.");
+        control(box(centerX - 53, y + next + 24, 106, 29), L"Start", Hit::focusToggle, 0, true, false, true);
+        return;
+    }
+
+    // A running session: where it is, when it ends, and what is quiet.
+    std::wstring status = phaseName(breakPhase_) + L" · round " + std::to_wstring(focusRound_) + L" of " + std::to_wstring(rounds);
+    status += focus_.paused() ? L" · paused" : L" · ends " + clockAfter(sessionSecondsLeft(now));
+    line(124, status);
+    if (!breakPhase_) line(144, focus_.running() ? L"Do Not Disturb is on during Focus." : L"Do Not Disturb resumes with Focus.");
+    const auto action = focus_.running() ? L"Pause" : L"Resume";
+    if (breakPhase_) {
+        control(box(centerX - 118, y + 191, 76, 29), action, Hit::focusToggle, 0, true, false, true);
+        control(box(centerX - 38, y + 191, 76, 29), L"Skip break", Hit::focusSkip, 0, true, false, false, true);
+        control(box(centerX + 42, y + 191, 76, 29), L"End", Hit::focusReset, 0, true, false, false, true);
+    } else {
+        control(box(centerX - 93, y + 191, 106, 29), action, Hit::focusToggle, 0, true, false, true);
+        control(box(centerX + 21, y + 191, 72, 29), L"End", Hit::focusReset, 0, true, false, false, true);
+    }
+}
+
+// Seconds until the whole session ends: what is left of this phase plus every phase after it.
+int Island::sessionSecondsLeft(Clock::time_point now) const {
+    const int rounds = preferences_.focusRounds();
+    const int focus = preferences_.focusMinutes() * 60;
+    const int rest = preferences_.breakMinutes() * 60;
+    const int longRest = preferences_.longBreakMinutes() * 60;
+    int left = focus_.seconds(now);
+    if (!breakPhase_) left += focusRound_ >= rounds ? longRest : rest;
+    for (int round = focusRound_ + 1; round <= rounds; ++round) left += focus + (round == rounds ? longRest : rest);
+    return left;
 }
 
 void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
@@ -5164,10 +5275,17 @@ bool Island::alertsQuiet() const {
         (preferences_.quietMode == QuietMode::followWindows && windowsNotificationsQuiet_.value_or(false));
 }
 
+bool Island::focusQuiet() const {
+    return focus_.running() && !breakPhase_;
+}
+
 bool Island::alertAllowed(IslandAlert::Kind kind) const {
     if (isCaptureAlert(kind)) return false;
     if (kind == IslandAlert::Kind::mediaStarted) return preferences_.enabled(Screen::media);
     if (alertsQuiet()) return false;
+    const bool countdown = kind == IslandAlert::Kind::focusDone || kind == IslandAlert::Kind::breakDone ||
+                           kind == IslandAlert::Kind::timerDone;
+    if (focusQuiet() && !countdown) return false;
     switch (kind) {
     case IslandAlert::Kind::copy: return preferences_.showClipboardBubble;
     case IslandAlert::Kind::focusDone:

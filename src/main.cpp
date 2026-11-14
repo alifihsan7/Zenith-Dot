@@ -583,10 +583,17 @@ void App::run(IslandCommand const& command) {
         desktop_.setAppVolume(command.appId, static_cast<float>(command.seconds), false);
         island_.setAppVolumes(desktop_.appVolumes());
         break;
-    case IslandCommand::Kind::autoCycle: {
-        auto updated = settings_;
-        updated.autoCycle = command.seconds != 0;
-        if (updated.saveTimer()) settings_ = updated;
+    case IslandCommand::Kind::focusRhythm: {
+        auto updated = Settings::load();
+        updated.rhythm = std::min<unsigned>(static_cast<unsigned>(command.index), customRhythm);
+        updated.customFocus = std::clamp(command.focusMinutes, minFocusMinutes, maxFocusMinutes);
+        updated.customBreak = std::clamp(command.breakMinutes, minBreakMinutes, maxBreakMinutes);
+        updated.customRounds = std::clamp(command.rounds, minRounds, maxRounds);
+        if (updated.saveTimer()) {
+            settings_ = updated;
+            island_.setPreferences(settings_);
+        }
+        frame();
         break;
     }
     case IslandCommand::Kind::openPrayerSearch:
@@ -755,7 +762,7 @@ bool App::refreshPrayers() {
     const auto notify = [&](size_t index, std::wstring detail) {
         if (suppressed()) return;
         island_.notify({IslandAlert::Kind::prayer, prayerNames[index], std::move(detail), std::nullopt, 3});
-        if (settings_.prayerSound && !island_.alertsQuiet()) playChime(IDW_PRAYER_SOUND);
+        if (settings_.prayerSound && !island_.soundsQuiet()) playChime(IDW_PRAYER_SOUND);
         notified = true;
     };
     for (size_t i = 0; i < prayers_->times.size(); ++i) {

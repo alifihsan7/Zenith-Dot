@@ -5,6 +5,8 @@
 #include <shlobj.h>
 #include <winrt/base.h>
 
+#include <algorithm>
+#include <array>
 #include <optional>
 
 namespace zenith {
@@ -41,8 +43,8 @@ constexpr wchar_t privacyValue[] = L"PrivacyOptions";
 constexpr DWORD hideCameraBit = 1;
 constexpr DWORD hideMicrophoneBit = 2;
 constexpr wchar_t timerValue[] = L"TimerOptions";
-constexpr DWORD autoCycleBit = 1;
-constexpr DWORD timerMutedBit = 2;
+constexpr DWORD timerMutedBit = 2;      // bit 0 was the old Auto cycle; sessions always cycle now
+constexpr DWORD sessionSavedBit = 1u << 22;  // the rhythm bits below are in use
 constexpr wchar_t displayValue[] = L"DisplayOptions";
 constexpr DWORD hideInFullscreenBit = 2;
 constexpr DWORD dotOnlyBit = 8;   // bit 4 was Auto-shrink, which Dot only replaced
@@ -81,9 +83,26 @@ Settings Settings::load() {
         settings.showCameraIndicator = (*value & hideCameraBit) == 0;
         settings.showMicrophoneIndicator = (*value & hideMicrophoneBit) == 0;
     }
-    if (const auto value = read(timerValue)) {
-        settings.autoCycle = (*value & autoCycleBit) != 0;
-        settings.timerSound = (*value & timerMutedBit) == 0;
+    const auto island = read(islandValue);
+    const auto timer = read(timerValue);
+    if (timer) settings.timerSound = (*timer & timerMutedBit) == 0;
+    {
+        const auto value = timer;
+        if (value && (*value & sessionSavedBit)) {
+            settings.rhythm = std::min(static_cast<unsigned>((*value >> 2) & 3u), customRhythm);
+            settings.customRounds = std::clamp(static_cast<unsigned>((*value >> 4) & 15u), minRounds, maxRounds);
+            settings.customFocus = std::clamp(static_cast<unsigned>((*value >> 8) & 255u), minFocusMinutes, maxFocusMinutes);
+            settings.customBreak = std::clamp(static_cast<unsigned>((*value >> 16) & 63u), minBreakMinutes, maxBreakMinutes);
+        } else if (island) {
+            // Older builds stored Focus (15/25/45) and Break (5/10/15) presets in IslandOptions.
+            const auto focus = std::array{15u, 25u, 45u}[std::min(static_cast<unsigned>((*island >> 9) & 3u), 2u)];
+            const auto rest = std::array{5u, 10u, 15u}[std::min(static_cast<unsigned>((*island >> 11) & 3u), 2u)];
+            if (focus != 25 || rest != 5) {
+                settings.rhythm = customRhythm;
+                settings.customFocus = focus;
+                settings.customBreak = rest;
+            }
+        }
     }
     if (const auto value = read(displayValue)) {
         settings.hideInFullscreen = (*value & hideInFullscreenBit) != 0;
@@ -100,8 +119,6 @@ Settings Settings::load() {
         settings.islandSize = choice(3, 1);
         settings.accentMode = choice(5, 0);
         settings.compactPause = choice(7, 1, 4);
-        settings.focusPreset = choice(9, 1);
-        settings.breakPreset = choice(11, 0);
     }
     if (const auto value = read(notificationsValue)) {
         const auto quiet = *value & 3u;
@@ -149,7 +166,8 @@ bool Settings::savePrivacy() const {
 }
 
 bool Settings::saveTimer() const {
-    return write(timerValue, (autoCycle ? autoCycleBit : 0) | (timerSound ? 0 : timerMutedBit));
+    return write(timerValue, (timerSound ? 0 : timerMutedBit) | sessionSavedBit | (rhythm << 2) | (customRounds << 4) |
+                             (customFocus << 8) | (customBreak << 16));
 }
 
 bool Settings::saveDisplay() const {
@@ -160,7 +178,7 @@ bool Settings::saveDisplay() const {
 
 bool Settings::saveIsland() const {
     const DWORD value = (fixedPillMinimum ? 1u : 0u) | (showWaveform ? 2u : 0u) | (showPillLyrics ? 4u : 0u) |
-        (islandSize << 3) | (accentMode << 5) | (compactPause << 7) | (focusPreset << 9) | (breakPreset << 11);
+        (islandSize << 3) | (accentMode << 5) | (compactPause << 7);
     return write(islandValue, value);
 }
 
