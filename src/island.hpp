@@ -38,7 +38,7 @@ struct IslandCommand {
                       selectAudioOutput, soundSettings, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute,
                       focusRhythm, prayerLocation, openSettings, overlapMode,
                       addTask, toggleTask, removeTask, clearDoneTasks,
-                      setBrightness, openPrayerSearch };
+                      setBrightness, openPrayerSearch, copyScratchpad, clearScratchpad };
     Kind kind = Kind::none;
     double seconds = 0;              // seek position; appVolume: level 0..1; appMute: 1 = on
     std::wstring appId;
@@ -116,6 +116,7 @@ public:
     void setPopupOpen(bool open);
     void showDropZone(bool hold = false);
     std::optional<size_t> dropItemAt(POINT client) const;
+    bool dropItemIsImage(size_t index) const;
     void closePanel();
     bool panelPinned() const;
     std::optional<RECT> scratchEditorRect() const;
@@ -163,7 +164,7 @@ private:
                      navDrop, dropItem, removeDrop, clearDrop, dropImage, panelPin, audioPicker, notificationSettings,
                      appVolume, appMute, focusRhythm, focusSkip, prayerLocationPicker,
                      audioOutputMenu, audioOutputChoice, soundSettings, navHome, homeSettings, homeStartTimer, homeOverlapMode,
-                     scratchMode, taskAdd, taskToggle, taskRemove, taskClearDone,
+                     scratchMode, scratchCopy, scratchClear, taskAdd, taskToggle, taskRemove, taskClearDone,
                      brightness, prayerResult, prayerSearchField };
     using Screen = Feature;
     Settings preferences_;
@@ -307,7 +308,7 @@ private:
     void prepareLyricLayout(float width);
     void drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record);
     void drawScratchpad(D2D1_RECT_F panel, bool record);
-    void drawTasks(float x, float top, float headerY, float statusLeft, float statusRight, bool record);
+    void drawTasks(float x, float top, bool record);
     void setScratchMode(bool tasks, Clock::time_point now);
     void drawDropZone(D2D1_RECT_F panel, bool record);
     void drawCaptureIndicators(D2D1_POINT_2F right, std::array<float, 3> const& amounts);
@@ -398,7 +399,7 @@ private:
     float shownBrightness(Clock::time_point now) const;
     bool brightnessDrag_ = false;
     float brightnessDragValue_ = 0;
-    void drawBrightness(float x, float top, float fullWidth, bool record);
+    void drawBrightness(float x, float top, float width, bool record);
     float volumeDragValue_ = 0;
     D2D1_RECT_F volumeTrack_{};
     std::optional<IslandCommand> liveCommand_;
@@ -536,6 +537,16 @@ private:
     };
     SegmentSlide timerSlide_;
     SegmentSlide scratchSlide_;
+    SegmentSlide prayerSlide_;   // the next prayer's card highlight
+    // A value that eases to each new target over moveMotion; the first value is taken as is.
+    struct Tween {
+        float from = 0;
+        float to = -1;
+        Clock::time_point start{};
+    };
+    float tween(Tween& tween, float target, Clock::time_point now);
+    Tween taskProgress_;
+    Clock::time_point scratchClearArmedUntil_{};   // Clear asks again before it empties the note
     Clock::time_point scratchModeStart_{};
     float slidePosition(SegmentSlide& slide, size_t selected, Clock::time_point now);
     // Dropdown menus grow from their top edge on open and shrink back on close. A closing menu is
@@ -593,17 +604,17 @@ private:
     // Row motion after the item list changes: kept rows slide from their old slot, new rows fade in,
     // and removed rows that were on screen fade out where they were.
     struct DropRowMotion {
-        float fromOffset = 0;
+        D2D1_POINT_2F from{};   // offset from the tile's new slot to where it was drawn
         bool entering = false;
     };
     struct DropGhost {
         DropPreview item;
-        float slotY = 0;
+        D2D1_POINT_2F slot{};
     };
     std::vector<DropRowMotion> dropMotion_;
     std::vector<DropGhost> dropGhosts_;
     Clock::time_point dropMotionStart_{};
-    float dropRowsFrom_ = 0;   // visible rows before the last change
+    float dropRowsFrom_ = 0;   // visible tile rows before the last change
     // Home: activity rows slide to new places and new ones fade in; clock digits roll on change.
     std::vector<Screen> homeRowsShown_;
     std::vector<Screen> homeRowsFrom_;
@@ -614,7 +625,7 @@ private:
     Clock::time_point homeDrawnAt_{};
     float dropFieldFrom_ = 1;
     Clock::time_point dropFieldStart_{};
-    void drawDropRow(DropPreview const& item, size_t index, float rowY, float x, bool record);
+    void drawDropTile(DropPreview const& item, size_t index, D2D1_RECT_F tile, bool record);
     float dropFieldValue(Clock::time_point now) const;
     int dropWheelRemainder_ = 0;
     D2D1_RECT_F dropViewport_{};
@@ -755,6 +766,8 @@ private:
     winrt::com_ptr<IDWriteTextFormat> homeClockFont_, homeHeadFont_, homeTitleFont_;
     winrt::com_ptr<IDWriteTextFormat> glyphFont_;
     winrt::com_ptr<IDWriteTextFormat> letterFont_;
+    winrt::com_ptr<IDWriteTextFormat> tileFont_;
+    winrt::com_ptr<IDWriteTextFormat> tileTextFont_;
     winrt::com_ptr<IDWriteTextFormat> alertTitleFont_;
     winrt::com_ptr<IDWriteTextFormat> alertValueFont_;
     std::vector<winrt::com_ptr<IDWriteInlineObject>> ellipses_;

@@ -50,6 +50,8 @@ struct LockKey {
     std::set<HANDLE> held{};
 };
 
+void copyText(HWND owner, std::wstring const& text);
+
 class App {
 public:
     int run(HINSTANCE instance, std::optional<SettingsTest> test, Feature feature);
@@ -548,6 +550,11 @@ void App::run(IslandCommand const& command) {
     case IslandCommand::Kind::clearDoneTasks:
         if (tasks_.clearDone()) island_.setTasks(tasks_.view());
         break;
+    case IslandCommand::Kind::copyScratchpad: copyText(window_, scratchpad_.view().text); break;
+    case IslandCommand::Kind::clearScratchpad:
+        scratchpad_.clear();
+        island_.setScratchpad(scratchpad_.view());
+        break;
     case IslandCommand::Kind::editScratchpad:
         scratchpad_.setBackground(island_.scratchEditorColor());
         if (const auto bounds = island_.scratchEditorRect()) {
@@ -898,6 +905,23 @@ void App::showMenu(POINT point) {
     }
 }
 
+// Puts plain text on the clipboard; the clipboard watcher then shows the usual Copied bubble.
+void copyText(HWND owner, std::wstring const& text) {
+    if (text.empty() || !OpenClipboard(owner)) return;
+    EmptyClipboard();
+    const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    if (const auto memory = GlobalAlloc(GMEM_MOVEABLE, bytes)) {
+        if (auto* target = GlobalLock(memory)) {
+            std::memcpy(target, text.c_str(), bytes);
+            GlobalUnlock(memory);
+            if (!SetClipboardData(CF_UNICODETEXT, memory)) GlobalFree(memory);
+        } else {
+            GlobalFree(memory);
+        }
+    }
+    CloseClipboard();
+}
+
 void App::launchSettings() {
     std::wstring executable(32768, L'\0');
     const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
@@ -1238,7 +1262,11 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         if (const auto item = island_.dropItemAt(point)) {
             ClientToScreen(window_, &point);
-            if (DragDetect(window_, point) && IsWindow(window_)) dropZone_.drag(*item);
+            if (DragDetect(window_, point)) {
+                if (IsWindow(window_)) dropZone_.drag(*item);
+            } else if (island_.dropItemIsImage(*item) && dropZone_.openImage(*item, window_)) {
+                island_.setPopupOpen(true);   // a click on an image tile opens it
+            }
         } else if (island_.pointerDown(point)) {
             SetCapture(window_);
             if (const auto live = island_.takeLiveCommand()) run(*live);

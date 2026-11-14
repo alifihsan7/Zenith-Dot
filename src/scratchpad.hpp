@@ -30,11 +30,13 @@ public:
     void setBackground(COLORREF color);
     HWND window() const { return window_; }
     ScratchpadView const& view() const { return view_; }
+    void clear();
 
 private:
     static LRESULT CALLBACK dispatch(HWND, UINT, WPARAM, LPARAM);
     static LRESULT CALLBACK editInput(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     void save();
+    void write();
 
     ScratchpadView view_;
     std::filesystem::path file_;

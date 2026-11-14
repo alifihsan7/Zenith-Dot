@@ -65,33 +65,30 @@ constexpr float homeQuietHeight = 50;
 constexpr float mediaPanelWidth = 344;
 constexpr float timersPanelWidth = 369;
 constexpr float systemPanelWidth = 530;
-constexpr float brightnessTop = 75;
-constexpr float brightnessHeight = 34;
-constexpr float systemStatsBottom = brightnessTop + brightnessHeight + 8;
-constexpr float storageCardsTop = systemStatsBottom + 21;
-constexpr size_t storageColumns = 4;
-constexpr float storageCardPitch = 58;
-constexpr float batteryCardHeight = 41;
-constexpr float connectionTop = batteryCardHeight + 8;
-constexpr float systemRightGap = 19;
-constexpr float systemColumnWidth = (systemPanelWidth - 28 - systemRightGap) / 2;
-constexpr float systemAudioTop = 20;
+// System: two cards under the title. "Sound and display" (brightness, output, app volume) on the
+// left, "This PC" (usage, disks, battery, network, Bluetooth) on the right. Offsets are from a card's top.
+constexpr float systemCardsTop = 47;
+constexpr float systemCardGap = 12;
+constexpr float systemCardWidth = (systemPanelWidth - 28 - systemCardGap) / 2;
+constexpr float systemCardPad = 12;
+constexpr float brightnessTop = 34;
+constexpr float brightnessHeight = 30;
+constexpr float systemAudioTop = brightnessTop + brightnessHeight + 8;
 constexpr float systemAudioHeight = 29;
 constexpr float systemAudioMenuTop = systemAudioTop + systemAudioHeight + 4;
+constexpr float systemMetricsTop = 34;
+constexpr float systemMetricHeight = 21;
+constexpr float systemStatusLine = 24;
 constexpr float pickerRowHeight = 25;
 constexpr float pickerInset = 4;
-constexpr float prayerPickerTop = 95;
-constexpr float prayerPickerHeight = 24;
-constexpr float prayerPanelHeight = 184;
+constexpr float prayerPanelHeight = 258;
 constexpr float prayerPanelWidth = 570;
-constexpr float prayerInfoWidth = 176;
 constexpr float prayerResultHeight = 30;
 constexpr size_t visiblePrayerResults = 7;
 constexpr float prayerPickHeight = 12 + 30 + 8 + prayerResultHeight * visiblePrayerResults + 8;
-constexpr float appRowsTop = 73;
+constexpr float appRowsTop = systemAudioTop + systemAudioHeight + 12;
 constexpr float appRowHeight = 28;
-constexpr float bluetoothRowsTop = 73;
-constexpr float bluetoothRowHeight = 33;
+constexpr float bluetoothRowHeight = 24;
 constexpr size_t visibleAppRows = 3;
 constexpr size_t visibleAudioOutputs = 3;
 constexpr size_t visibleBluetoothRows = 3;
@@ -112,10 +109,8 @@ constexpr float mediaTransportY = mediaTimesTop + 14 + 10 + mediaTransportRadius
 constexpr size_t visibleSources = 5;        // rows in the source list before it scrolls
 constexpr float sourceMenuWidth = 210;
 
-float systemSectionTop(SystemStats const& system) {
-    if (system.disks.empty()) return systemStatsBottom;
-    const auto rows = (system.disks.size() + storageColumns - 1) / storageColumns;
-    return storageCardsTop + static_cast<float>(rows) * storageCardPitch;
+float systemMetricsBottom(SystemStats const& system) {
+    return systemMetricsTop + systemMetricHeight * static_cast<float>(3 + system.disks.size());
 }
 
 std::wstring freeSpaceLabel(uint64_t bytes) {
@@ -193,10 +188,21 @@ bool isCaptureAlert(IslandAlert::Kind kind) {
 constexpr int timerPresets[]{1, 5, 10, 25};
 constexpr unsigned breakColor = 0x9fe0c0;   // Break blocks and labels; Focus uses the accent
 constexpr int timerMaxSeconds = 120 * 60;
-constexpr size_t visibleDropRows = 4;
-constexpr float dropRowHeight = 43;
-constexpr float dropEmptyHeight = 222;
-constexpr float dropFilledBaseHeight = 154;
+// Drop Zone: a shelf of square tiles, four to a row, two rows in view; the drop area sits below them.
+constexpr size_t dropColumns = 4;
+constexpr size_t visibleDropTileRows = 2;
+constexpr size_t visibleDropTiles = dropColumns * visibleDropTileRows;
+constexpr float dropTileGap = 8;
+constexpr float dropTileSize = (panelWidth - 2 * 14 - dropTileGap * (dropColumns - 1)) / dropColumns;
+constexpr float dropTilePitch = dropTileSize + dropTileGap;
+constexpr float dropTop = 44;
+constexpr float dropEmptyHeight = 31 + dropTop + 112 + 14;
+constexpr float dropFilledBaseHeight = 31 + dropTop + 36 + 14;
+
+size_t dropRowsOf(size_t count) { return (count + dropColumns - 1) / dropColumns; }
+D2D1_POINT_2F dropSlot(size_t slot) {
+    return {static_cast<float>(slot % dropColumns) * dropTilePitch, static_cast<float>(slot / dropColumns) * dropTilePitch};
+}
 constexpr auto dropMotionTime = moveMotion;
 constexpr auto homeRowTime = moveMotion;
 constexpr auto homeClockTime = 320ms;
@@ -209,12 +215,20 @@ constexpr float taskFieldHeight = taskBarHeight + taskRowHeight * visibleTaskRow
 constexpr auto taskMotionTime = moveMotion;
 constexpr auto segmentSlideTime = moveMotion;
 constexpr auto scratchFadeTime = moveMotion;
+// Scratchpad, from the content top: header, then the note and its footer, or the progress row and the task list.
+constexpr float scratchBodyTop = 36;
+constexpr float scratchNoteHeight = 116;
+constexpr float scratchFooterHeight = 28;
+constexpr float scratchProgressHeight = 40;
+constexpr float scratchNotesHeight = navHeight + padTop + scratchBodyTop + scratchNoteHeight + 8 + scratchFooterHeight + 12;
+constexpr float scratchTasksHeight = navHeight + padTop + scratchBodyTop + scratchProgressHeight + taskFieldHeight + 12;
 constexpr auto menuRevealTime = baseMotion;
 constexpr auto rowMotionTime = moveMotion;
 constexpr auto brightnessTime = moveMotion;
 
 constexpr unsigned inkColor = 0xf5f6f8;
 constexpr unsigned mutedColor = 0xa4aab4;
+constexpr unsigned warningColor = 0xffcf8a;   // memory or a disk over 80%
 // Opaque: even 2% translucency let windows underneath show through the island's text.
 constexpr float shellOpacity = 1.0f;
 constexpr float shellTintOpacity = 1.0f;
@@ -920,6 +934,16 @@ float Island::slidePosition(SegmentSlide& slide, size_t selected, Clock::time_po
     return at();
 }
 
+float Island::tween(Tween& tween, float target, Clock::time_point now) {
+    const auto at = [&] { return std::lerp(tween.from, tween.to, easeInOut(progress(tween.start, moveMotion, now))); };
+    if (target != tween.to) {
+        tween.from = animate_ && tween.to >= 0 ? at() : target;
+        tween.to = target;
+        tween.start = animate_ && tween.to >= 0 ? now : Clock::time_point{};
+    }
+    return at();
+}
+
 void Island::setScratchMode(bool tasks, Clock::time_point now) {
     if (scratchTasks_ == tasks) return;
     const float before = panelHeight(now);
@@ -938,7 +962,8 @@ void Island::setDropItems(std::vector<DropPreview> items) {
     const float dropMotionShown = animate_ ? easeInOut(progress(dropMotionStart_, dropMotionTime, now)) : 1.0f;
     const float before = panelHeight(now);
     const float oldTarget = screenHeight(Screen::drop);
-    const size_t limit = items.size() - std::min(items.size(), visibleDropRows);
+    const size_t rows = dropRowsOf(items.size());
+    const size_t limit = (rows - std::min(rows, visibleDropTileRows)) * dropColumns;
     const size_t oldOffset = dropOffset_;
     dropOffset_ = items.size() > dropItems_.size() ? limit : std::min(dropOffset_, limit);
 
@@ -960,26 +985,33 @@ void Island::setDropItems(std::vector<DropPreview> items) {
             continue;
         }
         kept[match] = true;
-        const float oldSlot = static_cast<float>(match) - static_cast<float>(oldOffset);
-        const float newSlot = static_cast<float>(i) - static_cast<float>(dropOffset_);
-        // Start from where the row is drawn now, so a second change mid-slide does not make it jump.
-        const float running = match < dropMotion_.size() && !dropMotion_[match].entering
-            ? dropMotion_[match].fromOffset * (1 - dropMotionShown) : 0.0f;
-        motion[i].fromOffset = (oldSlot - newSlot) * dropRowHeight + running;
-        if (motion[i].fromOffset != 0) changed = true;
+        const auto slotAt = [](size_t index, size_t offset) {
+            // Slots above the view continue upward, so a tile scrolled out slides in from the edge.
+            const auto row = static_cast<float>(index / dropColumns) - static_cast<float>(offset / dropColumns);
+            return D2D1_POINT_2F{static_cast<float>(index % dropColumns) * dropTilePitch, row * dropTilePitch};
+        };
+        const auto oldSlot = slotAt(match, oldOffset);
+        const auto newSlot = slotAt(i, dropOffset_);
+        // Start from where the tile is drawn now, so a second change mid-slide does not make it jump.
+        D2D1_POINT_2F running{};
+        if (match < dropMotion_.size() && !dropMotion_[match].entering) {
+            running = {dropMotion_[match].from.x * (1 - dropMotionShown), dropMotion_[match].from.y * (1 - dropMotionShown)};
+        }
+        motion[i].from = {oldSlot.x - newSlot.x + running.x, oldSlot.y - newSlot.y + running.y};
+        if (motion[i].from.x != 0 || motion[i].from.y != 0) changed = true;
     }
     dropGhosts_.clear();
     if (!items.empty()) {
-        const size_t oldEnd = std::min(dropItems_.size(), oldOffset + visibleDropRows);
+        const size_t oldEnd = std::min(dropItems_.size(), oldOffset + visibleDropTiles);
         for (size_t j = oldOffset; j < oldEnd; ++j) {
-            if (!kept[j]) dropGhosts_.push_back({dropItems_[j], static_cast<float>(j - oldOffset) * dropRowHeight});
+            if (!kept[j]) dropGhosts_.push_back({dropItems_[j], dropSlot(j - oldOffset)});
         }
     }
     if (items.empty() != dropItems_.empty()) {
         dropFieldFrom_ = dropFieldValue(now);
         dropFieldStart_ = animate_ ? now : Clock::time_point{};
     }
-    dropRowsFrom_ = static_cast<float>(std::min(dropItems_.size() - std::min(dropItems_.size(), oldOffset), visibleDropRows));
+    dropRowsFrom_ = static_cast<float>(std::min(dropRowsOf(dropItems_.size() - std::min(dropItems_.size(), oldOffset)), visibleDropTileRows));
     dropMotion_ = std::move(motion);
     if (changed) dropMotionStart_ = animate_ ? now : Clock::time_point{};
     dropItems_ = std::move(items);
@@ -1016,6 +1048,10 @@ void Island::showDropZone(bool hold) {
         closeAt_ = now + 1200ms;
         buttonWasDown_ = true;
     }
+}
+
+bool Island::dropItemIsImage(size_t index) const {
+    return index < dropItems_.size() && dropItems_[index].thumbnail != nullptr;
 }
 
 std::optional<size_t> Island::dropItemAt(POINT client) const {
@@ -1339,17 +1375,17 @@ float Island::screenHeight(Screen screen) const {
         // Idle Focus: templates, and with Custom the stepper row below them.
         return preferences_.rhythm == customRhythm ? 364.0f : 312.0f;
     }
-    case Screen::scratch: return scratchTasks_ ? 216.0f - 116 + taskFieldHeight : 216.0f;
+    case Screen::scratch: return scratchTasks_ ? scratchTasksHeight : scratchNotesHeight;
     case Screen::drop: return dropItems_.empty() ? dropEmptyHeight :
-        dropFilledBaseHeight + dropRowHeight * static_cast<float>(std::min(dropItems_.size(), visibleDropRows));
+        dropFilledBaseHeight + dropTilePitch * static_cast<float>(std::min(dropRowsOf(dropItems_.size()), visibleDropTileRows));
     case Screen::system: {
         const auto appRows = std::clamp<size_t>(appVolumes_.size(), 1, visibleAppRows);
-        const auto devices = std::clamp<size_t>(bluetoothDevices_.size(), 1, visibleBluetoothRows);
-        const float mixer = appRowsTop + static_cast<float>(appRows) * appRowHeight;
-        const float connection = connectionTop + bluetoothRowsTop + static_cast<float>(devices) * bluetoothRowHeight + 29;
+        const auto devices = std::min(bluetoothDevices_.size(), visibleBluetoothRows);
+        const float left = appRowsTop + static_cast<float>(appRows) * appRowHeight + 8;
+        const float right = systemMetricsBottom(system_) + 10 + 3 * systemStatusLine + static_cast<float>(devices) * bluetoothRowHeight + 8;
         const auto outputs = std::clamp<size_t>(audioOutputs_.size(), 1, visibleAudioOutputs);
-        const float menu = audioPickerOpen_ ? systemAudioMenuTop + pickerHeight(outputs + 1) : 0;
-        return navHeight + systemSectionTop(system_) + std::max({mixer, connection, menu}) + padBottom;
+        const float menu = audioPickerOpen_ ? systemAudioMenuTop + pickerHeight(outputs + 1) + 8 : 0;
+        return navHeight + systemCardsTop + std::max({left, right, menu}) + 12;
     }
     case Screen::prayer: return prayerPicking_ ? navHeight + prayerPickHeight : prayerPanelHeight;
     }
@@ -1384,6 +1420,8 @@ bool Island::moving(Clock::time_point now) const {
            now - homeRowsStart_ < homeRowTime || now - homeClockStart_ < homeClockTime ||
            now - taskMotionStart_ < taskMotionTime || now - timerSlide_.start < segmentSlideTime ||
            now - scratchSlide_.start < segmentSlideTime || now - scratchModeStart_ < scratchFadeTime ||
+           now - prayerSlide_.start < segmentSlideTime ||
+           now - taskProgress_.start < moveMotion ||
            now - sourceMenuMotion_.start < menuRevealTime || now - audioMenuMotion_.start < menuRevealTime ||
            now - appMotion_.start < rowMotionTime || now - bluetoothMotion_.start < rowMotionTime ||
            now - brightnessStart_ < brightnessTime || now - prayerModeStart_ < scratchFadeTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
@@ -2320,13 +2358,14 @@ bool Island::scroll(POINT client, int delta) {
         return steps != 0;
     }
     bluetoothWheelRemainder_ = 0;
-    if (open_ && screen_ == Screen::drop && dropItems_.size() > visibleDropRows && inside(dropViewport_, point)) {
+    if (open_ && screen_ == Screen::drop && dropItems_.size() > visibleDropTiles && inside(dropViewport_, point)) {
         wheelRemainder_ = 0;
         dropWheelRemainder_ += delta;
         const int steps = dropWheelRemainder_ / WHEEL_DELTA;
         dropWheelRemainder_ %= WHEEL_DELTA;
-        const int limit = static_cast<int>(dropItems_.size() - visibleDropRows);
-        dropOffset_ = static_cast<size_t>(std::clamp(static_cast<int>(dropOffset_) - steps, 0, limit));
+        const int limit = static_cast<int>(dropRowsOf(dropItems_.size()) - visibleDropTileRows);
+        const int row = std::clamp(static_cast<int>(dropOffset_ / dropColumns) - steps, 0, limit);
+        dropOffset_ = static_cast<size_t>(row) * dropColumns;
         return steps != 0;
     }
     dropWheelRemainder_ = 0;
@@ -2568,6 +2607,15 @@ IslandCommand Island::pointerUp(POINT client) {
         command.index = index;
         break;
     case Hit::taskClearDone: command.kind = IslandCommand::Kind::clearDoneTasks; break;
+    case Hit::scratchCopy: command.kind = IslandCommand::Kind::copyScratchpad; break;
+    case Hit::scratchClear:
+        if (now < scratchClearArmedUntil_) {
+            scratchClearArmedUntil_ = {};
+            command.kind = IslandCommand::Kind::clearScratchpad;
+        } else {
+            scratchClearArmedUntil_ = now + 3s;
+        }
+        break;
     case Hit::panelPin:
         panelPinned_ = !panelPinned_;
         closeAt_.reset();
@@ -2879,6 +2927,10 @@ void Island::prepareText() {
     create(homeTitleFont_, L"Segoe UI", 13, strong, start);
     create(glyphFont_, L"Segoe UI Symbol", 17, normal, center);
     create(letterFont_, L"Segoe UI", 10, strong, center);
+    create(tileFont_, L"Segoe UI", 10.5f, normal, start);
+    create(tileTextFont_, L"Segoe UI", 10.5f, normal, start);
+    tileTextFont_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+    tileTextFont_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
     create(alertTitleFont_, L"Segoe UI", 11, DWRITE_FONT_WEIGHT_BOLD, start);
     create(alertValueFont_, L"Segoe UI", 11, normal, start);
 }
@@ -4376,41 +4428,39 @@ void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
     const float x = panel.left + padX;
     const float y = panel.top + padTop;
     text(L"Scratchpad", titleFont_.get(), box(x, y, innerWidth, 22), rgb(inkColor));
-    // Notes | Tasks switch at the right of the title.
-    const auto tasksTab = box(x + innerWidth - 56, y - 1, 56, 25);
-    const auto notesTab = box(tasksTab.left - 61, y - 1, 58, 25);
+    // Notes | Tasks on one track at the right of the title, the highlight sliding between them.
+    constexpr float segment = 60;
+    const auto track = box(x + innerWidth - 2 * segment - 6, y - 5, 2 * segment + 6, 32);
+    target_->FillRoundedRectangle(rounded(track, 10), ink(white(0.045f)));
     const float slide = slidePosition(scratchSlide_, scratchTasks_ ? 1 : 0, drawNow_);
-    target_->FillRoundedRectangle(rounded(mixRect(notesTab, tasksTab, slide), 8), ink(withAlpha(accent_, 0.16f)));
-    const D2D1_RECT_F tabs[]{notesTab, tasksTab};
+    target_->FillRoundedRectangle(rounded(box(track.left + 3 + segment * slide, track.top + 3, segment, 26), 8),
+                                  ink(withAlpha(accent_, 0.18f)));
     const wchar_t* names[]{L"Notes", L"Tasks"};
     for (size_t i = 0; i < 2; ++i) {
+        const auto tab = box(track.left + 3 + segment * static_cast<float>(i), track.top + 3, segment, 26);
         const bool selected = (i == 1) == scratchTasks_;
         const float hot = selected ? 0.0f : pressed(Hit::scratchMode, i) ? 1.0f : hoverLevel(Hit::scratchMode, i);
-        target_->FillRoundedRectangle(rounded(tabs[i], 8), ink(white(0.04f + 0.04f * hot)));
-        text(names[i], buttonFont_.get(), tabs[i], selected ? accent_ : rgb(inkColor));
-        if (record) addTarget(tabs[i], Hit::scratchMode, i);
+        if (hot > 0) target_->FillRoundedRectangle(rounded(tab, 8), ink(white(0.06f * hot)));
+        text(names[i], buttonFont_.get(), tab, selected ? accent_ : rgb(inkColor));
+        if (record) addTarget(tab, Hit::scratchMode, i);
     }
-    const float statusLeft = x + 104;
-    const float statusRight = notesTab.left - 8;
     // The new mode's content fades in while the panel resizes.
     const float fade = easeInOut(progress(scratchModeStart_, scratchFadeTime, drawNow_));
     if (fade < 1) pushLayer(nullptr, fade);
     if (scratchTasks_) {
-        drawTasks(x, y + 32, y, statusLeft, statusRight, record);
+        drawTasks(x, y + scratchBodyTop, record);
         if (fade < 1) popLayer();
         return;
     }
-    if (scratchpad_ && scratchpad_->saveFailed) {
-        text(L"Couldn’t save", bodyEndFont_.get(), box(statusLeft, y, statusRight - statusLeft, 22), rgb(mutedColor));
-    }
-    const auto field = box(x, y + 32, innerWidth, 116);
+    const auto field = box(x, y + scratchBodyTop, innerWidth, scratchNoteHeight);
     const bool active = scratchEditing_ || hovered(Hit::scratchEdit);
     const auto fill = active ? mixColor(scratchSurface(), accent_, 0.15f) : scratchSurface();
-    target_->FillRoundedRectangle(rounded(field, 6), ink(fill));
-    const auto editor = grow(field, -3, -3);
+    target_->FillRoundedRectangle(rounded(field, 12), ink(fill));
+    const auto editor = grow(field, -5, -4);
+    const bool empty = !scratchpad_ || scratchpad_->text.empty();
     if (!scratchEditing_) {
         const auto viewport = grow(editor, -7, -4);
-        if (!scratchpad_ || scratchpad_->text.empty()) {
+        if (empty) {
             scratchLayout_ = nullptr;
             scratchLayoutText_.clear();
             scratchScroll_ = scratchScrollLimit_ = 0;
@@ -4438,29 +4488,63 @@ void Island::drawScratchpad(D2D1_RECT_F panel, bool record) {
         scratchEditor_ = editor;
         addTarget(field, Hit::scratchEdit);
     }
+
+    // Footer: word count and save state, then Copy and Clear (Clear asks once more before it empties the note).
+    const auto footer = box(x, field.bottom + 8, innerWidth, scratchFooterHeight);
+    std::wstring status;
+    if (scratchpad_ && scratchpad_->saveFailed) status = L"Couldn’t save";
+    else if (scratchEditing_) status = L"Editing";
+    else if (!empty) {
+        size_t words = 0;
+        bool inWord = false;
+        for (const wchar_t ch : scratchpad_->text) {
+            const bool space = iswspace(ch) != 0;
+            if (!space && !inWord) ++words;
+            inWord = !space;
+        }
+        status = std::to_wstring(words) + (words == 1 ? L" word · Saved" : L" words · Saved");
+    }
+    text(status, bodyFont_.get(), box(footer.left + 2, footer.top, 200, scratchFooterHeight), rgb(mutedColor));
+    if (!empty && !scratchEditing_) {
+        const bool armed = drawNow_ < scratchClearArmedUntil_;
+        const auto clear = box(footer.right - 62, footer.top, 62, scratchFooterHeight);
+        const auto copy = box(clear.left - 6 - 56, footer.top, 56, scratchFooterHeight);
+        drawButton(copy, L"Copy", Hit::scratchCopy, record);
+        const float hot = pressed(Hit::scratchClear) ? 1.6f : hoverLevel(Hit::scratchClear);
+        if (armed || hot > 0)
+            target_->FillRoundedRectangle(rounded(clear, 8), ink(armed ? withAlpha(accent_, 0.16f) : white(0.04f * hot)));
+        text(armed ? L"Clear?" : L"Clear", buttonFont_.get(), clear, armed ? accent_ : rgb(mutedColor));
+        if (record) addTarget(clear, Hit::scratchClear);
+    }
     if (fade < 1) popLayer();
 }
 
-void Island::drawTasks(float x, float top, float headerY, float statusLeft, float statusRight, bool record) {
-    const auto field = box(x, top, innerWidth, taskFieldHeight);
-    target_->FillRoundedRectangle(rounded(field, 6), ink(scratchSurface()));
+void Island::drawTasks(float x, float top, bool record) {
     static const std::vector<Task> none;
     const auto& items = tasks_ ? tasks_->items : none;
     const auto done = static_cast<size_t>(std::ranges::count_if(items, &Task::done));
-    const auto status = box(statusLeft, headerY, statusRight - statusLeft, 22);
-    if (tasks_ && tasks_->saveFailed) text(L"Couldn’t save", bodyEndFont_.get(), status, rgb(mutedColor));
-    else if (!items.empty()) {
-        text(std::to_wstring(done) + L"/" + std::to_wstring(items.size()) + L" done", bodyEndFont_.get(), status,
-             done == items.size() ? accent_ : rgb(mutedColor));
-    }
+
+    // Progress: "2 of 5 done" with Clear done on the right, and a bar that eases to each new count.
+    std::wstring summary = L"0 tasks";
+    if (tasks_ && tasks_->saveFailed) summary = L"Couldn’t save";
+    else if (!items.empty() && done == items.size()) summary = L"All done";
+    else if (!items.empty()) summary = std::to_wstring(done) + L" of " + std::to_wstring(items.size()) + L" done";
+    text(summary, bodyFont_.get(), box(x + 2, top, 200, 24),
+         done && done == items.size() ? accent_ : items.empty() ? rgb(mutedColor) : rgb(inkColor));
+    if (done) drawButton(box(x + innerWidth - 80, top, 80, 24), L"Clear done", Hit::taskClearDone, record);
+    const float shown = tween(taskProgress_, items.empty() ? 0.0f : static_cast<float>(done) / static_cast<float>(items.size()), drawNow_);
+    const auto bar = box(x, top + 30, innerWidth, 4);
+    target_->FillRoundedRectangle(rounded(bar, 2), ink(white(0.12f)));
+    if (shown > 0) target_->FillRoundedRectangle(rounded(box(bar.left, bar.top, innerWidth * shown, 4), 2), ink(accent_));
+
+    const auto field = box(x, top + scratchProgressHeight, innerWidth, taskFieldHeight);
+    target_->FillRoundedRectangle(rounded(field, 12), ink(scratchSurface()));
 
     // The add bar looks like an empty field; clicking it opens the real one-line input on top of it.
-    const auto clear = box(field.right - 4 - 80, field.top + 4, 80, 26);
-    const float addRight = done ? clear.left - 4 : field.right - 4;
-    const auto add = box(field.left + 4, field.top + 4, addRight - field.left - 4, 26);
+    const auto add = box(field.left + 4, field.top + 4, field.right - field.left - 8, 26);
     if (!taskInputOpen_) {
         const float level = pressed(Hit::taskAdd) ? 1 : hoverLevel(Hit::taskAdd);
-        target_->FillRoundedRectangle(rounded(add, 7), ink(white(0.045f + 0.04f * level)));
+        target_->FillRoundedRectangle(rounded(add, 8), ink(white(0.045f + 0.04f * level)));
         const auto plus = pt(add.left + 14, (add.top + add.bottom) / 2);
         target_->DrawLine(pt(plus.x - 4.5f, plus.y), pt(plus.x + 4.5f, plus.y), ink(accent_), 1.4f, roundStroke_.get());
         target_->DrawLine(pt(plus.x, plus.y - 4.5f), pt(plus.x, plus.y + 4.5f), ink(accent_), 1.4f, roundStroke_.get());
@@ -4470,8 +4554,6 @@ void Island::drawTasks(float x, float top, float headerY, float statusLeft, floa
         taskInput_ = add;
         if (!taskInputOpen_) addTarget(add, Hit::taskAdd);
     }
-    if (done) drawButton(clear, L"Clear done", Hit::taskClearDone, record);
-
     const auto list = box(field.left + 4, field.top + taskBarHeight, innerWidth - 8, taskRowHeight * visibleTaskRows);
     if (record) taskViewport_ = list;
     if (items.empty()) {
@@ -4655,13 +4737,59 @@ void Island::drawDropZone(D2D1_RECT_F panel, bool record) {
     const float y = panel.top + padTop;
     text(L"Drop Zone", titleFont_.get(), box(x, y, innerWidth, 22), rgb(inkColor));
     const bool empty = dropItems_.empty();
+    if (!empty) {
+        const auto clear = box(x + innerWidth - 70, y - 2, 70, 26);
+        const float hot = pressed(Hit::clearDrop) ? 1.6f : hoverLevel(Hit::clearDrop);
+        if (hot > 0) target_->FillRoundedRectangle(rounded(clear, 8), ink(white(0.04f * hot)));
+        text(L"Clear all", buttonFont_.get(), clear, rgb(mutedColor));
+        if (record) addTarget(clear, Hit::clearDrop);
+        const auto count = std::to_wstring(dropItems_.size()) + (dropItems_.size() == 1 ? L" item" : L" items");
+        text(count, bodyEndFont_.get(), box(x + 100, y, clear.left - 6 - x - 100, 22), rgb(mutedColor));
+    }
+
+    // Tiles: kept ones slide to their new slot, new ones fade and scale in, removed ones fade where they were.
+    const auto end = std::min(dropItems_.size(), dropOffset_ + visibleDropTiles);
+    const float gridTop = panel.top + dropTop;
+    const float t = animate_ ? easeInOut(progress(dropMotionStart_, dropMotionTime, now)) : 1;
+    const auto rowsNow = static_cast<float>(std::min(dropRowsOf(end - dropOffset_), visibleDropTileRows));
+    const float rows = std::lerp(dropRowsFrom_, rowsNow, t);
+    const float gridHeight = std::max(0.0f, rows * dropTilePitch - dropTileGap);
+    if (record) dropViewport_ = box(x, gridTop, innerWidth, rowsNow * dropTilePitch);
+    target_->PushAxisAlignedClip(box(x - 2, gridTop, innerWidth + 4, gridHeight), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    if (t < 1) {
+        const float ghostOpacity = 1 - easeInOut(lin(0, 0.6f, t));
+        for (const auto& ghost : dropGhosts_) {
+            if (ghostOpacity <= 0) break;
+            pushLayer(nullptr, ghostOpacity);
+            drawDropTile(ghost.item, dropItems_.size(), box(x + ghost.slot.x, gridTop + ghost.slot.y, dropTileSize, dropTileSize), false);
+            popLayer();
+        }
+    }
+    for (size_t index = dropOffset_; index < end; ++index) {
+        const auto slot = dropSlot(index - dropOffset_);
+        auto tile = box(x + slot.x, gridTop + slot.y, dropTileSize, dropTileSize);
+        float opacity = 1;
+        if (t < 1 && index < dropMotion_.size()) {
+            const auto& motion = dropMotion_[index];
+            tile = box(tile.left + motion.from.x * (1 - t), tile.top + motion.from.y * (1 - t), dropTileSize, dropTileSize);
+            if (motion.entering) {
+                opacity = t;
+                tile = grow(tile, -dropTileSize * 0.03f * (1 - t), -dropTileSize * 0.03f * (1 - t));
+            }
+        }
+        if (opacity < 1) pushLayer(nullptr, opacity);
+        drawDropTile(dropItems_[index], index, tile, record);
+        if (opacity < 1) popLayer();
+    }
+    target_->PopAxisAlignedClip();
+
+    // The drop area: tall while empty, a slim strip under the tiles once something is there.
     const float fieldValue = dropFieldValue(now);
-    const auto field = box(x, panel.top + 44, innerWidth, std::lerp(dropFilledField, dropEmptyField, fieldValue));
-    // Drop Zone follows the active session's accent, like the other panels.
-    const auto accent = accent_;
-    const auto dropArea = rounded(field, 9);
-    target_->FillRoundedRectangle(dropArea, ink(withAlpha(accent, dropHover_ ? 0.11f : 0.03f)));
-    target_->DrawRoundedRectangle(dropArea, ink(dropHover_ ? accent : mixColor(rgb(0x6b6f75), accent_, 0.35f)), 1,
+    const float fieldTop = gridTop + gridHeight + std::min(1.0f, rows) * 10;
+    const auto field = box(x, fieldTop, innerWidth, std::lerp(dropFilledField, dropEmptyField, fieldValue));
+    const auto dropArea = rounded(field, 12);
+    target_->FillRoundedRectangle(dropArea, ink(withAlpha(accent_, dropHover_ ? 0.11f : 0.03f)));
+    target_->DrawRoundedRectangle(dropArea, ink(dropHover_ ? accent_ : mixColor(rgb(0x6b6f75), accent_, 0.35f)), 1,
                                   dropDash_.get());
     // The label for the new state fades in once the area has mostly reached its new height.
     const float settled = empty ? fieldValue : 1 - fieldValue;
@@ -4670,78 +4798,40 @@ void Island::drawDropZone(D2D1_RECT_F panel, bool record) {
         target_->PushAxisAlignedClip(field, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         if (contentOpacity < 1) pushLayer(nullptr, contentOpacity);
         if (empty) {
-            drawScreenGlyph(Screen::drop, box(x, field.top + 22, innerWidth, 24), accent);
+            drawScreenGlyph(Screen::drop, box(x, field.top + 18, innerWidth, 24), dropHover_ ? accent_ : rgb(mutedColor));
             text(dropHover_ ? L"Release to add" : L"Drop files or text here", headingCenterFont_.get(),
-                 box(x, field.top + 53, innerWidth, 26), rgb(inkColor));
+                 box(x, field.top + 47, innerWidth, 26), dropHover_ ? accent_ : rgb(inkColor));
+            text(L"Kept until you clear them", buttonFont_.get(), box(x, field.top + 72, innerWidth, 18), rgb(mutedColor));
         } else {
-            drawScreenGlyph(Screen::drop, box(x + innerWidth / 2 - 58, field.top, 22, dropFilledField), accent);
-            text(dropHover_ ? L"Release to add" : L"Drop to add", bodyFont_.get(),
-                 box(x + innerWidth / 2 - 29, field.top, 115, dropFilledField), rgb(inkColor));
+            text(dropHover_ ? L"Release to add" : L"Drop more here", buttonFont_.get(), field,
+                 dropHover_ ? accent_ : rgb(mutedColor));
         }
         if (contentOpacity < 1) popLayer();
         target_->PopAxisAlignedClip();
     }
-
-    if (!empty) drawButton(box(x + innerWidth - 70, y, 70, 25), L"Clear all", Hit::clearDrop, record);
-    const auto end = std::min(dropItems_.size(), dropOffset_ + visibleDropRows);
-    const float rowsTop = field.bottom + 6;
-    const auto rows = box(x, rowsTop, innerWidth, dropRowHeight * static_cast<float>(end - dropOffset_));
-    if (record) dropViewport_ = rows;
-
-    const float t = animate_ ? easeInOut(progress(dropMotionStart_, dropMotionTime, now)) : 1;
-    // The list area grows or shrinks with the rows, so the footer never covers a row that is still moving.
-    const float rowsHeight = dropRowHeight * std::lerp(dropRowsFrom_, static_cast<float>(end - dropOffset_), t);
-    target_->PushAxisAlignedClip(box(x - 2, rowsTop, innerWidth + 4, rowsHeight), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    if (t < 1) {
-        const float ghostOpacity = 1 - easeInOut(lin(0, 0.6f, t));
-        for (const auto& ghost : dropGhosts_) {
-            if (ghostOpacity <= 0) break;
-            pushLayer(nullptr, ghostOpacity);
-            drawDropRow(ghost.item, dropItems_.size(), rowsTop + ghost.slotY, x, false);
-            popLayer();
-        }
+    if (dropItems_.size() > visibleDropTiles) {
+        // A thin scroll thumb along the right edge of the tiles.
+        const float span = rowsNow * dropTilePitch - dropTileGap;
+        const auto totalRows = static_cast<float>(dropRowsOf(dropItems_.size()));
+        const float thumb = std::max(18.0f, span * visibleDropTileRows / totalRows);
+        const float at = (span - thumb) * static_cast<float>(dropOffset_ / dropColumns) / (totalRows - visibleDropTileRows);
+        target_->FillRoundedRectangle(rounded(box(x + innerWidth + 5, gridTop + at, 2, thumb), 1), ink(white(0.18f)));
     }
-    for (size_t index = dropOffset_; index < end; ++index) {
-        float rowY = rowsTop + dropRowHeight * static_cast<float>(index - dropOffset_);
-        float opacity = 1;
-        if (t < 1 && index < dropMotion_.size()) {
-            const auto& motion = dropMotion_[index];
-            rowY += motion.fromOffset * (1 - t);
-            if (motion.entering) {
-                opacity = t;
-                rowY += 6 * (1 - t);
-            }
-        }
-        if (opacity < 1) pushLayer(nullptr, opacity);
-        drawDropRow(dropItems_[index], index, rowY, x, record);
-        if (opacity < 1) popLayer();
-    }
-    target_->PopAxisAlignedClip();
-
-    const auto count = std::to_wstring(dropItems_.size()) + (dropItems_.size() == 1 ? L" item" : L" items");
-    const auto status = dropItems_.size() > visibleDropRows
-        ? std::to_wstring(dropOffset_ + 1) + L"–" + std::to_wstring(end) + L" of " + count
-        : count;
-    const float footerY = (empty && t >= 1 ? field.bottom : rowsTop + rowsHeight - (empty ? 6 : 0)) + 8;
-    text(empty ? L"Temporary items" : L"Drag an item to another app", bodyFont_.get(),
-         box(x, footerY, 220, 18), rgb(mutedColor));
-    text(status, bodyEndFont_.get(), box(x + 221, footerY, innerWidth - 221, 18), rgb(mutedColor));
 }
 
-// index == dropItems_.size() draws a row that is leaving: it records no targets and has no hover.
-void Island::drawDropRow(DropPreview const& item, size_t index, float rowY, float x, bool record) {
+// index == dropItems_.size() draws a tile that is leaving: it records no targets and has no hover.
+void Island::drawDropTile(DropPreview const& item, size_t index, D2D1_RECT_F tile, bool record) {
     const bool live = index < dropItems_.size();
     record = record && live;
-    const auto accent = accent_;
-    const auto drag = box(x, rowY + 1, innerWidth - 36, dropRowHeight - 2);
-    const auto remove = box(x + innerWidth - 30, rowY + 7, 30, 29);
-    const auto tile = box(x + 4, rowY + 5, 44, 33);
-    if (live && index > dropOffset_) target_->FillRectangle(box(x, rowY, innerWidth, 1), ink(white(0.06f)));
-    if (const float level = live ? hoverLevel(Hit::dropItem, index) : 0; level > 0)
-        target_->FillRoundedRectangle(rounded(drag, 6), ink(white(0.06f * level)));
-    target_->FillRoundedRectangle(rounded(tile, 5), ink(mixColor(rgb(0x1b1d21), accent_, 0.12f)));
-    if (record) addTarget(drag, Hit::dropItem, index);
+    const auto remove = box(tile.right - 24, tile.top + 4, 20, 20);
+    const float hot = live ? std::max(pressed(Hit::dropItem, index) ? 1.0f : hoverLevel(Hit::dropItem, index),
+                                      hoverLevel(Hit::removeDrop, index)) : 0;
+    const auto shape = rounded(tile, 12);
+    target_->FillRoundedRectangle(shape, ink(mixColor(rgb(0x1b1d21), accent_, 0.12f)));
+    if (record) addTarget(tile, Hit::dropItem, index);
+    const float width = tile.right - tile.left, height = tile.bottom - tile.top;
     if (item.thumbnail) {
+        // The image fills the tile, cropped to a square, with a dark band under its name.
         const auto& image = *item.thumbnail;
         auto& bitmap = dropBitmaps_[&image];
         if (!bitmap) {
@@ -4750,163 +4840,240 @@ void Island::drawDropRow(DropPreview const& item, size_t index, float rowY, floa
             target_->CreateBitmap(D2D1::SizeU(image.width, image.height), image.pixels.data(),
                                   image.width * 4, properties, bitmap.put());
         }
+        winrt::com_ptr<ID2D1RoundedRectangleGeometry> mask;
+        winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(shape, mask.put()));
+        pushLayer(mask.get(), 1);
         if (bitmap) {
-            const float scale = std::min(42.0f / image.width, 31.0f / image.height);
-            const float width = image.width * scale, height = image.height * scale;
-            target_->DrawBitmap(bitmap.get(), box(tile.left + (44 - width) / 2, tile.top + (33 - height) / 2,
-                width, height), 1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            const float scale = std::max(width / image.width, height / image.height);
+            const float w = image.width * scale, h = image.height * scale;
+            target_->DrawBitmap(bitmap.get(), box(tile.left + (width - w) / 2, tile.top + (height - h) / 2, w, h), 1,
+                                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         }
-        const bool active = live && (hovered(Hit::dropImage, index) || pressed(Hit::dropImage, index));
-        if (active) target_->FillRoundedRectangle(rounded(tile, 5), ink(withAlpha(accent, 0.20f)));
-        if (record) addTarget(tile, Hit::dropImage, index);
+        target_->FillRectangle(box(tile.left, tile.bottom - 22, width, 22), ink(D2D1::ColorF(0, 0, 0, 0.55f)));
+        popLayer();
+    } else if (item.text) {
+        text(item.label, tileTextFont_.get(), box(tile.left + 8, tile.top + 7, width - 16, height - 30), rgb(mutedColor));
     } else {
-        const auto color = ink(mixColor(rgb(inkColor), accent_, 0.45f));
-        const float left = tile.left + 16, top = tile.top + 9;
-        if (!item.text) target_->DrawRoundedRectangle(rounded(box(left, top, 12, 15), 2), color, 1);
-        const float inset = item.text ? 0.0f : 3.0f;
-        for (int line = 0; line < 3; ++line) {
-            const float lineY = top + 4 + line * 3.0f;
-            target_->DrawLine(pt(left + inset, lineY), pt(left + 12 - inset - (line == 2 ? 2 : 0), lineY), color, 1);
+        // Files show their type as a small badge.
+        std::wstring type = L"FILE";
+        if (const auto dot = item.label.rfind(L'.'); dot != std::wstring::npos && dot + 1 < item.label.size() &&
+            item.label.size() - dot - 1 <= 4) {
+            type = item.label.substr(dot + 1);
+            for (auto& ch : type) ch = static_cast<wchar_t>(towupper(ch));
         }
+        const float badgeWidth = std::ceil(measure(type, letterFont_.get())) + 10;
+        const auto badge = box(tile.left + 8, tile.top + 8, badgeWidth, 16);
+        target_->FillRoundedRectangle(rounded(badge, 5), ink(white(0.1f)));
+        text(type, letterFont_.get(), badge, rgb(inkColor));
     }
-    text(item.label, bodyFont_.get(), box(x + 57, rowY + 3, innerWidth - 100, 20), rgb(inkColor));
-    text(item.thumbnail ? L"Image" : item.text ? L"Plain text" : L"File", bodyFont_.get(),
-         box(x + 57, rowY + 22, innerWidth - 100, 15), rgb(mutedColor));
-    if (live) drawButton(remove, L"\u00d7", Hit::removeDrop, record, index);
-    else drawButton(remove, L"\u00d7", Hit::none, false);
+    text(item.text ? std::wstring(L"Text") : item.label, tileFont_.get(), box(tile.left + 7, tile.bottom - 21, width - 14, 20),
+         item.text ? rgb(mutedColor) : rgb(inkColor));
+    if (hot > 0) target_->FillRoundedRectangle(shape, ink(white(0.06f * hot)));
+    if (!live || hot <= 0) return;
+    // Remove shows on hover, in the corner.
+    pushLayer(nullptr, std::min(1.0f, hot));
+    const float down = pressed(Hit::removeDrop, index) ? 1.0f : hoverLevel(Hit::removeDrop, index);
+    target_->FillEllipse(D2D1::Ellipse(pt((remove.left + remove.right) / 2, (remove.top + remove.bottom) / 2), 10, 10),
+                         ink(mixColor(D2D1::ColorF(0, 0, 0, 0.72f), white(0.3f), 0.5f * down)));
+    text(L"×", buttonFont_.get(), remove, rgb(inkColor));
+    popLayer();
+    if (record) addTarget(remove, Hit::removeDrop, index);
 }
 
 void Island::drawSystem(D2D1_RECT_F panel, bool record) {
     const float x = (panel.left + panel.right - systemPanelWidth) / 2 + padX;
     const float y = panel.top;
-    constexpr float width = systemColumnWidth;
-    constexpr float fullWidth = width * 2 + systemRightGap;
-    text(L"System", titleFont_.get(), box(x, y + 3, fullWidth, 23), rgb(inkColor));
+    constexpr float fullWidth = systemPanelWidth - 2 * padX;
+    text(L"System", titleFont_.get(), box(x, y + padTop, 160, 22.4f), rgb(inkColor));
 
-    constexpr float gap = 6;
-    const auto drawUsage = [&](D2D1_RECT_F bar, std::optional<unsigned> usage) {
-        target_->FillRoundedRectangle(rounded(bar, 2), ink(white(0.12f)));
-        if (usage && *usage) {
-            auto fill = bar;
-            fill.right = std::lerp(bar.left, bar.right, *usage / 100.0f);
-            target_->FillRoundedRectangle(rounded(fill, 2), ink(accent_));
+    // Do Not Disturb as Windows reports it; the chip opens notification settings.
+    {
+        const auto quiet = windowsNotificationsQuiet_;
+        const auto label = !quiet ? L"Settings" : *quiet ? L"On" : L"Off";
+        const float chipWidth = std::ceil(measure(label, buttonFont_.get())) + 22;
+        const auto chip = box(x + fullWidth - chipWidth, y + 9, chipWidth, 28);
+        const bool on = quiet.value_or(false);
+        const float hot = pressed(Hit::notificationSettings) ? 1.6f : hoverLevel(Hit::notificationSettings);
+        target_->FillRoundedRectangle(rounded(chip, 9),
+            ink(on ? withAlpha(accent_, 0.18f + 0.05f * hot) : white(0.065f + 0.04f * hot)));
+        text(label, buttonFont_.get(), chip, on ? accent_ : rgb(inkColor));
+        text(L"Do Not Disturb", bodyEndFont_.get(), box(chip.left - 128, chip.top, 120, 28), rgb(mutedColor));
+        if (record) addTarget(chip, Hit::notificationSettings);
+    }
+
+    const float cardsTop = y + systemCardsTop;
+    const float cardHeight = screenHeight(Screen::system) - navHeight - systemCardsTop - 12;
+    const auto leftCard = box(x, cardsTop, systemCardWidth, cardHeight);
+    const auto rightCard = box(x + systemCardWidth + systemCardGap, cardsTop, systemCardWidth, cardHeight);
+    target_->FillRoundedRectangle(rounded(leftCard, 14), ink(white(0.045f)));
+    target_->FillRoundedRectangle(rounded(rightCard, 14), ink(white(0.045f)));
+    constexpr float inner = systemCardWidth - 2 * systemCardPad;
+
+    // ---- Sound and display
+    {
+        const float left = leftCard.left + systemCardPad;
+        const float top = leftCard.top;
+        text(L"Sound and display", homeTitleFont_.get(), box(left, top + 9, inner, 20), rgb(inkColor));
+        drawBrightness(left, top + brightnessTop, inner, record);
+        const auto output = std::ranges::find(audioOutputs_, true, &AudioOutput::active);
+        const auto outputName = output == audioOutputs_.end() ? std::wstring_view(audioOutput_) :
+                                                               std::wstring_view(output->name);
+        drawPickerButton(box(left, top + systemAudioTop, inner, systemAudioHeight),
+                         outputName.empty() ? L"Choose output" : outputName, Hit::audioPicker, record,
+                         audioPickerOpen_, output != audioOutputs_.end() && output->headphones);
+        target_->FillRectangle(box(left, top + appRowsTop - 6, inner, 1), ink(white(0.07f)));
+
+        const auto count = appVolumes_.size();
+        const auto end = std::min(count, appOffset_ + visibleAppRows);
+        const auto rows = box(left, top + appRowsTop, inner, appRowHeight * visibleAppRows);
+        if (record) appViewport_ = rows;
+        if (appVolumes_.empty()) {
+            text(L"No apps are playing audio", bodyFont_.get(), box(left, rows.top, inner, appRowHeight), rgb(mutedColor));
         }
-    };
-    constexpr float metricWidth = (fullWidth - 2 * gap) / 3;
-    const auto metric = [&](size_t index, std::wstring_view label, std::optional<unsigned> usage) {
-        const float left = x + static_cast<float>(index) * (metricWidth + gap);
-        const float top = y + 30;
-        target_->FillRoundedRectangle(rounded(box(left, top, metricWidth, 37), 7), ink(white(0.055f)));
-        text(label, bodyFont_.get(), box(left + 6, top + 3, metricWidth - 30, 17), rgb(inkColor));
-        text(usage ? std::to_wstring(*usage) + L"%" : L"—", bodyEndFont_.get(),
-             box(left + 6, top + 3, metricWidth - 12, 17), rgb(usage ? inkColor : mutedColor));
-        drawUsage(box(left + 7, top + 25, metricWidth - 14, 4), usage);
-    };
-    metric(0, L"CPU", system_.cpu);
-    metric(1, L"RAM", system_.memory);
-    metric(2, L"GPU", system_.gpu);
-    drawBrightness(x, y + brightnessTop, fullWidth, record);
-
-    if (!system_.disks.empty())
-        text(L"Storage", bodyFont_.get(), box(x, y + systemStatsBottom, fullWidth, 18), rgb(inkColor));
-    const auto columns = std::min(system_.disks.size(), storageColumns);
-    for (size_t i = 0; i < system_.disks.size(); ++i) {
-        const auto& disk = system_.disks[i];
-        const float cardWidth = (fullWidth + gap) / static_cast<float>(columns) - gap;
-        const float left = x + static_cast<float>(i % columns) * (cardWidth + gap);
-        const float top = y + storageCardsTop + static_cast<float>(i / columns) * storageCardPitch;
-        const auto usage = disk.space ? std::optional{static_cast<unsigned>(std::lround(
-            100.0 * (disk.space->totalBytes - disk.space->freeBytes) / disk.space->totalBytes))} : std::nullopt;
-        target_->FillRoundedRectangle(rounded(box(left, top, cardWidth, 51), 7), ink(white(0.055f)));
-        text(std::wstring(L"Disk ") + disk.letter + L":", bodyFont_.get(),
-             box(left + 8, top + 3, cardWidth - 64, 18), rgb(inkColor));
-        if (usage) {
-            text(std::to_wstring(*usage) + L"% used", bodyEndFont_.get(),
-                 box(left + 8, top + 3, cardWidth - 16, 18), rgb(inkColor));
+        target_->PushAxisAlignedClip(grow(box(left, rows.top, inner, appRowHeight * static_cast<float>(std::max<size_t>(1, end - appOffset_))), 8, 0),
+                                     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        if (const float ghost = rowGhostOpacity(appMotion_); ghost > 0) {
+            pushLayer(nullptr, ghost);
+            for (const auto& [app, slot] : appGhosts_)
+                drawAppVolume(app, static_cast<size_t>(-1), box(left, rows.top + appRowHeight * slot, inner, appRowHeight), false);
+            popLayer();
         }
-        text(disk.space ? freeSpaceLabel(disk.space->freeBytes) : L"Unavailable",
-             bodyFont_.get(), box(left + 8, top + 21, cardWidth - 16, 16), rgb(mutedColor));
-        drawUsage(box(left + 8, top + 41, cardWidth - 16, 4), usage);
+        for (size_t index = appOffset_; index < end; ++index) {
+            const auto [shift, opacity] = rowMotion(appMotion_, index, appRowHeight);
+            if (opacity < 1) pushLayer(nullptr, opacity);
+            drawAppVolume(appVolumes_[index], index,
+                          box(left, rows.top + appRowHeight * static_cast<float>(index - appOffset_) + shift, inner, appRowHeight),
+                          record);
+            if (opacity < 1) popLayer();
+        }
+        target_->PopAxisAlignedClip();
+        if (count > visibleAppRows) {
+            const float span = appRowHeight * visibleAppRows;
+            const float thumb = std::max(18.0f, span * visibleAppRows / static_cast<float>(count));
+            const float at = (span - thumb) * static_cast<float>(appOffset_) / static_cast<float>(count - visibleAppRows);
+            target_->FillRoundedRectangle(rounded(box(leftCard.right - 5, rows.top + at, 2, thumb), 1), ink(white(0.18f)));
+        }
     }
 
-    const float top = y + systemSectionTop(system_);
-    const float right = x + width + systemRightGap;
-    const auto battery = box(right, top, width, batteryCardHeight);
-    target_->FillRoundedRectangle(rounded(battery, 8), ink(white(0.055f)));
-    text(L"Battery", bodyFont_.get(), box(right + 8, top + 3, 100, 18), rgb(inkColor));
-    std::wstring status = L"Power status unavailable";
-    if (power_.available) {
-        status = !power_.hasBattery ? L"No battery" :
-                 power_.charging ? L"Charging" : power_.pluggedIn == true ? L"Plugged in" :
-                 power_.pluggedIn == false ? L"On battery" : L"Status unavailable";
-    }
-    if (power_.remaining) {
-        const auto minutes = std::chrono::ceil<std::chrono::minutes>(*power_.remaining).count();
-        status += L" · ";
-        if (minutes >= 60) status += std::to_wstring(minutes / 60) + L"h ";
-        status += std::to_wstring(minutes % 60) + L"m left";
-    }
-    text(status, bodyFont_.get(), box(right + 8, top + 20, width - 81, 16), rgb(mutedColor));
-    if (power_.percent || power_.charging) {
-        const auto level = power_.percent ? std::to_wstring(*power_.percent) + L"%" : std::wstring{};
-        const float levelWidth = level.empty() ? 0 : std::ceil(measure(level, strongEndFont_.get())) + 2;
-        const float levelX = battery.right - 8 - levelWidth;
-        drawBatteryCell(levelX - 26, top + 20, power_.percent.value_or(0), accent_, power_.charging);
-        text(level, strongEndFont_.get(), box(levelX, top, levelWidth, batteryCardHeight), accent_);
-    }
+    // ---- This PC
+    {
+        const float left = rightCard.left + systemCardPad;
+        const float top = rightCard.top;
+        text(L"This PC", homeTitleFont_.get(), box(left, top + 9, inner, 20), rgb(inkColor));
+        // Usage rows: a label, a bar, the value. Memory and disks over 80% turn amber.
+        size_t line = 0;
+        const auto usageRow = [&](std::wstring_view label, std::optional<unsigned> usage, std::wstring const& value, bool warn) {
+            const float rowTop = top + systemMetricsTop + systemMetricHeight * static_cast<float>(line++);
+            const float middle = rowTop + systemMetricHeight / 2;
+            constexpr float labelWidth = 40, valueWidth = 70;
+            text(label, bodyFont_.get(), box(left, rowTop, labelWidth, systemMetricHeight), rgb(inkColor));
+            const auto bar = box(left + labelWidth, middle - 2, inner - labelWidth - valueWidth - 8, 4);
+            target_->FillRoundedRectangle(rounded(bar, 2), ink(white(0.12f)));
+            if (usage && *usage) {
+                auto fill = bar;
+                fill.right = std::lerp(bar.left, bar.right, std::min(100u, *usage) / 100.0f);
+                target_->FillRoundedRectangle(rounded(fill, 2), ink(warn && *usage >= 80 ? rgb(warningColor) : accent_));
+            }
+            text(value, bodyEndFont_.get(), box(left + inner - valueWidth, rowTop, valueWidth, systemMetricHeight),
+                 rgb(usage ? inkColor : mutedColor));
+        };
+        const auto percent = [](std::optional<unsigned> usage) { return usage ? std::to_wstring(*usage) + L"%" : std::wstring(L"—"); };
+        usageRow(L"CPU", system_.cpu, percent(system_.cpu), false);
+        usageRow(L"RAM", system_.memory, percent(system_.memory), true);
+        usageRow(L"GPU", system_.gpu, percent(system_.gpu), false);
+        for (const auto& disk : system_.disks) {
+            const auto usage = disk.space ? std::optional{static_cast<unsigned>(std::lround(
+                100.0 * (disk.space->totalBytes - disk.space->freeBytes) / disk.space->totalBytes))} : std::nullopt;
+            usageRow(std::wstring(1, disk.letter) + L":", usage,
+                     disk.space ? freeSpaceLabel(disk.space->freeBytes) : std::wstring(L"Unavailable"), true);
+        }
+        const float statusTop = top + systemMetricsBottom(system_) + 10;
+        target_->FillRectangle(box(left, statusTop - 5, inner, 1), ink(white(0.07f)));
 
-    text(L"Audio Output", bodyFont_.get(), box(x, top, width, 18), rgb(inkColor));
-    const auto output = std::ranges::find(audioOutputs_, true, &AudioOutput::active);
-    const auto outputName = output == audioOutputs_.end() ? std::wstring_view(audioOutput_) :
-                                                           std::wstring_view(output->name);
-    drawPickerButton(box(x, top + systemAudioTop, width, systemAudioHeight),
-                     outputName.empty() ? L"Choose output" : outputName, Hit::audioPicker, record,
-                     audioPickerOpen_, output != audioOutputs_.end() && output->headphones);
+        // Battery.
+        std::wstring status = L"Unavailable";
+        if (power_.available) {
+            status = !power_.hasBattery ? L"No battery" :
+                     power_.charging ? L"Charging" : power_.pluggedIn == true ? L"Plugged in" :
+                     power_.pluggedIn == false ? L"On battery" : L"Unavailable";
+        }
+        if (power_.percent) status = std::to_wstring(*power_.percent) + L"% · " + status;
+        if (power_.remaining) {
+            const auto minutes = std::chrono::ceil<std::chrono::minutes>(*power_.remaining).count();
+            status += L" · ";
+            if (minutes >= 60) status += std::to_wstring(minutes / 60) + L"h ";
+            status += std::to_wstring(minutes % 60) + L"m";
+        }
+        const float batteryMiddle = statusTop + systemStatusLine / 2;
+        if (power_.percent || power_.charging)
+            drawBatteryCell(left, batteryMiddle, power_.percent.value_or(0), accent_, power_.charging);
+        else
+            target_->DrawRoundedRectangle(rounded(box(left + 1, batteryMiddle - 4, 18, 8), 2), ink(rgb(mutedColor)), 1);
+        text(L"Battery", bodyFont_.get(), box(left + 26, statusTop, 80, systemStatusLine), rgb(inkColor));
+        text(status, bodyEndFont_.get(), box(left + 90, statusTop, inner - 90, systemStatusLine), rgb(mutedColor));
 
-    text(L"App Volume", bodyFont_.get(), box(x, top + appRowsTop - 20, width, 18), rgb(inkColor));
-    const auto count = appVolumes_.size();
-    const auto end = std::min(count, appOffset_ + visibleAppRows);
-    if (count > visibleAppRows) {
-        text(std::to_wstring(appOffset_ + 1) + L"–" + std::to_wstring(end) + L" of " + std::to_wstring(count),
-             bodyEndFont_.get(), box(x, top + appRowsTop - 20, width, 18), rgb(mutedColor));
-    }
-    const auto rows = box(x, top + appRowsTop, width, appRowHeight * visibleAppRows);
-    if (record) appViewport_ = rows;
-    if (appVolumes_.empty()) {
-        text(L"No apps are playing audio", bodyFont_.get(), box(x, rows.top, width, appRowHeight), rgb(mutedColor));
-    }
-    target_->PushAxisAlignedClip(grow(rows, 8, 0), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    if (const float ghost = rowGhostOpacity(appMotion_); ghost > 0) {
-        pushLayer(nullptr, ghost);
-        for (const auto& [app, slot] : appGhosts_)
-            drawAppVolume(app, static_cast<size_t>(-1), box(x, rows.top + appRowHeight * slot, width, appRowHeight), false);
-        popLayer();
-    }
-    for (size_t index = appOffset_; index < end; ++index) {
-        const auto [shift, opacity] = rowMotion(appMotion_, index, appRowHeight);
-        if (opacity < 1) pushLayer(nullptr, opacity);
-        drawAppVolume(appVolumes_[index], index,
-                      box(x, rows.top + appRowHeight * static_cast<float>(index - appOffset_) + shift, width, appRowHeight),
-                      record);
-        if (opacity < 1) popLayer();
-    }
-    target_->PopAxisAlignedClip();
+        // Network.
+        const float netTop = statusTop + systemStatusLine;
+        drawAlertIcon(IslandAlert::Kind::connection, pt(left + 1, netTop + 4), accent_);
+        std::wstring_view type = L"Network";
+        switch (network_.type) {
+        case NetworkType::wifi: type = L"Wi-Fi"; break;
+        case NetworkType::ethernet: type = L"Ethernet"; break;
+        case NetworkType::cellular: type = L"Cellular"; break;
+        case NetworkType::other: break;
+        }
+        std::wstring_view access;
+        switch (network_.access) {
+        case NetworkAccess::unknown: access = L"Unavailable"; break;
+        case NetworkAccess::disconnected: access = L"Disconnected"; break;
+        case NetworkAccess::local: access = L"No internet"; break;
+        case NetworkAccess::limited: access = L"Limited"; break;
+        case NetworkAccess::internet: access = L"Online"; break;
+        }
+        const auto name = network_.name.empty() ? type : std::wstring_view(network_.name);
+        const float accessWidth = std::ceil(measure(access, bodyEndFont_.get())) + 2;
+        text(name, bodyFont_.get(), box(left + 26, netTop, inner - 26 - accessWidth - 30, systemStatusLine), rgb(inkColor));
+        text(access, bodyEndFont_.get(), box(left + inner - accessWidth, netTop, accessWidth, systemStatusLine),
+             network_.access == NetworkAccess::internet ? accent_ : rgb(mutedColor));
+        if (network_.signalBars) {
+            for (unsigned i = 0; i < 5; ++i) {
+                const float height = 3.0f + 1.6f * static_cast<float>(i);
+                target_->FillRoundedRectangle(rounded(box(left + inner - accessWidth - 26 + 4.0f * static_cast<float>(i),
+                                                          netTop + 17 - height, 2.5f, height), 1),
+                                              ink(i < *network_.signalBars ? accent_ : white(0.15f)));
+            }
+        }
 
-    const float divider = x + width + systemRightGap / 2;
-    const auto devices = std::clamp<size_t>(bluetoothDevices_.size(), 1, visibleBluetoothRows);
-    const auto appRows = std::clamp<size_t>(count, 1, visibleAppRows);
-    const float height = std::max(appRowsTop + static_cast<float>(appRows) * appRowHeight,
-                                  connectionTop + bluetoothRowsTop + static_cast<float>(devices) * bluetoothRowHeight + 29);
-    target_->FillRectangle(box(divider, top + 1, 1, height - 2), ink(white(0.08f)));
-    drawConnection(box(right, top + connectionTop, width, height - connectionTop), record);
+        // Bluetooth: a summary line, then the connected devices.
+        const float btTop = netTop + systemStatusLine;
+        drawAlertIcon(IslandAlert::Kind::bluetooth, pt(left + 1, btTop + 4), rgb(mutedColor));
+        text(L"Bluetooth", bodyFont_.get(), box(left + 26, btTop, 100, systemStatusLine), rgb(inkColor));
+        const auto count = bluetoothDevices_.size();
+        const auto end = std::min(count, bluetoothOffset_ + visibleBluetoothRows);
+        const auto summary = count > visibleBluetoothRows ?
+            std::to_wstring(bluetoothOffset_ + 1) + L"–" + std::to_wstring(end) + L" of " + std::to_wstring(count) :
+            count ? std::to_wstring(count) + L" connected" : std::wstring(L"None connected");
+        text(summary, bodyEndFont_.get(), box(left + 100, btTop, inner - 100, systemStatusLine), rgb(mutedColor));
+        drawConnection(box(left, btTop + systemStatusLine, inner, bluetoothRowHeight * static_cast<float>(std::min(count, visibleBluetoothRows))), record);
+    }
 }
 
-// Brightness of the island's display: a sun glyph, a slider like App Volume, and the percentage.
-void Island::drawBrightness(float x, float top, float fullWidth, bool record) {
-    const auto card = box(x, top, fullWidth, brightnessHeight);
-    target_->FillRoundedRectangle(rounded(card, 8), ink(white(0.055f)));
-    const float middle = (card.top + card.bottom) / 2;
-    const auto sun = pt(card.left + 17, middle);
+// Brightness of the island's display as a fill slider: the whole row is the track.
+void Island::drawBrightness(float x, float top, float width, bool record) {
+    const auto row = box(x, top, width, brightnessHeight);
+    target_->FillRoundedRectangle(rounded(row, 10), ink(white(0.05f)));
+    const float level = brightness_ ? (brightnessDrag_ ? brightnessDragValue_ : shownBrightness(drawNow_)) : 0.0f;
+    if (brightness_ && level > 0) {
+        winrt::com_ptr<ID2D1RoundedRectangleGeometry> mask;
+        winrt::check_hresult(graphics_->CreateRoundedRectangleGeometry(rounded(row, 10), mask.put()));
+        pushLayer(mask.get(), 1);
+        const float hot = brightnessDrag_ ? 1.0f : hoverLevel(Hit::brightness);
+        target_->FillRectangle(box(row.left, row.top, width * clamp01(level), brightnessHeight),
+                               ink(withAlpha(accent_, 0.22f + 0.06f * hot)));
+        popLayer();
+    }
+    const float middle = (row.top + row.bottom) / 2;
+    const auto sun = pt(row.left + 16, middle);
     const auto sunColor = brightness_ ? rgb(inkColor) : rgb(mutedColor);
     target_->DrawEllipse(D2D1::Ellipse(sun, 3.2f, 3.2f), ink(sunColor), 1.3f);
     for (int ray = 0; ray < 8; ++ray) {
@@ -4915,25 +5082,15 @@ void Island::drawBrightness(float x, float top, float fullWidth, bool record) {
         target_->DrawLine(pt(sun.x + 5.4f * dx, sun.y + 5.4f * dy), pt(sun.x + 7.2f * dx, sun.y + 7.2f * dy),
                           ink(sunColor), 1.2f, roundStroke_.get());
     }
-    text(L"Brightness", bodyFont_.get(), box(card.left + 32, card.top, 80, brightnessHeight),
+    text(L"Brightness", bodyFont_.get(), box(row.left + 30, row.top, 90, brightnessHeight),
          rgb(brightness_ ? inkColor : mutedColor));
     if (!brightness_) {
-        text(L"Not supported by this display", bodyEndFont_.get(),
-             box(card.left + 112, card.top, card.right - card.left - 122, brightnessHeight), rgb(mutedColor));
+        text(L"Not supported", bodyEndFont_.get(), box(row.left + 110, row.top, width - 120, brightnessHeight), rgb(mutedColor));
         return;
     }
-    const float level = brightnessDrag_ ? brightnessDragValue_ : shownBrightness(drawNow_);
-    const float trackLeft = card.left + 112;
-    const float trackRight = card.right - 50;
-    const float fill = trackLeft + (trackRight - trackLeft) * clamp01(level);
-    target_->FillRoundedRectangle(rounded(D2D1::RectF(trackLeft, middle - 2, trackRight, middle + 2), 2), ink(white(0.17f)));
-    if (fill > trackLeft)
-        target_->FillRoundedRectangle(rounded(D2D1::RectF(trackLeft, middle - 2, fill, middle + 2), 2), ink(accent_));
-    const float thumb = brightnessDrag_ || hovered(Hit::brightness) ? 7.0f : 6.0f;
-    target_->FillEllipse(D2D1::Ellipse(pt(fill, middle), thumb, thumb), ink(accent_));
-    if (record) addTarget(D2D1::RectF(trackLeft - 6, card.top, trackRight + 6, card.bottom), Hit::brightness);
     text(std::to_wstring(std::lround(level * 100)) + L"%", bodyEndFont_.get(),
-         box(card.right - 46, card.top, 38, brightnessHeight), rgb(inkColor));
+         box(row.right - 50, row.top, 40, brightnessHeight), rgb(inkColor));
+    if (record) addTarget(grow(row, 6, 0), Hit::brightness);
 }
 
 void Island::drawAudioGlyph(D2D1_POINT_2F center, bool headphones, D2D1_COLOR_F color) {
@@ -4994,16 +5151,17 @@ void Island::drawPickerButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit
 }
 
 void Island::drawAudioOutputMenu(D2D1_RECT_F panel, float reveal) {
-    const float x = (panel.left + panel.right - systemPanelWidth) / 2 + padX;
-    const float y = panel.top + systemSectionTop(system_) + systemAudioMenuTop;
+    const float x = (panel.left + panel.right - systemPanelWidth) / 2 + padX + systemCardPad;
+    const float y = panel.top + systemCardsTop + systemAudioMenuTop;
+    constexpr float menuWidth = systemCardWidth - 2 * systemCardPad;
     const auto count = std::min(audioOutputs_.size(), visibleAudioOutputs);
     const auto rows = std::max<size_t>(1, count);
-    audioOutputMenuRect_ = box(x, y, systemColumnWidth, pickerHeight(rows + 1));
+    audioOutputMenuRect_ = box(x, y, menuWidth, pickerHeight(rows + 1));
     beginMenuReveal(audioOutputMenuRect_, reveal);
     drawPickerSurface(audioOutputMenuRect_, Hit::audioOutputMenu);
     const auto row = [&](size_t index) {
         return box(x + pickerInset, y + pickerInset + pickerRowHeight * static_cast<float>(index),
-                   systemColumnWidth - 2 * pickerInset, pickerRowHeight - 1);
+                   menuWidth - 2 * pickerInset, pickerRowHeight - 1);
     };
     for (size_t i = 0; i < count; ++i) {
         const size_t index = audioOutputOffset_ + i;
@@ -5015,68 +5173,28 @@ void Island::drawAudioOutputMenu(D2D1_RECT_F panel, float reveal) {
     endMenuReveal(reveal);
 }
 
+// Connected Bluetooth devices under the summary line in This PC.
 void Island::drawConnection(D2D1_RECT_F column, bool record) {
+    (void)record;
     const float x = column.left;
-    const float y = column.top;
     const float width = column.right - x;
-    const auto card = box(x, y, width, 47);
-    target_->FillRoundedRectangle(rounded(card, 8), ink(white(0.055f)));
-    drawAlertIcon(IslandAlert::Kind::connection, pt(x + 8, y + 9), accent_);
-    std::wstring_view type = L"Network";
-    switch (network_.type) {
-    case NetworkType::wifi: type = L"Wi-Fi"; break;
-    case NetworkType::ethernet: type = L"Ethernet"; break;
-    case NetworkType::cellular: type = L"Cellular"; break;
-    case NetworkType::other: break;
-    }
-    std::wstring_view access;
-    switch (network_.access) {
-    case NetworkAccess::unknown: access = L"Unavailable"; break;
-    case NetworkAccess::disconnected: access = L"Disconnected"; break;
-    case NetworkAccess::local: access = L"No internet"; break;
-    case NetworkAccess::limited: access = L"Limited internet"; break;
-    case NetworkAccess::internet: access = L"Online"; break;
-    }
-    const auto name = network_.name.empty() ? type : std::wstring_view(network_.name);
-    text(name, bodyFont_.get(), box(x + 30, y + 4, width - 69, 18), rgb(inkColor));
-    text(type, bodyFont_.get(), box(x + 30, y + 24, 72, 17), rgb(mutedColor));
-    text(access, bodyEndFont_.get(), box(card.right - 122, y + 24, 114, 17),
-         network_.access == NetworkAccess::internet ? accent_ : rgb(mutedColor));
-    if (network_.signalBars) {
-        for (unsigned i = 0; i < 5; ++i) {
-            const float height = 3.0f + 2.0f * i;
-            target_->FillRoundedRectangle(rounded(box(card.right - 26 + 4.0f * i, y + 19 - height, 2.5f, height), 1),
-                                          ink(i < *network_.signalBars ? accent_ : white(0.15f)));
-        }
-    }
-
-    text(L"Bluetooth", bodyFont_.get(), box(x, y + 52, width, 20), rgb(inkColor));
+    const auto viewport = box(x, column.top, width, bluetoothRowHeight * visibleBluetoothRows);
+    bluetoothViewport_ = viewport;
     const auto count = bluetoothDevices_.size();
     const auto end = std::min(count, bluetoothOffset_ + visibleBluetoothRows);
-    const auto summary = count > visibleBluetoothRows ?
-        std::to_wstring(bluetoothOffset_ + 1) + L"–" + std::to_wstring(end) + L" of " + std::to_wstring(count) :
-        count ? std::to_wstring(count) + L" connected" : std::wstring{};
-    text(summary, bodyEndFont_.get(), box(x, y + 52, width, 20), rgb(mutedColor));
-    const auto viewport = box(x, y + bluetoothRowsTop, width, bluetoothRowHeight * visibleBluetoothRows);
-    if (record) bluetoothViewport_ = viewport;
-    if (bluetoothDevices_.empty()) {
-        text(L"No Bluetooth devices connected", bodyFont_.get(), box(x, viewport.top, width, bluetoothRowHeight), rgb(mutedColor));
-    }
     const auto output = audioOutput_.find(L'(');
     const auto outputName = output != std::wstring::npos && audioOutput_.ends_with(L')')
         ? audioOutput_.substr(output + 1, audioOutput_.size() - output - 2) : audioOutput_;
-    target_->PushAxisAlignedClip(grow(viewport, 4, 0), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    target_->PushAxisAlignedClip(grow(column, 4, 0), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     const auto drawDevice = [&](ConnectedBluetoothDevice const& device, float top) {
         const bool active = device.audio && _wcsicmp(outputName.c_str(), device.name.c_str()) == 0;
-        drawAlertIcon(device.audio ? IslandAlert::Kind::bluetoothAudio : IslandAlert::Kind::bluetooth,
-                      pt(x + 1, top + 8), accent_);
-        text(device.name, bodyFont_.get(), box(x + 23, top + (active ? 0 : 7), width - (device.battery ? 90 : 23), 18),
-             rgb(inkColor));
-        if (active) text(L"Audio output", bodyFont_.get(), box(x + 23, top + 16, width - 23, 16), rgb(mutedColor));
+        const float batteryWidth = device.battery ? 64.0f : 0.0f;
+        text(device.name, bodyFont_.get(), box(x + 26, top, width - 26 - batteryWidth, bluetoothRowHeight),
+             active ? accent_ : rgb(mutedColor));
         if (device.battery) {
-            drawBatteryCell(column.right - 62, top + 16, *device.battery, accent_);
+            drawBatteryCell(x + width - 62, top + bluetoothRowHeight / 2, *device.battery, accent_);
             text(std::to_wstring(*device.battery) + L"%", bodyEndFont_.get(),
-                 box(column.right - 36, top, 36, bluetoothRowHeight), accent_);
+                 box(x + width - 36, top, 36, bluetoothRowHeight), rgb(mutedColor));
         }
     };
     if (const float ghost = rowGhostOpacity(bluetoothMotion_); ghost > 0) {
@@ -5091,10 +5209,6 @@ void Island::drawConnection(D2D1_RECT_F column, bool record) {
         if (opacity < 1) popLayer();
     }
     target_->PopAxisAlignedClip();
-    const auto notificationLabel = !windowsNotificationsQuiet_ ? L"Notification settings" :
-        *windowsNotificationsQuiet_ ? L"Do Not Disturb on" : L"Do Not Disturb off";
-    drawButton(box(x, viewport.top + static_cast<float>(std::clamp<size_t>(count, 1, visibleBluetoothRows)) * bluetoothRowHeight + 4,
-                   width, 25), notificationLabel, Hit::notificationSettings, record);
 }
 
 void Island::drawPrayerSchedule(D2D1_RECT_F panel, bool record) {
@@ -5108,94 +5222,90 @@ void Island::drawPrayerSchedule(D2D1_RECT_F panel, bool record) {
     if (fade < 1) pushLayer(nullptr, fade);
     struct Pop { Island* self; float fade; ~Pop() { if (fade < 1) self->popLayer(); } } pop{this, fade};
     const float x = (panel.left + panel.right - prayerPanelWidth) / 2 + padX;
-    const float y = panel.top + 12;
-    const auto info = box(x, y, prayerInfoWidth, 115);
-    const auto picker = box(x + 12, panel.top + prayerPickerTop, prayerInfoWidth - 24, prayerPickerHeight);
-    target_->FillRoundedRectangle(rounded(info, 12), ink(withAlpha(accent_, 0.10f)));
+    const float y = panel.top;
+    constexpr float width = prayerPanelWidth - 2 * padX;
+    const auto green = rgb(breakColor);
+
+    // Header: the title, and the location on the right (it opens the search in this panel).
+    text(L"Prayer", titleFont_.get(), box(x, y + padTop, 120, 22.4f), rgb(inkColor));
     const auto city = preferences_.prayerCity;
-    drawPickerButton(picker, city && city <= prayerLocations.size() ? prayerLocations[city - 1].name : L"Choose location",
-                     Hit::prayerLocationPicker, record, popupOpen_);
-    text(L"Source: SIHAT Kemenag RI", bodyEndFont_.get(),
-         box(x + prayerInfoWidth + 15, y + 120, prayerPanelWidth - 2 * padX - prayerInfoWidth - 15, 17), rgb(mutedColor));
+    const std::wstring_view place = city && city <= prayerLocations.size() ? std::wstring_view(prayerLocations[city - 1].name)
+                                                                        : std::wstring_view(L"Choose location");
+    const float chipWidth = std::clamp(std::ceil(measure(place, bodyFont_.get())) + 34, 110.0f, 240.0f);
+    drawPickerButton(box(x + width - chipWidth, y + 9, chipWidth, 28), place, Hit::prayerLocationPicker, record, popupOpen_);
+    text(L"Source: SIHAT Kemenag RI", bodyEndFont_.get(), box(x, y + 202, width, 16), rgb(mutedColor, 0.75f));
 
     if (!prayerSchedule_) {
         const auto status = prayerLoad_ == PrayerLoad::loading ? L"Loading prayer times…" : L"Prayer times unavailable";
-        text(status, bodyFont_.get(), box(x + 12, y + 12, prayerInfoWidth - 24, 25), rgb(mutedColor));
+        text(status, bodyFont_.get(), box(x, y + 60, width, 25), rgb(mutedColor));
         return;
     }
     const auto& schedule = *prayerSchedule_;
     const auto timing = prayerProgress(schedule, std::chrono::system_clock::now());
     const bool hasNext = timing.nextIndex < prayerNames.size();
-    const auto name = hasNext ? std::wstring_view(prayerNames[timing.nextIndex]) : L"Prayer times";
-    constexpr float infoInnerWidth = prayerInfoWidth - 24;
-    const float nameWidth = std::ceil(measure(name, prayerTitleFont_.get())) + 2;
-    text(name, prayerTitleFont_.get(), box(x + 12, y + 8, nameWidth, 34), rgb(inkColor));
 
-    const auto hours = std::chrono::duration_cast<std::chrono::hours>(timing.remaining);
-    const auto minutes = timing.remaining - hours;
-    std::wstring countdown = L"in ";
-    if (hours.count()) countdown += std::to_wstring(hours.count()) + L"h ";
-    countdown += std::to_wstring(minutes.count()) + L"m";
-    if (hasNext)
-        text(countdown, bodyFont_.get(), box(x + 19 + nameWidth, y + 15, infoInnerWidth - nameWidth - 7, 26), accent_);
-
-    text(std::wstring(L"Prayer times · ") + schedule.city, bodyFont_.get(),
-         box(x + 12, y + 42, infoInnerWidth, 17), rgb(mutedColor));
-    auto clock = std::wstring(L"Now ") + prayerTimeText(static_cast<int>(timing.localMinute)) + L" " + schedule.zone;
-    text(clock, bodyFont_.get(), box(x + 12, y + 62, infoInnerWidth, 17), rgb(inkColor));
-    if (timing.tomorrow)
-        text(L"Tomorrow", bodyEndFont_.get(), box(x + 12, y + 62, infoInnerWidth, 17), accent_);
-
-    const float scheduleLeft = info.right + 15;
-    const float scheduleRight = x + prayerPanelWidth - 2 * padX;
-    const float left = scheduleLeft + 10;
-    const float right = scheduleRight - 10;
-    const float baseline = y + 55;
-    constexpr float rise = 23;
-    constexpr float dayMinutes = 24 * 60;
-    const auto pointAt = [&](float t) {
-        return pt(std::lerp(left, right, t), baseline - 4 * rise * t * (1 - t));
-    };
-    const auto drawArc = [&](float t, D2D1_COLOR_F color) {
-        if (t <= 0) return;
-        const auto end = pointAt(t);
-        const float width = end.x - left;
-        PathBuilder arc(graphics_.get());
-        arc.move(pt(left, baseline), false)
-            .curve(pt(left + width / 3, baseline - 4 * rise * t / 3),
-                   pt(end.x - width / 3, end.y - 4 * rise * (2 * t - 1) * t / 3), end);
-        target_->DrawGeometry(arc.finish().get(), ink(color), 1.4f, roundStroke_.get());
-    };
-    drawArc(1, white(0.30f));
-    const float nowFraction = static_cast<float>(timing.localMinute) / dayMinutes;
-    drawArc(nowFraction, withAlpha(accent_, 0.62f));
-
-    const float labelStep = (scheduleRight - scheduleLeft) / static_cast<float>(prayerNames.size());
-    for (size_t i = 0; i < schedule.times.size(); ++i) {
-        const auto point = pointAt(static_cast<float>(schedule.times[i]) / dayMinutes);
-        const bool upcoming = !timing.tomorrow && i == timing.nextIndex;
-        if (upcoming) {
-            const auto ring = D2D1::Ellipse(point, 5.5f, 5.5f);
-            target_->FillEllipse(ring, ink(mixColor(rgb(0x10161e), accent_, 0.36f)));
-        }
-        target_->FillEllipse(D2D1::Ellipse(point, 2.6f, 2.6f), ink(upcoming ? accent_ : rgb(inkColor)));
-        const auto row = box(scheduleLeft + static_cast<float>(i) * labelStep + 2, y + 77, labelStep - 4, 38);
-        if (upcoming) {
-            target_->FillRoundedRectangle(rounded(row, 7), ink(withAlpha(accent_, 0.14f)));
-        }
-        text(prayerNames[i], buttonFont_.get(), box(row.left, row.top + 3, row.right - row.left, 14),
-             upcoming ? accent_ : rgb(mutedColor));
-        text(prayerTimeText(schedule.times[i]), prayerTimeFont_.get(), box(row.left, row.top + 17, row.right - row.left, 18),
-             upcoming ? accent_ : rgb(inkColor));
+    // The next prayer, big, with its time in green; the countdown and the clock on the right.
+    if (hasNext) {
+        text(timing.tomorrow ? L"Next, tomorrow" : L"Next", bodyFont_.get(), box(x, y + 44, 200, 17), rgb(mutedColor));
+        const std::wstring_view name = prayerNames[timing.nextIndex];
+        const float nameWidth = std::ceil(measure(name, prayerTitleFont_.get())) + 2;
+        text(name, prayerTitleFont_.get(), box(x, y + 60, nameWidth, 34), rgb(inkColor));
+        text(prayerTimeText(timing.nextMinute), prayerTitleFont_.get(), box(x + nameWidth + 8, y + 60, 120, 34), green);
+        const auto hours = std::chrono::duration_cast<std::chrono::hours>(timing.remaining);
+        const auto minutes = timing.remaining - hours;
+        std::wstring countdown = L"in ";
+        if (hours.count()) countdown += std::to_wstring(hours.count()) + L"h ";
+        countdown += std::to_wstring(minutes.count()) + L"m";
+        text(countdown, homeHeadFont_.get(), box(x + width - 200, y + 52, 200, 22), rgb(inkColor));
+    } else {
+        text(L"Prayer times", prayerTitleFont_.get(), box(x, y + 60, 300, 34), rgb(inkColor));
     }
-    const auto current = pointAt(nowFraction);
-    fillPolygon({pt(current.x - 4, current.y - 14), pt(current.x + 4, current.y - 14),
-                 pt(current.x, current.y - 7)}, accent_);
+    const auto clock = std::wstring(L"Now ") + prayerTimeText(static_cast<int>(timing.localMinute)) + L" " + schedule.zone;
+    text(clock, bodyEndFont_.get(), box(x + width - 200, y + 75, 200, 17), rgb(mutedColor));
 
-    const float axisY = y + 58;
-    text(L"00:00", buttonFont_.get(), box(scheduleLeft + 4, axisY, 40, 15), rgb(mutedColor));
-    text(L"12:00", buttonFont_.get(), box((scheduleLeft + scheduleRight) / 2 - 20, axisY, 40, 15), rgb(mutedColor));
-    text(L"23:59", buttonFont_.get(), box(scheduleRight - 44, axisY, 40, 15), rgb(mutedColor));
+    // How far along from the last prayer to the next one.
+    constexpr size_t count = prayerNames.size();
+    if (hasNext) {
+        const float now = static_cast<float>(timing.localMinute);
+        const float next = now + static_cast<float>(timing.remaining.count());
+        const size_t previous = (timing.nextIndex + count - 1) % count;
+        float since = static_cast<float>(schedule.times[previous]);
+        if (!timing.tomorrow && timing.nextIndex == 0) since -= 24 * 60;   // before Subuh: since last night's Isya
+        const float span = std::max(1.0f, next - since);
+        const float done = std::clamp((now - since) / span, 0.0f, 1.0f);
+        const auto labels = box(x, y + 102, width, 15);
+        text(std::wstring(prayerNames[previous]) + L" " + prayerTimeText(schedule.times[previous]), bodyFont_.get(),
+             box(labels.left, labels.top, 160, 15), rgb(mutedColor));
+        text(std::wstring(prayerNames[timing.nextIndex]) + L" " + prayerTimeText(timing.nextMinute), bodyEndFont_.get(),
+             box(labels.right - 160, labels.top, 160, 15), rgb(mutedColor));
+        const auto bar = box(x, y + 121, width, 4);
+        target_->FillRoundedRectangle(rounded(bar, 2), ink(white(0.12f)));
+        if (done > 0) target_->FillRoundedRectangle(rounded(box(bar.left, bar.top, width * done, 4), 2), ink(green));
+    }
+
+    // Five cards: past ones dim, the next one green. The highlight slides when the next prayer changes.
+    constexpr float gap = 8;
+    constexpr float cardWidth = (width - gap * (count - 1)) / count;
+    const float cardsTop = y + 136;
+    constexpr float cardHeight = 52;
+    if (hasNext) {
+        const float at = slidePosition(prayerSlide_, timing.nextIndex, drawNow_);
+        const auto highlight = box(x + at * (cardWidth + gap), cardsTop, cardWidth, cardHeight);
+        target_->FillRoundedRectangle(rounded(highlight, 12), ink(withAlpha(green, 0.13f)));
+        target_->DrawRoundedRectangle(rounded(grow(highlight, -0.5f, -0.5f), 11.5f), ink(withAlpha(green, 0.35f)), 1);
+    }
+    for (size_t i = 0; i < count; ++i) {
+        const auto card = box(x + static_cast<float>(i) * (cardWidth + gap), cardsTop, cardWidth, cardHeight);
+        const bool upcoming = hasNext && i == timing.nextIndex;
+        const bool past = !upcoming && (!hasNext || timing.tomorrow || i < timing.nextIndex);
+        if (!upcoming) target_->FillRoundedRectangle(rounded(card, 12), ink(white(0.045f)));
+        const float alpha = past ? 0.5f : 1.0f;
+        const int minute = upcoming && timing.tomorrow ? timing.nextMinute : schedule.times[i];
+        text(prayerNames[i], buttonFont_.get(), box(card.left, card.top + 8, cardWidth, 15),
+             upcoming ? green : rgb(mutedColor, alpha));
+        text(prayerTimeText(minute), prayerTimeFont_.get(), box(card.left, card.top + 24, cardWidth, 20),
+             upcoming ? green : rgb(inkColor, alpha));
+    }
 }
 
 void Island::drawAppVolume(AppVolume const& app, size_t index, D2D1_RECT_F row, bool record) {

@@ -341,7 +341,7 @@ DropZone::ImageResult DropZone::addImage(HBITMAP bitmap) {
     const auto now = std::chrono::steady_clock::now();
     if (hash && hash == recentImageHash_ && now - recentImageAt_ < imageDedupWindow) return ImageResult::duplicate;
     if (items_.size() >= maxItems || !remainingBytes()) return ImageResult::unavailable;
-    auto thumbnail = makeThumbnail(*factory, *image, 72, 54);
+    auto thumbnail = makeThumbnail(*factory, *image, 120, 120);
     if (!thumbnail || !prepareImageFolder()) return ImageResult::unavailable;
 
     auto label = L"Capture " + std::to_wstring(++imageNumber_) + L".png";

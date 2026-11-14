@@ -109,6 +109,16 @@ void Scratchpad::save() {
     std::wstring text(static_cast<size_t>(count) + 1, L'\0');
     text.resize(GetWindowTextW(edit_, text.data(), count + 1));
     view_.text = std::move(text);
+    write();
+}
+
+void Scratchpad::clear() {
+    view_.text.clear();
+    if (edit_) SetWindowTextW(edit_, L"");
+    write();
+}
+
+void Scratchpad::write() {
     view_.saveFailed = true;
     if (file_.empty()) return;
 
