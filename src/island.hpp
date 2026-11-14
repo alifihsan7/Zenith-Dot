@@ -746,6 +746,7 @@ private:
     winrt::com_ptr<IDWriteTextFormat> monoEndFont_;
     winrt::com_ptr<IDWriteTextFormat> clockFont_;
     winrt::com_ptr<IDWriteTextFormat> buttonFont_;
+    winrt::com_ptr<IDWriteTextFormat> timerTextFont_;   // 13 px, the Timers panel
     winrt::com_ptr<IDWriteTextFormat> glyphFont_;
     winrt::com_ptr<IDWriteTextFormat> letterFont_;
     winrt::com_ptr<IDWriteTextFormat> alertTitleFont_;

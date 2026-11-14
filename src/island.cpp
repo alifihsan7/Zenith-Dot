@@ -59,6 +59,7 @@ constexpr float panelWidth = 369;
 constexpr float homeRowHeight = 43;
 constexpr float homeModeRowHeight = 36;
 constexpr float mediaPanelWidth = 344;
+constexpr float timersPanelWidth = 430;   // wider than the default so Focus has room
 constexpr float systemPanelWidth = 530;
 constexpr float brightnessTop = 75;
 constexpr float brightnessHeight = 34;
@@ -1330,10 +1331,10 @@ float Island::screenHeight(Screen screen) const {
             navHeight + sourceMenuTop + sourcePickerHeight(std::min(media_.sources.size(), visibleSources)) + padBottom);
         return mediaPanelHeight;
     case Screen::timers:
-        // Focus with Custom adds the stepper row; an idle Focus view lays out from the template row down.
-        if (!quickView_ && !focus_.running() && !focus_.paused())
-            return preferences_.rhythm == customRhythm ? 328.0f : 284.0f;
-        return 268;
+        if (quickView_) return 300;
+        if (focus_.running() || focus_.paused()) return 290;
+        // Idle Focus: templates, and with Custom the stepper row below them.
+        return preferences_.rhythm == customRhythm ? 368.0f : 312.0f;
     case Screen::scratch: return scratchTasks_ ? 216.0f - 116 + taskFieldHeight : 216.0f;
     case Screen::drop: return dropItems_.empty() ? dropEmptyHeight :
         dropFilledBaseHeight + dropRowHeight * static_cast<float>(std::min(dropItems_.size(), visibleDropRows));
@@ -1360,7 +1361,8 @@ float Island::panelWidthAt(Clock::time_point now) const {
     const float width = screen_ == Screen::media
         ? mediaPanelWidth + (preferences_.enabled(Screen::media) && media_.hasSession && lyricsOpen_ ? lyricsWidth_ : 0)
         : screen_ == Screen::system ? systemPanelWidth
-        : screen_ == Screen::prayer ? prayerPanelWidth : panelWidth;
+        : screen_ == Screen::prayer ? prayerPanelWidth
+        : screen_ == Screen::timers ? timersPanelWidth : panelWidth;
     return animate_ ? std::lerp(widthFrom_, width, sampleSpring(widthStart_, shapeTime, now, 0, 1).value) : width;
 }
 
@@ -2856,6 +2858,7 @@ void Island::prepareText() {
     create(monoEndFont_, L"Consolas", 10, normal, end);
     create(clockFont_, L"Segoe UI", 32, normal, center);
     create(buttonFont_, L"Segoe UI", 11, normal, center);
+    create(timerTextFont_, L"Segoe UI", 13, normal, center);
     create(glyphFont_, L"Segoe UI Symbol", 17, normal, center);
     create(letterFont_, L"Segoe UI", 10, strong, center);
     create(alertTitleFont_, L"Segoe UI", 11, DWRITE_FONT_WEIGHT_BOLD, start);
@@ -4069,13 +4072,15 @@ void Island::drawLyrics(D2D1_RECT_F panel, Clock::time_point now, double positio
 }
 
 void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
+    constexpr float width = timersPanelWidth;
     const float x = panel.left;
     const float y = panel.top;
-    const float centerX = x + panelWidth / 2;
-    text(L"Timers", titleFont_.get(), box(x + padX, y + padTop, innerWidth, 22.4f), rgb(inkColor));
+    const float centerX = x + width / 2;
+    text(L"Timers", titleFont_.get(), box(x + padX, y + padTop, width - 2 * padX, 22.4f), rgb(inkColor));
     constexpr wchar_t const* labels[]{L"Timer", L"Focus"};
     const size_t selected = quickView_ ? 0 : 1;
     const bool focusBusy = focus_.running() || focus_.paused();
+    auto* font = timerTextFont_.get();
 
     const auto control = [&](D2D1_RECT_F rect, std::wstring_view label, Hit hit, size_t index = 0,
                              bool enabled = true, bool active = false, bool primary = false, bool quiet = false,
@@ -4088,42 +4093,44 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         if (primary) {
             const auto fill = down ? mixColor(accent_, rgb(0x101318), 0.15f)
                 : mixColor(accent_, white(1), 0.12f * hot);
-            target_->FillRoundedRectangle(rounded(rect, 8), ink(fill));
+            target_->FillRoundedRectangle(rounded(rect, 9), ink(fill));
         } else if (filled || hot > 0 || down || !quiet) {
             const float rest = quiet ? 0.0f : enabled ? 0.065f : 0.035f;
             const auto fill = filled ? withAlpha(accent_, down ? 0.26f : 0.18f + 0.05f * hot)
                 : white(down ? 0.16f : std::lerp(rest, 0.11f, hot));
-            target_->FillRoundedRectangle(rounded(rect, 8), ink(fill));
+            target_->FillRoundedRectangle(rounded(rect, 9), ink(fill));
         }
-        text(label, buttonFont_.get(), rect, foreground);
+        text(label, font, rect, foreground);
         if (record && enabled) addTarget(rect, hit, index);
     };
-
+    const auto line = [&](float top, std::wstring const& value) {
+        text(value, font, box(x + padX, y + top, width - 2 * padX, 20), rgb(mutedColor));
+    };
 
     // In the Focus view, one dot per round at the top right (filled = that round's Focus is done).
     const int rounds = preferences_.focusRounds();
     if (!quickView_) {
         for (int i = 0; i < rounds; ++i) {
-            const auto center = pt(x + panelWidth - padX - 4 - 11.0f * static_cast<float>(rounds - 1 - i), y + padTop + 11);
+            const auto center = pt(x + width - padX - 5 - 13.0f * static_cast<float>(rounds - 1 - i), y + padTop + 11);
             const bool finished = i < focusRound_ - (breakPhase_ ? 0 : 1);
             const bool current = i == focusRound_ - 1 && focusBusy && !finished;
-            const float radius = finished || current ? 3.5f : 2.5f;
+            const float radius = finished || current ? 4.0f : 3.0f;
             target_->FillEllipse(D2D1::Ellipse(center, radius, radius),
                                  ink(finished ? accent_ : current ? withAlpha(accent_, 0.62f) : white(0.32f)));
         }
     }
-    target_->FillRoundedRectangle(rounded(box(centerX - 120, y + 39, 240, 36), 11), ink(white(0.045f)));
+    target_->FillRoundedRectangle(rounded(box(centerX - 150, y + 39, 300, 40), 12), ink(white(0.045f)));
     const float slide = slidePosition(timerSlide_, selected, now);
-    target_->FillRoundedRectangle(rounded(box(centerX - 116 + 118 * slide, y + 43, 114, 28), 8), ink(withAlpha(accent_, 0.18f)));
+    target_->FillRoundedRectangle(rounded(box(centerX - 146 + 148 * slide, y + 43, 144, 32), 9), ink(withAlpha(accent_, 0.18f)));
     for (size_t i = 0; i < std::size(labels); ++i) {
-        control(box(centerX - 116 + 118 * static_cast<float>(i), y + 43, 114, 28),
+        control(box(centerX - 146 + 148 * static_cast<float>(i), y + 43, 144, 32),
                 labels[i], Hit::timerView, i, true, i == selected, false, true, true);
     }
 
     const auto& timer = quickView_ ? quick_ : focus_;
     // Only the Quick Timer's digits can be dragged; Focus lengths come from the rhythm.
     const bool adjustable = quickView_ && !timer.running() && !timer.paused();
-    const auto clock = box(centerX - 79, y + 77, 158, 44);
+    const auto clock = box(centerX - 79, y + 85, 158, 44);
     const int seconds = timer.seconds(now);
     const float roll = adjustable && animate_ && timerDigitsTo_ == seconds
         ? easeInOut(progress(timerDigitsStart_, timerDigitMotion, now)) : 1;
@@ -4154,43 +4161,40 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     if (quickView_) {
         for (size_t i = 0; i < std::size(timerPresets); ++i) {
             const auto minutes = timerPresets[i];
-            control(box(centerX - 88 + 60 * static_cast<float>(i), y + 126, 56, 26),
+            control(box(centerX - 117 + 80 * static_cast<float>(i), y + 138, 74, 30),
                     std::to_wstring(minutes) + L" min", Hit::timerPreset, i, adjustable,
                     quick_.duration() == minutes * 60);
         }
         if (adjustable) {
             const int duration = quick_.duration();
             for (size_t unit = 0; unit < 2; ++unit) {
-                const float left = centerX - 111 + 117 * static_cast<float>(unit);
-                control(box(left, y + 157, 28, 26), L"−", Hit::quickAdjust, 2 * unit, duration > 1);
-                text(unit == 0 ? L"min" : L"sec", buttonFont_.get(), box(left + 30, y + 157, 45, 26), rgb(mutedColor));
-                control(box(left + 77, y + 157, 28, 26), L"+", Hit::quickAdjust, 2 * unit + 1, duration < timerMaxSeconds);
+                const float left = centerX - 140 + 150 * static_cast<float>(unit);
+                control(box(left, y + 178, 32, 30), L"−", Hit::quickAdjust, 2 * unit, duration > 1);
+                text(unit == 0 ? L"min" : L"sec", font, box(left + 34, y + 178, 62, 30), rgb(mutedColor));
+                control(box(left + 98, y + 178, 32, 30), L"+", Hit::quickAdjust, 2 * unit + 1, duration < timerMaxSeconds);
             }
         }
         auto action = L"Start";
         if (quick_.running()) action = L"Pause";
         else if (quick_.paused()) action = L"Resume";
         else if (quick_.done()) action = L"Restart";
-        control(box(centerX - 93, y + 191, 106, 29), action, Hit::timerToggle, 0, true, false, true);
-        control(box(centerX + 21, y + 191, 72, 29), L"Reset", Hit::timerReset, 0, true, false, false, true);
+        control(box(centerX - 110, y + 220, 126, 32), action, Hit::timerToggle, 0, true, false, true);
+        control(box(centerX + 24, y + 220, 86, 32), L"Reset", Hit::timerReset, 0, true, false, false, true);
         return;
     }
 
     const auto& rhythm = preferences_;
-    const auto line = [&](float top, std::wstring const& value) {
-        text(value, buttonFont_.get(), box(x + padX, y + top, innerWidth, 18), rgb(mutedColor));
-    };
     if (!focusBusy) {
-        line(124, std::to_wstring(rounds) + (rounds == 1 ? L" round · " : L" rounds · ") +
+        line(136, std::to_wstring(rounds) + (rounds == 1 ? L" round · " : L" rounds · ") +
                   durationText(rounds * rhythm.focusMinutes()) + L" focus · " + durationText(rhythm.sessionMinutes()) + L" total");
         // Templates and Custom.
         for (size_t i = 0; i <= customRhythm; ++i) {
             const auto label = i == customRhythm ? std::wstring(L"Custom")
                 : std::to_wstring(rhythms[i].focus) + L" + " + std::to_wstring(rhythms[i].rest);
-            control(box(centerX - 118 + 60 * static_cast<float>(i), y + 146, 56, 26), label, Hit::focusRhythm, i,
+            control(box(centerX - 179 + 90 * static_cast<float>(i), y + 164, 84, 32), label, Hit::focusRhythm, i,
                     true, rhythm.rhythm == i);
         }
-        float next = 180;
+        float next = 208;
         if (rhythm.rhythm == customRhythm) {
             const std::wstring values[]{std::to_wstring(rhythm.customFocus) + L"m", std::to_wstring(rhythm.customBreak) + L"m",
                                         std::to_wstring(rhythm.customRounds) + L"×"};
@@ -4200,32 +4204,32 @@ void Island::drawTimers(D2D1_RECT_F panel, Clock::time_point now, bool record) {
             const bool canRaise[]{rhythm.customFocus < maxFocusMinutes, rhythm.customBreak < maxBreakMinutes,
                                   rhythm.customRounds < maxRounds};
             for (size_t i = 0; i < 3; ++i) {
-                const float left = centerX - 118 + 80 * static_cast<float>(i);
-                control(box(left, y + next, 22, 24), L"−", Hit::focusAdjust, 2 * i, canLower[i]);
-                text(values[i], buttonFont_.get(), box(left + 22, y + next, 32, 24), rgb(inkColor));
-                control(box(left + 54, y + next, 22, 24), L"+", Hit::focusAdjust, 2 * i + 1, canRaise[i]);
-                text(captions[i], buttonFont_.get(), box(left, y + next + 25, 76, 14), rgb(mutedColor));
+                const float left = centerX - 179 + 122 * static_cast<float>(i);
+                control(box(left, y + next, 32, 30), L"−", Hit::focusAdjust, 2 * i, canLower[i]);
+                text(values[i], font, box(left + 32, y + next, 48, 30), rgb(inkColor));
+                control(box(left + 80, y + next, 32, 30), L"+", Hit::focusAdjust, 2 * i + 1, canRaise[i]);
+                text(captions[i], font, box(left, y + next + 31, 112, 18), rgb(mutedColor));
             }
-            next += 44;
+            next += 56;
         }
         line(next, L"Do Not Disturb turns on during Focus.");
-        control(box(centerX - 53, y + next + 24, 106, 29), L"Start", Hit::focusToggle, 0, true, false, true);
+        control(box(centerX - 63, y + next + 30, 126, 32), L"Start", Hit::focusToggle, 0, true, false, true);
         return;
     }
 
     // A running session: where it is, when it ends, and what is quiet.
     std::wstring status = phaseName(breakPhase_) + L" · round " + std::to_wstring(focusRound_) + L" of " + std::to_wstring(rounds);
     status += focus_.paused() ? L" · paused" : L" · ends " + clockAfter(sessionSecondsLeft(now));
-    line(124, status);
-    if (!breakPhase_) line(144, focus_.running() ? L"Do Not Disturb is on during Focus." : L"Do Not Disturb resumes with Focus.");
+    line(136, status);
+    if (!breakPhase_) line(158, focus_.running() ? L"Do Not Disturb is on during Focus." : L"Do Not Disturb resumes with Focus.");
     const auto action = focus_.running() ? L"Pause" : L"Resume";
     if (breakPhase_) {
-        control(box(centerX - 118, y + 191, 76, 29), action, Hit::focusToggle, 0, true, false, true);
-        control(box(centerX - 38, y + 191, 76, 29), L"Skip break", Hit::focusSkip, 0, true, false, false, true);
-        control(box(centerX + 42, y + 191, 76, 29), L"End", Hit::focusReset, 0, true, false, false, true);
+        control(box(centerX - 147, y + 204, 94, 32), action, Hit::focusToggle, 0, true, false, true);
+        control(box(centerX - 47, y + 204, 94, 32), L"Skip break", Hit::focusSkip, 0, true, false, false, true);
+        control(box(centerX + 53, y + 204, 94, 32), L"End", Hit::focusReset, 0, true, false, false, true);
     } else {
-        control(box(centerX - 93, y + 191, 106, 29), action, Hit::focusToggle, 0, true, false, true);
-        control(box(centerX + 21, y + 191, 72, 29), L"End", Hit::focusReset, 0, true, false, false, true);
+        control(box(centerX - 110, y + 204, 126, 32), action, Hit::focusToggle, 0, true, false, true);
+        control(box(centerX + 24, y + 204, 86, 32), L"End", Hit::focusReset, 0, true, false, false, true);
     }
 }
 
