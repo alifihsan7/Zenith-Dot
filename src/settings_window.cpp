@@ -16,26 +16,43 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cwctype>
 #include <span>
+#include <string>
 
 namespace zenith {
 namespace {
 
 constexpr wchar_t title[] = L"Zenula Settings";
 constexpr wchar_t repository[] = L"https://github.com/alifihsan7/Zenula";
-constexpr COLORREF background = RGB(15, 18, 24);
-constexpr COLORREF sidebar = RGB(20, 24, 32);
-constexpr COLORREF surface = RGB(24, 29, 38);
-constexpr COLORREF selected = RGB(31, 48, 69);
-constexpr COLORREF foreground = RGB(240, 244, 250);
-constexpr COLORREF muted = RGB(165, 178, 196);
+// Neutral graphite like the island's surfaces; Zenula blue marks the active choice.
+constexpr COLORREF background = RGB(17, 18, 20);
+constexpr COLORREF sidebar = RGB(22, 23, 26);
+constexpr COLORREF surface = RGB(29, 30, 34);
+constexpr COLORREF selected = RGB(38, 48, 60);
+constexpr COLORREF foreground = RGB(243, 244, 246);
+constexpr COLORREF muted = RGB(160, 165, 174);
 constexpr COLORREF accent = RGB(145, 202, 255);
-constexpr COLORREF border = RGB(47, 57, 72);
+constexpr COLORREF border = RGB(56, 58, 64);
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
 constexpr auto pageDuration = 180ms;
 constexpr auto toggleDuration = 180ms;
 constexpr UINT_PTR motionTimer = 1;
+
+// "JAWA BARAT" -> "Jawa Barat"; short all-caps words (DKI, DI) stay as acronyms.
+std::wstring titleCase(std::wstring_view text) {
+    std::wstring result(text);
+    for (size_t start = 0; start < result.size();) {
+        auto end = result.find(L' ', start);
+        if (end == std::wstring::npos) end = result.size();
+        if (end - start > 3) {
+            for (size_t i = start + 1; i < end; ++i) result[i] = static_cast<wchar_t>(towlower(result[i]));
+        }
+        start = end + 1;
+    }
+    return result;
+}
 
 void notifyOverlay() {
     if (const auto overlay = FindWindowW(overlayWindowClass, nullptr)) {
@@ -55,7 +72,8 @@ constexpr Page pages[]{
     {IDC_SETTINGS_DISPLAY, L"Appearance", L"Adjust the island's size, shape, and accent.", nullptr},
     {IDC_SETTINGS_FEATURES, L"Features", L"Choose what appears in the island and arrange its feature bar.", nullptr},
     {IDC_SETTINGS_PRIVACY, L"Privacy & Clipboard", L"Choose which clipboard and device indicators appear.", nullptr},
-    {IDC_SETTINGS_NOTIFICATIONS, L"Notifications", L"Manage island alerts and prayer reminders.", nullptr},
+    {IDC_SETTINGS_NOTIFICATIONS, L"Notifications", L"Choose when the island may show alerts.", nullptr},
+    {IDC_SETTINGS_PRAYER, L"Prayer", L"Pick your location and how Zenula reminds you.", nullptr},
     {IDC_SETTINGS_ABOUT, L"About", L"Zenula for Windows", nullptr},
 };
 
@@ -70,7 +88,7 @@ struct Option {
 
 constexpr Option options[]{
     {IDC_START_WITH_WINDOWS, IDC_SETTINGS_GENERAL, L"Launch Zenula when you sign in.", nullptr, nullptr},
-    {IDC_PRAYER_REMINDERS, IDC_SETTINGS_NOTIFICATIONS, L"Show a bubble when it’s time to pray.",
+    {IDC_PRAYER_REMINDERS, IDC_SETTINGS_PRAYER, L"Show a bubble when it’s time to pray.",
         &Settings::prayerReminders, &Settings::saveNotifications},
     {IDC_HIDE_FULLSCREEN, IDC_SETTINGS_DISPLAY, L"Hide the island over fullscreen apps and games.",
         &Settings::hideInFullscreen, &Settings::saveDisplay},
@@ -115,8 +133,10 @@ constexpr wchar_t const* pauseChoices[]{L"Immediately", L"3 seconds", L"5 second
 constexpr wchar_t const* focusChoices[]{L"15 minutes", L"25 minutes", L"45 minutes"};
 constexpr wchar_t const* breakChoices[]{L"5 minutes", L"10 minutes", L"15 minutes"};
 constexpr wchar_t const* quietChoices[]{L"Off", L"Follow Windows", L"On"};
+constexpr wchar_t const* earlyChoices[]{L"On time", L"5 min early", L"10 min early", L"15 min early"};
+constexpr unsigned earlyMinutes[]{0, 5, 10, 15};
 constexpr int choiceControls[]{IDC_PILL_WIDTH, IDC_ISLAND_SIZE, IDC_ACCENT_MODE, IDC_CUSTOM_ACCENT,
-    IDC_PAUSE_DELAY, IDC_FOCUS_DURATION, IDC_BREAK_DURATION, IDC_QUIET_MODE};
+    IDC_PAUSE_DELAY, IDC_FOCUS_DURATION, IDC_BREAK_DURATION, IDC_QUIET_MODE, IDC_PRAYER_EARLY};
 
 struct TestButton {
     int control;
@@ -165,6 +185,7 @@ bool isTestButton(int id) {
 std::span<wchar_t const* const> choices(int id) {
     switch (id) {
     case IDC_QUIET_MODE: return quietChoices;
+    case IDC_PRAYER_EARLY: return earlyChoices;
     case IDC_PILL_WIDTH: return widthChoices;
     case IDC_ISLAND_SIZE: return sizeChoices;
     case IDC_ACCENT_MODE: return accentChoices;
@@ -353,7 +374,6 @@ void SettingsWindow::initialize(HWND window) {
     DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
     icon_ = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_ZENITH_DOT));
     if (icon_) SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon_));
-    SendDlgItemMessageW(window_, IDC_PRAYER_LEAD, EM_SETLIMITTEXT, 3, 0);
     startup_ = startupShortcut();
     EnableWindow(GetDlgItem(window, IDC_START_WITH_WINDOWS), !startup_.empty());
     for (const auto& option : options) {
@@ -363,7 +383,7 @@ void SettingsWindow::initialize(HWND window) {
         SetWindowSubclass(GetDlgItem(window, page.id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
     for (const int id : choiceControls)
         SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
-    for (const int id : {IDC_PRAYER_CITY, IDC_PRAYER_LEAD_SAVE, IDC_APP_NOTIFICATIONS, IDC_TEST_NOTIFICATION, IDC_SETTINGS_GITHUB, IDC_FEATURE_BACK, IDC_FEATURE_UP, IDC_FEATURE_DOWN,
+    for (const int id : {IDC_PRAYER_CITY, IDC_APP_NOTIFICATIONS, IDC_TEST_NOTIFICATION, IDC_SETTINGS_GITHUB, IDC_FEATURE_BACK, IDC_FEATURE_UP, IDC_FEATURE_DOWN,
                         IDC_FEATURE_MEDIA, IDC_FEATURE_TIMERS, IDC_FEATURE_SCRATCH, IDC_FEATURE_DROP, IDC_FEATURE_SYSTEM}) {
         SetWindowSubclass(GetDlgItem(window, id), optionProc, 0, reinterpret_cast<DWORD_PTR>(this));
     }
@@ -429,6 +449,7 @@ void SettingsWindow::showControls() {
     for (size_t row = 0; row < std::size(choiceControls); ++row) {
         const int id = choiceControls[row];
         const bool visible = id == IDC_QUIET_MODE ? page_ == IDC_SETTINGS_NOTIFICATIONS :
+            id == IDC_PRAYER_EARLY ? page_ == IDC_SETTINGS_PRAYER :
             id == IDC_PAUSE_DELAY ? detail_ == IDC_FEATURE_MEDIA && enabled :
             id == IDC_FOCUS_DURATION || id == IDC_BREAK_DURATION ? detail_ == IDC_FEATURE_TIMERS && enabled :
             appearance && (id != IDC_CUSTOM_ACCENT || settings_.accentMode == 2);
@@ -456,6 +477,8 @@ void SettingsWindow::showControls() {
             const bool chosen = i == currentChoice(id);
             const auto label = chosen ? std::wstring(values[i]) + L", selected" : std::wstring(values[i]);
             SetWindowTextW(button, label.c_str());
+            // Early reminders only mean something once a location and reminders are on.
+            if (id == IDC_PRAYER_EARLY) EnableWindow(button, settings_.prayerCity != 0 && settings_.prayerReminders);
             SetWindowPos(button, nullptr, left, top, width - inset.right, height,
                          SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         }
@@ -489,15 +512,13 @@ void SettingsWindow::showControls() {
     EnableWindow(appNotifications, packaged_ && !notificationRequest_);
     show(IDC_APP_NOTIFICATIONS, page_ == IDC_SETTINGS_NOTIFICATIONS && packaged_);
     const auto city = settings_.prayerCity;
-    const auto location = city ? std::wstring(prayerLocations[city - 1].name) + L" · " + prayerLocations[city - 1].zone()
-                               : L"Choose prayer location";
-    SetDlgItemTextW(window_, IDC_PRAYER_CITY, location.c_str());
-    show(IDC_PRAYER_CITY, page_ == IDC_SETTINGS_NOTIFICATIONS);
-    show(IDC_PRAYER_LEAD, page_ == IDC_SETTINGS_NOTIFICATIONS);
-    show(IDC_PRAYER_LEAD_SAVE, page_ == IDC_SETTINGS_NOTIFICATIONS);
-    EnableWindow(GetDlgItem(window_, IDC_PRAYER_LEAD), city != 0);
-    EnableWindow(GetDlgItem(window_, IDC_PRAYER_LEAD_SAVE), city != 0);
+    SetDlgItemTextW(window_, IDC_PRAYER_CITY, city ? prayerLocations[city - 1].name : L"Prayer times are off");
+    show(IDC_PRAYER_CITY, page_ == IDC_SETTINGS_PRAYER);
     show(IDC_TEST_NOTIFICATION, page_ == IDC_SETTINGS_NOTIFICATIONS);
+    // Without the MSIX build there is no Connect button, so the test takes its place on the left.
+    const auto testBounds = packaged_ ? units(300, 172, 410, 195) : units(144, 172, 254, 195);
+    SetWindowPos(GetDlgItem(window_, IDC_TEST_NOTIFICATION), nullptr, testBounds.left, testBounds.top,
+                 testBounds.right - testBounds.left, testBounds.bottom - testBounds.top, SWP_NOZORDER | SWP_NOACTIVATE);
     show(IDC_SETTINGS_GITHUB, page_ == IDC_SETTINGS_ABOUT);
     EnableWindow(GetDlgItem(window_, IDC_PRAYER_REMINDERS), settings_.prayerCity != 0);
     EnableWindow(GetDlgItem(window_, IDC_CLIPBOARD_PREVIEWS), settings_.showClipboardBubble);
@@ -549,8 +570,6 @@ void SettingsWindow::runTest(SettingsTest test) {
 
 void SettingsWindow::sync() {
     settings_ = Settings::load();
-    if (GetFocus() != GetDlgItem(window_, IDC_PRAYER_LEAD))
-        SetDlgItemInt(window_, IDC_PRAYER_LEAD, settings_.prayerLeadMinutes, FALSE);
     for (size_t row = 0; row < std::size(choiceControls); ++row) {
         const auto id = choiceControls[row];
         for (size_t i = 0; i < choices(id).size(); ++i) {
@@ -573,6 +592,12 @@ void SettingsWindow::sync() {
 unsigned SettingsWindow::currentChoice(int id) const {
     switch (id) {
     case IDC_QUIET_MODE: return static_cast<unsigned>(settings_.quietMode);
+    case IDC_PRAYER_EARLY: {
+        // A lead set to some other value (an older build allowed any minute) highlights nothing.
+        const auto match = std::ranges::find(earlyMinutes, settings_.prayerLeadMinutes);
+        return match == std::end(earlyMinutes) ? static_cast<unsigned>(choicesPerRow)
+                                               : static_cast<unsigned>(match - std::begin(earlyMinutes));
+    }
     case IDC_PILL_WIDTH: return settings_.fixedPillMinimum;
     case IDC_ISLAND_SIZE: return settings_.islandSize;
     case IDC_ACCENT_MODE: return settings_.accentMode;
@@ -607,6 +632,7 @@ bool SettingsWindow::commandChoice(int id) {
     auto updated = Settings::load();
     switch (id) {
     case IDC_QUIET_MODE: updated.quietMode = static_cast<QuietMode>(index); break;
+    case IDC_PRAYER_EARLY: updated.prayerLeadMinutes = earlyMinutes[index]; break;
     case IDC_PILL_WIDTH: updated.fixedPillMinimum = index != 0; break;
     case IDC_ISLAND_SIZE: updated.islandSize = index; break;
     case IDC_ACCENT_MODE: updated.accentMode = index; break;
@@ -614,7 +640,7 @@ bool SettingsWindow::commandChoice(int id) {
     case IDC_FOCUS_DURATION: updated.focusPreset = index; break;
     case IDC_BREAK_DURATION: updated.breakPreset = index; break;
     }
-    const bool saved = id == IDC_QUIET_MODE
+    const bool saved = id == IDC_QUIET_MODE || id == IDC_PRAYER_EARLY
         ? updated.saveNotifications() : updated.saveIsland();
     if (saved) {
         const auto before = currentChoice(id);
@@ -622,6 +648,7 @@ bool SettingsWindow::commandChoice(int id) {
         const auto base = (std::ranges::find(choiceControls, id) - std::begin(choiceControls)) * choicesPerRow;
         const auto now = Clock::now();
         for (const auto changed : {before, index}) {
+            if (changed >= choicesPerRow) continue;
             auto& motion = choiceMotion_[base + changed];
             const float destination = changed == index ? 1.0f : 0.0f;
             motion = {animate_ ? motion.value(now) : destination, destination, animate_ ? now : Clock::time_point{}};
@@ -649,22 +676,6 @@ void SettingsWindow::completeNotificationAccess(NotificationAccess access) {
 }
 
 bool SettingsWindow::command(int id) {
-    if (id == IDC_PRAYER_LEAD_SAVE) {
-        BOOL valid = FALSE;
-        const auto minutes = GetDlgItemInt(window_, IDC_PRAYER_LEAD, &valid, FALSE);
-        if (!valid || minutes > maxPrayerLeadMinutes) {
-            MessageBoxW(window_, L"Enter 0 to 120 minutes. Use 0 to turn the advance reminder off.",
-                        title, MB_OK | MB_ICONINFORMATION);
-            SetFocus(GetDlgItem(window_, IDC_PRAYER_LEAD));
-            return true;
-        }
-        auto updated = Settings::load();
-        updated.prayerLeadMinutes = minutes;
-        if (updated.saveNotifications()) notifyOverlay();
-        else MessageBoxW(window_, L"Could not save the advance reminder.", title, MB_OK | MB_ICONWARNING);
-        sync();
-        return true;
-    }
     if (id == IDC_PRAYER_CITY) {
         const auto city = choosePrayerLocation(window_, settings_.prayerCity);
         if (city && *city != settings_.prayerCity) {
@@ -786,6 +797,7 @@ void SettingsWindow::redrawMotion() {
         for (int id = IDC_FEATURE_MEDIA; id <= IDC_FEATURE_SYSTEM; ++id)
             InvalidateRect(GetDlgItem(window_, id), nullptr, FALSE);
         if (page_ == IDC_SETTINGS_ABOUT) InvalidateRect(GetDlgItem(window_, IDC_SETTINGS_GITHUB), nullptr, FALSE);
+        if (page_ == IDC_SETTINGS_PRAYER) InvalidateRect(GetDlgItem(window_, IDC_PRAYER_CITY), nullptr, FALSE);
     }
     for (size_t i = 0; i < choiceMotion_.size(); ++i) {
         auto& motion = choiceMotion_[i];
@@ -833,18 +845,23 @@ void SettingsWindow::paint(HDC dc) {
         if (page.group) label(units(145, 61, 456, 75), page.group, canvas_.strong(), foreground);
     }
     if (page_ == IDC_SETTINGS_NOTIFICATIONS) {
-        label(units(145, 198, 331, 214), L"Advance prayer reminder", canvas_.strong(), foreground);
-        label(units(145, 214, 331, 227), L"0 turns it off", canvas_.body(), muted);
-        label(units(380, 204, 399, 223), L"min", canvas_.body(), muted);
-        label(units(145, 235, 456, 249),
-              packaged_ ? L"Windows apps · Show the app name and notification title."
-                        : L"Windows app alerts require the MSIX build.",
+        label(units(145, 108, 456, 122), L"Silences island alerts. Camera and mic status stay visible.",
               canvas_.body(), muted);
-        label(units(145, 108, 456, 122), L"Silences island alerts. Camera and mic status remain visible.",
+        label(units(145, 136, 456, 150), L"Windows app notifications", canvas_.strong(), foreground);
+        label(units(145, 151, 456, 165),
+              packaged_ ? L"Show the app name and title of incoming Windows notifications."
+                        : L"Available in the MSIX build. The test shows a sample alert.",
+              canvas_.body(), muted);
+    }
+    if (page_ == IDC_SETTINGS_PRAYER) {
+        label(units(145, 61, 456, 75), L"Location", canvas_.strong(), foreground);
+        label(units(145, 205, 456, 219), L"Times come from SIHAT Kemenag RI for 517 regencies and cities.",
               canvas_.body(), muted);
     }
     if (page_ == IDC_SETTINGS_ABOUT) {
         label(units(145, 70, 418, 92), L"Version " ZENITH_VERSION_TEXT, canvas_.strong(), foreground);
+        label(units(145, 136, 456, 150), L"Lyrics from LRCLIB · Prayer times from SIHAT Kemenag RI", canvas_.body(), muted);
+        label(units(145, 151, 456, 165), L"Settings are stored for this Windows user only.", canvas_.body(), muted);
     }
     canvas_.end();
     const auto logo = units(13, 13, 13, 13);
@@ -928,6 +945,17 @@ void SettingsWindow::drawButton(DRAWITEMSTRUCT const& item) {
     if (featureRow) {
         area.left = area.right - px(21);
         canvas_.text(area, L"›", canvas_.body(), blend(base, muted, phase));
+    } else if (id == IDC_PRAYER_CITY) {
+        if (const auto city = settings_.prayerCity) {
+            const auto& place = prayerLocations[city - 1];
+            const std::wstring detail = titleCase(place.province) + L" · " + place.zone();
+            RECT second = area;
+            second.left += px(170);
+            second.right -= px(80);
+            canvas_.text(second, detail.c_str(), canvas_.body(), blend(base, muted, phase));
+        }
+        area.left = area.right - px(80);
+        canvas_.text(area, L"Change  ›", canvas_.body(), blend(base, accent, phase));
     } else if (id == IDC_CUSTOM_ACCENT) {
         wchar_t hex[16]{};
         swprintf_s(hex, L"#%06X", settings_.customAccent);
@@ -1007,16 +1035,6 @@ INT_PTR CALLBACK SettingsWindow::dialog(HWND window, UINT message, WPARAM wparam
         if (wparam == motionTimer) {
             self->redrawMotion();
             return TRUE;
-        }
-        break;
-    case WM_CTLCOLOREDIT:
-        if (GetDlgCtrlID(reinterpret_cast<HWND>(lparam)) == IDC_PRAYER_LEAD) {
-            const auto dc = reinterpret_cast<HDC>(wparam);
-            const auto fill = GetFocus() == reinterpret_cast<HWND>(lparam) ? selected : surface;
-            SetTextColor(dc, foreground);
-            SetBkColor(dc, fill);
-            SetDCBrushColor(dc, fill);
-            return reinterpret_cast<INT_PTR>(GetStockObject(DC_BRUSH));
         }
         break;
     case WM_ERASEBKGND:

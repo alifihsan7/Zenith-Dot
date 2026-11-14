@@ -2,20 +2,51 @@
 #include "resource.h"
 
 #include <dwmapi.h>
+#include <commctrl.h>
+#include <uxtheme.h>
 #include <algorithm>
+#include <cwctype>
+#include <string>
 #include <numeric>
 #include <vector>
 
 namespace zenith {
 namespace {
 
-constexpr COLORREF backgroundColor = RGB(15, 18, 24);
-constexpr COLORREF fieldColor = RGB(24, 29, 38);
-constexpr COLORREF focusColor = RGB(43, 65, 89);
-constexpr COLORREF foregroundColor = RGB(240, 244, 250);
-constexpr COLORREF mutedColor = RGB(165, 178, 196);
+#pragma comment(lib, "uxtheme.lib")
+
+// Same neutral palette as the Settings window.
+constexpr COLORREF backgroundColor = RGB(17, 18, 20);
+constexpr COLORREF fieldColor = RGB(29, 30, 34);
+constexpr COLORREF focusColor = RGB(47, 59, 73);
+constexpr COLORREF foregroundColor = RGB(243, 244, 246);
+constexpr COLORREF mutedColor = RGB(160, 165, 174);
 constexpr COLORREF accentColor = RGB(145, 202, 255);
-constexpr COLORREF selectedColor = RGB(31, 48, 69);
+constexpr COLORREF selectedColor = RGB(38, 48, 60);
+
+// "JAWA BARAT" -> "Jawa Barat"; short all-caps words (DKI, DI) stay as acronyms.
+std::wstring titleCase(std::wstring_view text) {
+    std::wstring result(text);
+    for (size_t start = 0; start < result.size();) {
+        auto end = result.find(L' ', start);
+        if (end == std::wstring::npos) end = result.size();
+        if (end - start > 3) {
+            for (size_t i = start + 1; i < end; ++i) result[i] = static_cast<wchar_t>(towlower(result[i]));
+        }
+        start = end + 1;
+    }
+    return result;
+}
+
+// A single click on a row chooses it; the dialog does not need a separate Select button.
+LRESULT CALLBACK resultsInput(HWND list, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR, DWORD_PTR) {
+    const auto result = DefSubclassProc(list, message, wparam, lparam);
+    if (message == WM_LBUTTONUP) {
+        const auto hit = SendMessageW(list, LB_ITEMFROMPOINT, 0, lparam);
+        if (HIWORD(hit) == 0) PostMessageW(GetParent(list), WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
+    }
+    return result;
+}
 
 struct Picker {
     unsigned current;
@@ -137,6 +168,15 @@ INT_PTR CALLBACK pickerDialog(HWND window, UINT message, WPARAM wparam, LPARAM l
         SendDlgItemMessageW(window, IDC_PRAYER_SEARCH, EM_SETCUEBANNER, TRUE,
                             reinterpret_cast<LPARAM>(L"e.g. Bandung, Aceh, WITA"));
         SendMessageW(window, DM_SETDEFID, IDOK, 0);
+        // Dark scrollbar for the results, and a click selects; Enter still picks the highlighted row.
+        const auto list = GetDlgItem(window, IDC_PRAYER_RESULTS);
+        SetWindowTheme(list, L"DarkMode_Explorer", nullptr);
+        SetWindowSubclass(list, resultsInput, 1, 0);
+        ShowWindow(GetDlgItem(window, IDOK), SW_HIDE);
+        RECT cancel{209, 223, 264, 243};
+        MapDialogRect(window, &cancel);
+        SetWindowPos(GetDlgItem(window, IDCANCEL), nullptr, cancel.left, cancel.top, cancel.right - cancel.left,
+                     cancel.bottom - cancel.top, SWP_NOZORDER | SWP_NOACTIVATE);
         updateList(window, *picker);
         return TRUE;
     }
@@ -211,7 +251,8 @@ INT_PTR CALLBACK pickerDialog(HWND window, UINT message, WPARAM wparam, LPARAM l
             city.top = city.bottom - MulDiv(2, GetDpiForWindow(window), 96);
             city.bottom = label.bottom;
             SetTextColor(item.hDC, mutedColor);
-            DrawTextW(item.hDC, prayerLocations[index - 1].province, -1, &city,
+            const auto province = titleCase(prayerLocations[index - 1].province);
+            DrawTextW(item.hDC, province.c_str(), -1, &city,
                       DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
         return TRUE;
