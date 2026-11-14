@@ -102,10 +102,8 @@ constexpr float mediaArtistHeight = 16.8f;
 constexpr float mediaControlsCenterY = 159;
 constexpr float mediaActionHeight = 32;
 constexpr float mediaActionsTop = mediaControlsCenterY - mediaActionHeight / 2;
-constexpr float sourceMenuTop = mediaActionsTop + mediaActionHeight + 4;
-constexpr size_t sourceColumns = 8;
-constexpr size_t visibleSources = 2 * sourceColumns;
-constexpr float sourceMenuStep = 34;
+constexpr size_t visibleSources = 5;        // rows in the source list before it scrolls
+constexpr float sourceMenuWidth = 210;
 
 float systemSectionTop(SystemStats const& system) {
     if (system.disks.empty()) return systemStatsBottom;
@@ -127,9 +125,6 @@ std::wstring freeSpaceLabel(uint64_t bytes) {
 
 float pickerHeight(size_t rows) { return 2 * pickerInset + pickerRowHeight * static_cast<float>(rows); }
 
-float sourcePickerHeight(size_t count) {
-    return 2 * pickerInset + sourceMenuStep * static_cast<float>((count + sourceColumns - 1) / sourceColumns);
-}
 constexpr float maxLyricsWidth = 338;
 constexpr float panelRadius = 22;
 constexpr float padTop = 13;
@@ -1328,8 +1323,6 @@ float Island::screenHeight(Screen screen) const {
         return navHeight + 39 + homeModeRowHeight + (count ? homeRowHeight * static_cast<float>(count) : 62) + padBottom;
     }
     case Screen::media:
-        if (sourcePickerOpen_) return std::max(mediaPanelHeight,
-            navHeight + sourceMenuTop + sourcePickerHeight(std::min(media_.sources.size(), visibleSources)) + padBottom);
         return mediaPanelHeight;
     case Screen::timers: {
         const bool quickIdle = !quick_.running() && !quick_.paused();
@@ -2292,13 +2285,12 @@ bool Island::scroll(POINT client, int delta) {
     }
     audioOutputWheelRemainder_ = 0;
     if (sourcePickerOpen_ && inside(sourceMenuRect_, point)) {
-        const size_t rows = (media_.sources.size() + sourceColumns - 1) / sourceColumns;
-        const int limit = static_cast<int>(rows > 2 ? rows - 2 : 0);
+        const size_t total = media_.sources.size();
+        const int limit = static_cast<int>(total > visibleSources ? total - visibleSources : 0);
         sourceWheelRemainder_ += delta;
         const int steps = sourceWheelRemainder_ / WHEEL_DELTA;
         sourceWheelRemainder_ %= WHEEL_DELTA;
-        const int row = static_cast<int>(sourceOffset_ / sourceColumns);
-        sourceOffset_ = static_cast<size_t>(std::clamp(row - steps, 0, limit)) * sourceColumns;
+        sourceOffset_ = static_cast<size_t>(std::clamp(static_cast<int>(sourceOffset_) - steps, 0, limit));
         return true;
     }
     if (open_ && screen_ == Screen::system && appVolumes_.size() > visibleAppRows && inside(appViewport_, point)) {
@@ -3946,25 +3938,35 @@ void Island::drawSourceIcon(MediaSource const& source, D2D1_POINT_2F c) {
     }
 }
 
+// The same list as Audio Output, opening upward from the source button over the cover and title,
+// so the panel keeps its height.
 void Island::drawSourceMenu(D2D1_RECT_F panel, float reveal) {
     const size_t total = media_.sources.size();
-    const size_t rows = (total + sourceColumns - 1) / sourceColumns;
-    sourceOffset_ = std::min(sourceOffset_, rows > 2 ? (rows - 2) * sourceColumns : 0);
+    sourceOffset_ = std::min(sourceOffset_, total > visibleSources ? total - visibleSources : 0);
     const size_t count = std::min(visibleSources, total - sourceOffset_);
-    const float width = 2 * pickerInset + sourceMenuStep * static_cast<float>(std::min(count, sourceColumns));
-    sourceMenuRect_ = box(panel.left + padX, panel.top + sourceMenuTop, width, sourcePickerHeight(count));
+    const float height = pickerHeight(count);
+    const float bottom = panel.top + mediaActionsTop - 4;
+    sourceMenuRect_ = box(panel.left + padX, bottom - height, sourceMenuWidth, height);
     beginMenuReveal(sourceMenuRect_, reveal);
     drawPickerSurface(sourceMenuRect_, Hit::sourceMenu);
     for (size_t slot = 0; slot < count; ++slot) {
         const size_t i = sourceOffset_ + slot;
         const auto& source = media_.sources[i];
-        const auto rect = box(sourceMenuRect_.left + pickerInset + static_cast<float>(slot % sourceColumns) * sourceMenuStep,
-                              sourceMenuRect_.top + pickerInset + static_cast<float>(slot / sourceColumns) * sourceMenuStep, 33, 33);
-        const D2D1_POINT_2F c{rect.left + 16, rect.top + 16};
+        const auto row = box(sourceMenuRect_.left + pickerInset, sourceMenuRect_.top + pickerInset + pickerRowHeight * static_cast<float>(slot),
+                             sourceMenuWidth - 2 * pickerInset, pickerRowHeight - 1);
         const bool selected = source.id.empty() ? media_.sourceId.empty() && source.appId == media_.appId :
                                                  source.id == media_.sourceId;
-        drawPickerRow(rect, L"", Hit::source, i, selected);
-        drawSourceIcon(source, selected ? pt(c.x - 4, c.y) : c);
+        auto name = appName(source.appId);
+        if (source.tabNumber > 0) name += L" · tab " + std::to_wstring(source.tabNumber);
+        drawPickerRow(row, name, Hit::source, i, selected, std::nullopt, 27);
+        const float middle = (row.top + row.bottom) / 2;
+        MediaSource plain = source;
+        plain.tabNumber = 0;   // the row names the tab; no badge on the small icon
+        if (auto* logo = icon(source.appId); logo && bitmap(*logo)) {
+            target_->DrawBitmap(logo->bitmap.get(), box(row.left + 6, middle - 8, 16, 16), 1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        } else {
+            drawSourceIcon(plain, pt(row.left + 14, middle));
+        }
     }
     endMenuReveal(reveal);
 }
@@ -4926,7 +4928,7 @@ void Island::drawPickerCheck(D2D1_POINT_2F center) {
 }
 
 void Island::drawPickerRow(D2D1_RECT_F row, std::wstring_view label, Hit hit, size_t index,
-                           bool selected, std::optional<bool> headphones) {
+                           bool selected, std::optional<bool> headphones, float indent) {
     const float level = hoverLevel(hit, index);
     if (selected || level > 0 || pressed(hit, index)) {
         const auto fill = selected ? withAlpha(accent_, 0.14f + 0.08f * level) :
@@ -4936,7 +4938,7 @@ void Island::drawPickerRow(D2D1_RECT_F row, std::wstring_view label, Hit hit, si
     const float middle = (row.top + row.bottom) / 2;
     if (headphones) drawAudioGlyph(pt(row.left + 14, middle), *headphones, selected ? accent_ : rgb(inkColor));
     if (!label.empty()) {
-        text(label, bodyFont_.get(), D2D1::RectF(row.left + (headphones ? 27 : 8), row.top,
+        text(label, bodyFont_.get(), D2D1::RectF(row.left + (indent > 0 ? indent : headphones ? 27 : 8), row.top,
              row.right - (selected ? 24 : 7), row.bottom), rgb(inkColor));
     }
     if (selected) drawPickerCheck(pt(row.right - (label.empty() ? 7 : 13), middle));

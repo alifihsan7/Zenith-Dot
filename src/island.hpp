@@ -327,7 +327,7 @@ private:
     void drawAudioGlyph(D2D1_POINT_2F center, bool headphones, D2D1_COLOR_F color);
     void drawPickerCheck(D2D1_POINT_2F center);
     void drawPickerRow(D2D1_RECT_F row, std::wstring_view label, Hit hit, size_t index,
-                       bool selected, std::optional<bool> headphones = {});
+                       bool selected, std::optional<bool> headphones = {}, float indent = 0);
     void drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color);
     static std::wstring_view screenLabel(Screen screen);
     float trackRightSpace() const;
