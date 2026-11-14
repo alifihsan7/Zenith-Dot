@@ -246,7 +246,7 @@ private:
     void setOpen(bool open, Clock::time_point now);
     void openFromCompact(Clock::time_point now);
     PillMode homeTimer() const;
-    std::array<Screen, 4> homeRows() const;
+    std::array<Screen, 3> homeRows() const;
     void showScreen(Screen screen, Clock::time_point now);
     void toggleFocus(Clock::time_point now);
     void selectTimerView(size_t index);
@@ -750,6 +750,7 @@ private:
     winrt::com_ptr<IDWriteTextFormat> buttonFont_;
     winrt::com_ptr<IDWriteTextFormat> timerTextFont_;   // 13 px, the Timers panel
     winrt::com_ptr<IDWriteTextFormat> timerSmallFont_, timerAxisStartFont_, timerAxisEndFont_, bigClockFont_;
+    winrt::com_ptr<IDWriteTextFormat> homeClockFont_, homeHeadFont_, homeTitleFont_;
     winrt::com_ptr<IDWriteTextFormat> glyphFont_;
     winrt::com_ptr<IDWriteTextFormat> letterFont_;
     winrt::com_ptr<IDWriteTextFormat> alertTitleFont_;

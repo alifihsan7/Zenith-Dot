@@ -57,7 +57,11 @@ constexpr float activitySwapDrop = 31;
 constexpr float activitySwapLift = 7;
 constexpr float panelWidth = 369;
 constexpr float homeRowHeight = 43;
-constexpr float homeModeRowHeight = 36;
+constexpr float homeCardsTop = 118;    // Home: below the clock
+constexpr float homeCardHeight = 62;
+constexpr float homeCardGap = 8;
+constexpr float homeCardStep = homeCardHeight + homeCardGap;
+constexpr float homeQuietHeight = 50;
 constexpr float mediaPanelWidth = 344;
 constexpr float timersPanelWidth = 369;
 constexpr float systemPanelWidth = 530;
@@ -1305,12 +1309,11 @@ Island::PillMode Island::homeTimer() const {
     return PillMode::dot;
 }
 
-std::array<Island::Screen, 4> Island::homeRows() const {
+std::array<Island::Screen, 3> Island::homeRows() const {
     return {
         preferences_.enabled(Screen::media) && media_.hasSession ? Screen::media : Screen::home,
         homeTimer() != PillMode::dot ? Screen::timers : Screen::home,
         preferences_.enabled(Screen::drop) && !dropItems_.empty() ? Screen::drop : Screen::home,
-        preferences_.enabled(Screen::prayer) && prayerSchedule_ ? Screen::prayer : Screen::home
     };
 }
 
@@ -1320,7 +1323,8 @@ float Island::screenHeight(Screen screen) const {
     case Screen::home: {
         const auto rows = homeRows();
         const auto count = std::min<std::ptrdiff_t>(3, std::ssize(rows) - std::ranges::count(rows, Screen::home));
-        return navHeight + 39 + homeModeRowHeight + (count ? homeRowHeight * static_cast<float>(count) : 62) + padBottom;
+        // Header, the clock, then one card per running thing (or the quiet card).
+        return navHeight + homeCardsTop + (count ? homeCardStep * static_cast<float>(count) - homeCardGap : homeQuietHeight) + padBottom + 4;
     }
     case Screen::media:
         return mediaPanelHeight;
@@ -2867,6 +2871,9 @@ void Island::prepareText() {
     create(timerAxisStartFont_, L"Segoe UI", 12, normal, start);
     create(timerAxisEndFont_, L"Segoe UI", 12, normal, end);
     create(bigClockFont_, L"Segoe UI", 40, DWRITE_FONT_WEIGHT_LIGHT, center);
+    create(homeClockFont_, L"Segoe UI", 44, DWRITE_FONT_WEIGHT_LIGHT, start);
+    create(homeHeadFont_, L"Segoe UI", 15, strong, end);
+    create(homeTitleFont_, L"Segoe UI", 13, strong, start);
     create(glyphFont_, L"Segoe UI Symbol", 17, normal, center);
     create(letterFont_, L"Segoe UI", 10, strong, center);
     create(alertTitleFont_, L"Segoe UI", 11, DWRITE_FONT_WEIGHT_BOLD, start);
@@ -3612,59 +3619,18 @@ void Island::drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now,
     }
 }
 
+// Home: a big clock and the next prayer, then one card per thing that is running.
 void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     const float left = (panel.left + panel.right - panelWidth) / 2 + padX;
     const float right = left + innerWidth;
     const float top = panel.top + 6;
-    const auto settings = box(right - 29, top, 29, 29);
+    const auto color = rgb(inkColor);
     drawLogo(pt(left + 1, top + 3.5f), 22);
-    text(L"Home", titleFont_.get(), box(left + 25, top, 110, 29), rgb(inkColor));
 
-    SYSTEMTIME local{};
-    GetLocalTime(&local);
-    const auto time = prayerTimeText(local.wHour * 60 + local.wMinute);
-    // Only animate changes seen while Home stays on screen; reopening shows the current state at once.
-    const bool continuing = animate_ && homeDrawnAt_ != Clock::time_point{} && now - homeDrawnAt_ < 1500ms;
-    homeDrawnAt_ = now;
-    if (time != homeClock_) {
-        homeClockFrom_ = homeClock_;
-        homeClock_ = time;
-        homeClockStart_ = continuing && homeClockFrom_.size() == time.size() ? now : Clock::time_point{};
-    }
-    // Indonesian time zone after the clock, from the system's current UTC offset.
-    std::wstring_view zone;
-    try {
-        const auto offset = std::chrono::current_zone()->get_info(std::chrono::system_clock::now()).offset;
-        const auto hours = std::chrono::duration_cast<std::chrono::minutes>(offset).count();
-        zone = hours == 7 * 60 ? L"WIB" : hours == 8 * 60 ? L"WITA" : hours == 9 * 60 ? L"WIT" : L"";
-    } catch (std::runtime_error const&) {
-    }
-    const float zoneWidth = zone.empty() ? 0.0f : 34.0f;
-    if (!zone.empty()) text(zone, bodyEndFont_.get(), box(settings.left - 9 - zoneWidth, top, zoneWidth, 29), rgb(mutedColor));
-    const auto clockBox = box(settings.left - 66 - zoneWidth, top, 57, 29);
-    const float roll = easeInOut(progress(homeClockStart_, homeClockTime, now));
-    if (roll < 1) {
-        // Monospaced and right aligned: each character has a fixed slot, and only changed ones roll up.
-        target_->PushAxisAlignedClip(clockBox, D2D1_ANTIALIAS_MODE_ALIASED);
-        const size_t count = time.size();
-        for (size_t i = 0; i < count; ++i) {
-            const auto slot = box(clockBox.right - timerDigitWidth_ * static_cast<float>(count - i), top,
-                                  timerDigitWidth_, 29);
-            const std::wstring now_(1, time[i]), was(1, homeClockFrom_[i]);
-            if (now_ == was) {
-                text(now_, timerFont_.get(), slot, rgb(inkColor));
-                continue;
-            }
-            text(was, timerFont_.get(), box(slot.left, slot.top - 12 * roll, timerDigitWidth_, 29), rgb(inkColor, 1 - roll));
-            text(now_, timerFont_.get(), box(slot.left, slot.top + 12 * (1 - roll), timerDigitWidth_, 29), rgb(inkColor, roll));
-        }
-        target_->PopAxisAlignedClip();
-    } else {
-        text(time, timerFont_.get(), clockBox, rgb(inkColor));
-    }
+    // Settings, and Dot only spelled out in a small pill with its switch.
+    const auto settings = box(right - 29, top, 29, 29);
     drawButton(settings, L"", Hit::homeSettings, record);
     const auto gear = pt(settings.left + 14.5f, settings.top + 14.5f);
-    const auto color = rgb(inkColor);
     target_->DrawEllipse(D2D1::Ellipse(gear, 5.2f, 5.2f), ink(color), 1.25f);
     target_->DrawEllipse(D2D1::Ellipse(gear, 1.8f, 1.8f), ink(color), 1.15f);
     for (int tooth = 0; tooth < 8; ++tooth) {
@@ -3673,25 +3639,70 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
         target_->DrawLine(pt(gear.x + 5 * x, gear.y + 5 * y), pt(gear.x + 7 * x, gear.y + 7 * y),
                           ink(color), 1.25f, roundStroke_.get());
     }
+    const auto dotPill = box(settings.left - 104, top, 98, 29);
+    const float dotLevel = pressed(Hit::homeOverlapMode) ? 1 : hoverLevel(Hit::homeOverlapMode);
+    target_->FillRoundedRectangle(rounded(dotPill, 9), ink(white(0.065f + 0.05f * dotLevel)));
+    text(L"Dot only", bodyFont_.get(), box(dotPill.left + 10, top, 56, 29), rgb(inkColor));
+    const float shrink = shrinkToggleValue(now);
+    const auto toggle = box(dotPill.right - 34, top + 7.5f, 26, 14);
+    target_->FillRoundedRectangle(rounded(toggle, 7), ink(mixColor(white(0.18f), accent_, shrink)));
+    const auto thumb = pt(std::lerp(toggle.left + 7, toggle.right - 7, shrink), top + 14.5f);
+    target_->FillEllipse(D2D1::Ellipse(thumb, 4.5f, 4.5f), ink(mixColor(rgb(inkColor), rgb(0x101318), shrink)));
+    if (record) addTarget(dotPill, Hit::homeOverlapMode);
 
+    // The clock and today's date with the time zone.
+    SYSTEMTIME local{};
+    GetLocalTime(&local);
+    homeClock_ = prayerTimeText(local.wHour * 60 + local.wMinute);
+    std::wstring_view zone;
+    try {
+        const auto offset = std::chrono::current_zone()->get_info(std::chrono::system_clock::now()).offset;
+        const auto hours = std::chrono::duration_cast<std::chrono::minutes>(offset).count();
+        zone = hours == 7 * 60 ? L"WIB" : hours == 8 * 60 ? L"WITA" : hours == 9 * 60 ? L"WIT" : L"";
+    } catch (std::runtime_error const&) {
+    }
+    wchar_t day[64]{};
+    GetDateFormatEx(L"en-US", 0, &local, L"dddd, d MMMM", day, static_cast<int>(std::size(day)), nullptr);
+    std::wstring date = day;
+    if (!zone.empty()) date += L" · " + std::wstring(zone);
+    const float heroTop = panel.top + 42;
+    text(homeClock_, homeClockFont_.get(), box(left - 2, heroTop, 170, 52), rgb(inkColor));
+    text(date, bodyFont_.get(), box(left, heroTop + 50, 200, 18), rgb(mutedColor));
+
+    // The next prayer, opposite the clock.
+    if (preferences_.enabled(Screen::prayer) && prayerSchedule_) {
+        const auto& schedule = *prayerSchedule_;
+        const auto timing = prayerProgress(schedule, std::chrono::system_clock::now());
+        if (timing.nextIndex < prayerNames.size()) {
+            const auto minutes = timing.remaining.count();
+            std::wstring when = L"in ";
+            if (minutes >= 60) when += std::to_wstring(minutes / 60) + L"h ";
+            when += std::to_wstring(minutes % 60) + L"m";
+            const int at = timing.nextIndex < schedule.times.size() ? schedule.times[timing.nextIndex]
+                : schedule.tomorrowSubuh.value_or(-1);
+            if (at >= 0) when += L" · " + prayerTimeText(at % (24 * 60));
+            const auto area = box(right - 170, heroTop + 6, 170, 20);
+            const auto hit = Hit::navPrayer;
+            constexpr size_t homeRowIndex = 1;
+            const auto block = box(right - 170, heroTop + 4, 170, 62);
+            if (const float level = pressed(hit, homeRowIndex) ? 1 : hoverLevel(hit, homeRowIndex); level > 0)
+                target_->FillRoundedRectangle(rounded(grow(block, 4, 2), 9), ink(white(0.06f * level)));
+            if (record) addTarget(block, hit, homeRowIndex);
+            text(prayerNames[timing.nextIndex], homeHeadFont_.get(), area, rgb(inkColor));
+            text(when, bodyEndFont_.get(), box(right - 170, heroTop + 26, 170, 18), rgb(breakColor));
+            text(schedule.city, bodyEndFont_.get(), box(right - 170, heroTop + 44, 170, 18), rgb(mutedColor));
+        }
+    }
+
+    // One card per thing that is running.
     constexpr Hit rowHits[]{Hit::navMedia, Hit::navTimers, Hit::navScratch, Hit::navDrop, Hit::navSystem,
                             Hit::navPrayer, Hit::navHome};
-    const float modeTop = panel.top + 39;
-    const auto modeRow = box(left, modeTop, innerWidth, 27);
-    if (const float level = pressed(Hit::homeOverlapMode) ? 1 : hoverLevel(Hit::homeOverlapMode); level > 0)
-        target_->FillRoundedRectangle(rounded(modeRow, 7), ink(white(0.07f * level)));
-    text(L"Dot only", bodyFont_.get(), box(left, modeTop, innerWidth - 48, 27), rgb(inkColor));
-    const float shrink = shrinkToggleValue(now);
-    const auto toggle = box(right - 36, modeTop + 4, 36, 19);
-    target_->FillRoundedRectangle(rounded(toggle, 9.5f), ink(mixColor(white(0.14f), accent_, shrink)));
-    const auto thumb = pt(std::lerp(toggle.left + 9.5f, toggle.right - 9.5f, shrink), modeTop + 13.5f);
-    target_->FillEllipse(D2D1::Ellipse(thumb, 6, 6), ink(mixColor(rgb(inkColor), rgb(0x101318), shrink)));
-    if (record) addTarget(modeRow, Hit::homeOverlapMode);
-
-    const float rowsTop = modeTop + homeModeRowHeight;
+    const bool continuing = animate_ && homeDrawnAt_ != Clock::time_point{} && now - homeDrawnAt_ < 1500ms;
+    homeDrawnAt_ = now;
+    const float cardsTop = panel.top + homeCardsTop;
     std::vector<Screen> rows;
     for (const auto feature : homeRows()) {
-        if (feature != Screen::home && rows.size() < 3) rows.push_back(feature);
+        if (feature != Screen::home) rows.push_back(feature);
     }
     if (rows != homeRowsShown_) {
         homeRowsFrom_ = std::move(homeRowsShown_);
@@ -3701,69 +3712,67 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     const float slide = easeInOut(progress(homeRowsStart_, homeRowTime, now));
     for (size_t index = 0; index < rows.size(); ++index) {
         const auto feature = rows[index];
-        float y = rowsTop + homeRowHeight * static_cast<float>(index);
+        float y = cardsTop + homeCardStep * static_cast<float>(index);
         float opacity = 1;
         if (slide < 1) {
             const auto previous = std::ranges::find(homeRowsFrom_, feature);
             if (previous != homeRowsFrom_.end()) {
                 const auto from = static_cast<float>(previous - homeRowsFrom_.begin());
-                y += (from - static_cast<float>(index)) * homeRowHeight * (1 - slide);
+                y += (from - static_cast<float>(index)) * homeCardStep * (1 - slide);
             } else {
-                // Wait for rows moving out of this slot before fading in.
                 const float reveal = easeInOut(lin(0.45f, 1, slide));
                 opacity = reveal;
                 y += 6 * (1 - reveal);
             }
         }
         if (opacity < 1) pushLayer(nullptr, opacity);
-        const auto row = box(left, y, innerWidth, homeRowHeight);
-        const auto leading = box(left + 3, y + 5, 32, 32);
-        const auto button = box(right - 34, y + 6, 32, 31);
+        const auto card = box(left, y, innerWidth, homeCardHeight);
+        const auto leading = box(left + 9, y + 9, 44, 44);
+        const auto button = box(right - 41, y + 15, 32, 32);
         std::wstring label(screenLabel(feature)), detail;
         auto action = Hit::none;
         bool playing = false;
         bool done = false;
+        std::optional<float> fraction;
         if (feature == Screen::media) {
             label = title();
-            detail = media_.playing ? L"Playing" : L"Paused";
-            if (!media_.artist.empty()) detail += L" · " + media_.artist;
+            detail = media_.artist.empty() ? std::wstring(media_.playing ? L"Playing" : L"Paused") : media_.artist;
+            detail += L" · " + appName(media_.appId);
             action = Hit::toggle;
             playing = media_.playing;
+            if (media_.duration > 0) fraction = static_cast<float>(media_.positionAt(Clock::now()) / media_.duration);
         } else if (feature == Screen::timers) {
             const bool quick = homeTimer() == PillMode::timer;
             const auto& timer = quick ? quick_ : focus_;
-            label = quick ? L"Timer" : phaseName(breakPhase_);
+            label = quick ? std::wstring(L"Timer")
+                : phaseName(breakPhase_) + L" · round " + std::to_wstring(focusRound_) + L" of " +
+                  std::to_wstring(preferences_.focusRounds());
             playing = timer.running();
             done = !playing && timer.done();
-            detail = countdownTime(timer.seconds(now));
-            if (done) detail += L" · Done";
-            else if (timer.paused()) detail += L" · Paused";
+            detail = countdownTime(timer.seconds(now)) + (done ? L" · done" : timer.paused() ? L" · paused" : L" left");
             if (!done) action = quick ? Hit::timerToggle : Hit::focusToggle;
+            if (timer.duration() > 0) fraction = 1.0f - static_cast<float>(timer.seconds(now)) / static_cast<float>(timer.duration());
         } else if (feature == Screen::drop) {
             detail = std::to_wstring(dropItems_.size()) + (dropItems_.size() == 1 ? L" item" : L" items");
-        } else if (feature == Screen::prayer) {
-            const auto& schedule = *prayerSchedule_;
-            const auto timing = prayerProgress(schedule, std::chrono::system_clock::now());
-            const auto minutes = timing.remaining.count();
-            if (timing.nextIndex < prayerNames.size()) {
-                label = std::wstring(prayerNames[timing.nextIndex]) + L" in ";
-                if (minutes >= 60) label += std::to_wstring(minutes / 60) + L"h ";
-                label += std::to_wstring(minutes % 60) + L"m";
-            }
-            detail = std::wstring(schedule.city) + L" · " + schedule.zone;
         }
         const auto hit = rowHits[static_cast<unsigned>(feature)];
         constexpr size_t homeRowIndex = 1;
-        const auto entry = D2D1::RectF(row.left, row.top, action != Hit::none || done ? button.left - 4 : row.right, row.bottom);
-        if (const float level = pressed(hit, homeRowIndex) ? 1 : hoverLevel(hit, homeRowIndex); level > 0)
-            target_->FillRoundedRectangle(rounded(entry, 7), ink(white(0.07f * level)));
+        const float level = pressed(hit, homeRowIndex) ? 1 : hoverLevel(hit, homeRowIndex);
+        target_->FillRoundedRectangle(rounded(card, 14), ink(white(0.045f + 0.035f * level)));
+        const auto entry = D2D1::RectF(card.left, card.top, action != Hit::none || done ? button.left - 4 : card.right, card.bottom);
         if (record) addTarget(entry, hit, homeRowIndex);
         if (feature == Screen::media) drawArt(leading, 1);
         else drawScreenGlyph(feature, leading, accent_);
-        const float textLeft = leading.right + 10;
-        const float width = entry.right - textLeft - 2;
-        text(label, pillTitleFont_.get(), box(textLeft, y + 4, width, 18), rgb(inkColor));
-        text(detail, bodyFont_.get(), box(textLeft, y + 22, width, 16), rgb(mutedColor));
+        const float textLeft = leading.right + 11;
+        const float width = entry.right - textLeft - 8;
+        text(label, homeTitleFont_.get(), box(textLeft, y + 9, width, 18), rgb(inkColor));
+        text(detail, bodyFont_.get(), box(textLeft, y + 27, width, 16), rgb(mutedColor));
+        if (fraction) {
+            const auto track = box(textLeft, y + 48, width, 4);
+            const auto tone = feature == Screen::timers && breakPhase_ && homeTimer() == PillMode::focus ? rgb(breakColor) : accent_;
+            target_->FillRoundedRectangle(rounded(track, 2), ink(white(0.12f)));
+            target_->FillRoundedRectangle(rounded(box(track.left, track.top, width * std::clamp(*fraction, 0.0f, 1.0f), 4), 2), ink(tone));
+        }
         const auto center = pt((button.left + button.right) / 2, (button.top + button.bottom) / 2);
         if (done) drawCountdownCheck(center, accent_);
         if (action != Hit::none) {
@@ -3779,17 +3788,15 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     }
     if (!rows.empty()) return;
 
-    const float y = rowsTop;
+    // Quiet: say so, and offer the one thing that starts something.
     const float emptyOpacity = homeRowsFrom_.empty() ? 1 : slide;
     if (emptyOpacity < 1) pushLayer(nullptr, emptyOpacity);
-    text(L"No active sessions", bodyFont_.get(), box(left, y, innerWidth, 22), rgb(mutedColor));
-    float actionLeft = left;
-    if (preferences_.enabled(Screen::timers)) {
-        drawButton(box(actionLeft, y + 28, 96, 29), L"Start timer", Hit::homeStartTimer, record, 0, true);
-        actionLeft += 104;
-    }
-    if (preferences_.enabled(Screen::scratch))
-        drawButton(box(actionLeft, y + 28, 132, 29), L"Open scratchpad", Hit::navScratch, record);
+    const auto quiet = box(left, cardsTop, innerWidth, homeQuietHeight);
+    target_->FillRoundedRectangle(rounded(quiet, 14), ink(white(0.045f)));
+    text(L"Nothing playing", homeTitleFont_.get(), box(left + 14, cardsTop + 7, 160, 18), rgb(inkColor));
+    text(L"Play something or start a timer", bodyFont_.get(), box(left + 14, cardsTop + 25, 200, 16), rgb(mutedColor));
+    if (preferences_.enabled(Screen::timers))
+        drawButton(box(right - 104, cardsTop + 10, 96, 30), L"Start timer", Hit::homeStartTimer, record, 0, true);
     if (emptyOpacity < 1) popLayer();
 }
 
