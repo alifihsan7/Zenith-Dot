@@ -319,6 +319,7 @@ private:
                        bool selected, std::optional<bool> headphones = {});
     void drawScreenGlyph(Screen screen, D2D1_RECT_F rect, D2D1_COLOR_F color);
     static std::wstring_view screenLabel(Screen screen);
+    float trackRightSpace() const;
     void drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float value);
     D2D1_RECT_F pillArtRect(D2D1_RECT_F pill) const;
     void drawArt(D2D1_RECT_F rect, float opacity);
@@ -456,6 +457,7 @@ private:
     PillText pillTrackTitle_;
     float pillTrackMaxWidth_ = 0;
     float pillTrackMinimum_ = 0;
+    float pillTrackRight_ = 0;
     D2D1_SIZE_F pillTrackSize_{};
     float pillTitleFrom_ = 1;
     bool pillTitleVisible_ = true;

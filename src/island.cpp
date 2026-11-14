@@ -22,7 +22,8 @@ constexpr float pillHeight = 40;
 constexpr float pausedPillWidth = 46;
 constexpr float pausedPillHeight = 32;
 constexpr float pillTrackLeft = 32;
-constexpr float pillTrackRight = 38;
+constexpr float pillTrackRight = 38;      // room for the visualizer or the pause glyph
+constexpr float pillTrackBareRight = 16;  // playing with the visualizer off: nothing sits there
 constexpr float maxPillLyricWidth = 720;
 constexpr float maxPillLyricHeight = 160;
 constexpr float pillLyricIconSpace = 24;
@@ -1571,14 +1572,17 @@ void Island::updatePillLayout(Clock::time_point now, float workWidth) {
     } else if (pillMode_ == PillMode::media) {
         const float trackWidth = std::max(pillWidth, workWidth - maxBubble - 60 - reserved);
         const float minimum = preferences_.fixedPillMinimum ? pillWidth : 114;
-        if (pillTrackTitle_.text != pillTitle_ || pillTrackMaxWidth_ != trackWidth || pillTrackMinimum_ != minimum) {
+        const float right = trackRightSpace();
+        if (pillTrackTitle_.text != pillTitle_ || pillTrackMaxWidth_ != trackWidth || pillTrackMinimum_ != minimum ||
+            pillTrackRight_ != right) {
             pillTrackTitle_.text = pillTitle_;
             pillTrackMaxWidth_ = trackWidth;
             pillTrackMinimum_ = minimum;
+            pillTrackRight_ = right;
             auto& layout = pillTrackTitle_.layout;
             layout = nullptr;
             winrt::check_hresult(fonts_->CreateTextLayout(pillTitle_.data(), static_cast<UINT32>(pillTitle_.size()),
-                pillTitleFont_.get(), trackWidth - pillTrackLeft - pillTrackRight, 10'000, layout.put()));
+                pillTitleFont_.get(), trackWidth - pillTrackLeft - right, 10'000, layout.put()));
             winrt::check_hresult(layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP));
             const DWRITE_TRIMMING noTrimming{DWRITE_TRIMMING_GRANULARITY_NONE, 0, 0};
             winrt::check_hresult(layout->SetTrimming(&noTrimming, nullptr));
@@ -1586,7 +1590,7 @@ void Island::updatePillLayout(Clock::time_point now, float workWidth) {
             DWRITE_TEXT_METRICS metrics{};
             winrt::check_hresult(layout->GetMetrics(&metrics));
             pillTrackTitle_.textSize = {metrics.width, metrics.height};
-            pillTrackSize_ = {std::max(minimum, std::ceil(metrics.width) + pillTrackLeft + pillTrackRight),
+            pillTrackSize_ = {std::max(minimum, std::ceil(metrics.width) + pillTrackLeft + right),
                               std::max(pillHeight, std::ceil(metrics.height) + 16)};
         }
         target = showTitle ? pillTrackSize_ : D2D1::SizeF(pausedPillWidth, pausedPillHeight);
@@ -5176,6 +5180,10 @@ void Island::drawNav(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     target_->DrawLine(pt(x, y + 2), pt(x, y + 7), ink(color), 1.4f, roundStroke_.get());
 }
 
+float Island::trackRightSpace() const {
+    return media_.playing && !preferences_.showWaveform ? pillTrackBareRight : pillTrackRight;
+}
+
 void Island::drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float value) {
     // The title is drawn at its panel size and scaled down to the pill's 12px at the start.
     constexpr float compactScale = 12.0f / mediaTitleSize;
@@ -5183,7 +5191,7 @@ void Island::drawSharedTitle(D2D1_RECT_F compact, D2D1_RECT_F panel, float value
     const float x = std::lerp(compact.left + pillTrackLeft, panel.left + mediaTitleLeft, value);
     const float y = std::lerp((compact.top + compact.bottom - mediaTitleHeight * compactScale) / 2,
                               panel.top + mediaTitleTop, value);
-    const float compactWidth = compact.right - compact.left - pillTrackLeft - pillTrackRight;
+    const float compactWidth = compact.right - compact.left - pillTrackLeft - trackRightSpace();
     const float width = std::lerp(compactWidth / compactScale, mediaTitleWidth, value);
     target_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) * D2D1::Matrix3x2F::Translation(x, y) * base_);
     text(title(), mediaTitleFont_.get(), box(0, 0, width, mediaTitleHeight), rgb(inkColor));
