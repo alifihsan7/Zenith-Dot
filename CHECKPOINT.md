@@ -13,8 +13,7 @@ Serah terima untuk sesi berikutnya. Kode adalah acuan perilaku; README cuma ring
 
 ## Belum diuji di layar
 
-- Baris Bluetooth saat perangkat tersambung atau terputus (kodenya sama dengan App Volume, yang sudah diuji).
-- Slider brightness di layar laptop (jalur WMI). Monitor utama user memakai DDC/CI.
+- Slider brightness di layar laptop (jalur WMI). PC user laptop, tapi layar utamanya monitor DDC/CI; uji ini dilewati atas permintaan user (2026-11-14).
 
 ## Build dan jalankan
 
