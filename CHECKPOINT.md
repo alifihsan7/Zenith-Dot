@@ -9,6 +9,7 @@ Serah terima untuk sesi berikutnya. Kode adalah acuan perilaku; README cuma ring
 - Settings di-redesign total (2026-11-14): lima halaman (General, Island, Features, Alerts & privacy, Prayer), kartu bergaris tipis, segmented satu track, tombol Try di dalam baris, urutan fitur langsung di daftar, preview pill statis. Dialog lokasi ikut gaya yang sama. Mockup: `experiments/zenula-settings-redesign.html` (folder `experiments` di-ignore git).
 - Fitur yang sengaja dibuang: bubble privasi (Camera/Mic/Screen cuma jadi ikon), agenda kalender di Home, tile Wi-Fi/Bluetooth/mode daya.
 - RAM dan CPU (2026-11-14, musik diputar, pill dengan visualizer): private memory ~15 MB dan CPU ~0,5% satu core, sama dengan awal sesi. Tanpa musik, timer frame mati total.
+- Settings (proses terpisah) memakai Direct2D software: sekitar 8 MB private memory saat dibuka, stabil di sekitar 16 MB setelah berpindah halaman. Target hardware dulu memuat driver NVIDIA dan memakan sekitar 57 MB.
 
 ## Belum diuji di layar
 
