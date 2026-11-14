@@ -295,7 +295,9 @@ void Canvas::setDpi(UINT dpi) {
 
 bool Canvas::begin(HDC dc, RECT area, COLORREF clear) {
     if (!target_) {
-        const auto properties = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        // Software rendering: a hardware target loads the GPU driver, which alone costs tens of MB,
+        // and this small window is copied to a GDI DC either way.
+        const auto properties = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE,
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), 96, 96);
         if (FAILED(graphics_->CreateDCRenderTarget(&properties, target_.put()))) return false;
         if (FAILED(target_->CreateSolidColorBrush(color(clear), brush_.put()))) {
@@ -645,7 +647,7 @@ private:
     Canvas canvas_;
     UINT dpi_ = 96;
     View view_{};
-    View previous_{};
+    std::vector<Item> leaving_;   // the page fading out, laid out once
     Settings settings_;
     bool animate_ = true;
     bool startupOn_ = false;
@@ -1029,7 +1031,7 @@ void SettingsWindow::kick(Clock::duration length) {
 void SettingsWindow::show(View view) {
     if (view == view_) return;
     const auto now = Clock::now();
-    previous_ = view_;
+    leaving_ = animate_ ? std::move(items_) : std::vector<Item>{};
     view_ = view;
     page_ = {0, 1, animate_ ? now : Clock::time_point{}, moveMotion};
     nav_.set(static_cast<float>(pageIndex(view.page)), animate_, now);
@@ -1298,7 +1300,7 @@ void SettingsWindow::paint(HDC dc) {
     if (p < 1) {
         canvas_.opacity(1 - p);
         canvas_.place(-pxf(6) * p);
-        drawView(layout(previous_), false, now);
+        drawView(leaving_, false, now);
     }
     canvas_.opacity(p);
     canvas_.place(pxf(6) * (1 - p));
@@ -1610,7 +1612,10 @@ INT_PTR CALLBACK SettingsWindow::dialog(HWND window, UINT message, WPARAM wparam
     case WM_TIMER:
         if (wparam == motionTimer) {
             InvalidateRect(window, nullptr, FALSE);
-            if (Clock::now() >= self->motionUntil_) KillTimer(window, motionTimer);
+            if (Clock::now() >= self->motionUntil_) {
+                KillTimer(window, motionTimer);
+                self->leaving_ = {};
+            }
             return TRUE;
         }
         break;
