@@ -57,7 +57,7 @@ Start-Process out\Zenula\Release\Zenula.exe
 
 Tidak ada test otomatis. Verifikasi lewat skrip PowerShell di desktop user:
 
-- Screenshot: `SetProcessDPIAware()` lalu `Graphics.CopyFromScreen`. Panel Settings atau dialog bisa di-capture lewat `GetWindowRect`.
+- Screenshot: `SetProcessDPIAware()` lalu `Graphics.CopyFromScreen`. `PrintWindow` kadang melewatkan teks di tombol owner-draw yang sedang fokus; kalau ragu, cek ulang dengan `CopyFromScreen`. Panel Settings atau dialog bisa di-capture lewat `GetWindowRect`.
 - Kursor dan klik: `SetCursorPos` dan `mouse_event`. Simpan posisi kursor dan kembalikan.
 - **Keyboard: cek dulu jendela foreground milik proses Zenula sebelum `keybd_event`.** Tanpa cek ini, ketikan pernah masuk ke chat user.
 - Jangan ubah data user tanpa backup: `scratchpad.txt`, `tasks.txt`, clipboard, brightness monitor, dan registry `HKCU\Software\Zenith Dot`. Kembalikan setelah tes.
