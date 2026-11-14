@@ -281,7 +281,16 @@ void MediaMonitor::refresh(WPARAM reason) {
         if (reason != metadata || changedSession) updateState();
         if (changedSession || reason == metadata) requestMetadata();
     } catch (winrt::hresult_error const&) {
-        OutputDebugStringW(L"Zenula could not refresh the current Windows media session.\n");
+        // A session Windows already replaced (a browser that restarted its media session) throws here.
+        // Take a fresh session list once instead of leaving the island on the old source.
+        try {
+            updateSessions();
+            selectSession();
+            updateState();
+            requestMetadata();
+        } catch (winrt::hresult_error const&) {
+            OutputDebugStringW(L"Zenula could not refresh the current Windows media session.\n");
+        }
     }
 }
 
@@ -390,7 +399,8 @@ winrt::Windows::Foundation::IAsyncAction MediaMonitor::readMetadata() {
 
 void MediaMonitor::select(std::wstring const& appId) {
     preferred_ = appId;
-    refresh(playback);
+    // A fresh session list, so a choice never lands on a session object that has gone stale.
+    refresh(sessions);
 }
 
 winrt::Windows::Foundation::IAsyncAction MediaMonitor::seek(double seconds) {
