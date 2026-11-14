@@ -38,7 +38,7 @@ struct IslandCommand {
                       selectAudioOutput, soundSettings, notificationSettings, removeDrop, clearDrop, openDropImage, appVolume, appMute,
                       autoCycle, prayerLocation, editTimerDuration, openSettings, overlapMode,
                       addTask, toggleTask, removeTask, clearDoneTasks,
-                      setBrightness };
+                      setBrightness, openPrayerSearch };
     Kind kind = Kind::none;
     double seconds = 0;              // seek position; appVolume: level 0..1; appMute, autoCycle: 1 = on
     std::wstring appId;
@@ -114,9 +114,18 @@ public:
     bool panelPinned() const;
     std::optional<RECT> scratchEditorRect() const;
     std::optional<RECT> taskInputRect() const;
+    // Inline prayer location search: the Prayer panel swaps its timetable for a search field and results.
+    std::optional<RECT> prayerSearchRect() const;
+    bool prayerPicking() const { return prayerPicking_; }
+    void setPrayerQuery(std::wstring query);
+    void setPrayerSearchOpen(bool open) { prayerSearchOpen_ = open; }
+    void movePrayerHighlight(int delta);
+    std::optional<unsigned> highlightedPrayerLocation() const;
+    void closePrayerPicker();
     // Scratchpad surfaces follow the active session's accent; the Win32 inputs on top use the same colors.
     COLORREF scratchEditorColor() const;
     COLORREF taskInputColor() const;
+    COLORREF prayerSearchColor() const;
     D2D1_COLOR_F scratchSurface() const;
     std::optional<RECT> timerEditorRect() const;
     std::wstring timerDurationText() const;
@@ -152,7 +161,7 @@ private:
                      appVolume, appMute, autoCycle, prayerLocationPicker,
                      audioOutputMenu, audioOutputChoice, soundSettings, navHome, homeSettings, homeStartTimer, homeOverlapMode,
                      scratchMode, taskAdd, taskToggle, taskRemove, taskClearDone,
-                     brightness };
+                     brightness, prayerResult, prayerSearchField };
     using Screen = Feature;
     Settings preferences_;
     std::vector<Screen> screens_{Screen::home, Screen::media, Screen::timers, Screen::scratch, Screen::drop, Screen::system};
@@ -546,6 +555,20 @@ private:
     float rowGhostOpacity(RowMotion const& motion) const;
     std::vector<std::pair<AppVolume, float>> appGhosts_;
     std::vector<std::pair<ConnectedBluetoothDevice, float>> bluetoothGhosts_;
+    bool prayerPicking_ = false;
+    bool prayerSearchOpen_ = false;
+    std::wstring prayerQuery_;
+    std::vector<unsigned> prayerResults_;    // location ids; 0 turns prayer times off
+    size_t prayerResultOffset_ = 0;
+    size_t prayerHighlight_ = 0;
+    int prayerWheelRemainder_ = 0;
+    std::optional<D2D1_RECT_F> prayerSearch_;
+    D2D1_RECT_F prayerResultsViewport_{};
+    Clock::time_point prayerModeStart_{};
+    void openPrayerPicker(Clock::time_point now);
+    void setPrayerPicking(bool picking, Clock::time_point now);
+    void filterPrayerLocations();
+    void drawPrayerPicker(D2D1_RECT_F panel, bool record);
     void drawTaskRow(Task const& task, size_t index, float top, float left, float width, float check, bool record);
     bool dropHover_ = false;
     bool popupOpen_ = false;

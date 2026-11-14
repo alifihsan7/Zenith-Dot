@@ -30,6 +30,7 @@ constexpr UINT redrawMessage = WM_APP + 3;
 constexpr UINT networkChangedMessage = WM_APP + 21;
 constexpr UINT timerEditFinished = WM_APP + 22;
 constexpr UINT taskEditFinished = WM_APP + 24;
+constexpr UINT prayerEditKey = WM_APP + 26;
 constexpr UINT_PTR powerTimer = 1;
 constexpr UINT_PTR frameTimer = 2;
 constexpr UINT_PTR fullscreenTimer = 3;
@@ -65,6 +66,11 @@ private:
     void openTimerEdit();
     void closeTimerEdit(bool commit, bool restoreFocus = false);
     void openTaskEdit();
+    void openPrayerEdit();
+    void closePrayerEdit(bool restoreFocus = false);
+    void applyPrayerCity(unsigned city);
+    static LRESULT CALLBACK prayerEditInput(HWND edit, UINT message, WPARAM wparam, LPARAM lparam,
+                                            UINT_PTR id, DWORD_PTR context);
     void closeTaskEdit(bool restoreFocus = false);
     static LRESULT CALLBACK taskEditInput(HWND edit, UINT message, WPARAM wparam, LPARAM lparam,
                                           UINT_PTR id, DWORD_PTR context);
@@ -104,6 +110,11 @@ private:
     HFONT taskEditFont_ = nullptr;
     HBRUSH taskEditBrush_ = nullptr;
     COLORREF taskEditColor_ = 0;
+    HWND prayerEdit_ = nullptr;
+    HWND prayerPreviousFocus_ = nullptr;
+    HFONT prayerEditFont_ = nullptr;
+    HBRUSH prayerEditBrush_ = nullptr;
+    COLORREF prayerEditColor_ = 0;
     HPOWERNOTIFY powerNotification_ = nullptr;
     UINT taskbarCreated_ = 0;
     UINT frameInterval_ = 0;
@@ -298,6 +309,17 @@ void App::frame() {
         if (const auto bounds = island_.scratchEditorRect()) scratchpad_.place(*bounds);
         scratchpad_.setBackground(island_.scratchEditorColor());
     }
+    if (prayerEdit_) {
+        if (const auto bounds = island_.prayerSearchRect(); visible && bounds) {
+            RECT current{};
+            GetWindowRect(prayerEdit_, &current);
+            if (!EqualRect(&current, &*bounds))
+                SetWindowPos(prayerEdit_, nullptr, bounds->left, bounds->top, bounds->right - bounds->left,
+                             bounds->bottom - bounds->top, SWP_NOACTIVATE | SWP_NOZORDER);
+        } else {
+            closePrayerEdit();
+        }
+    }
     if (taskEdit_ && island_.taskInputColor() != taskEditColor_) {
         taskEditColor_ = island_.taskInputColor();
         if (taskEditBrush_) DeleteObject(taskEditBrush_);
@@ -424,6 +446,82 @@ void App::openTaskEdit() {
 }
 
 // Closing never adds: only Enter saves a task, so Esc and a click elsewhere both drop what was typed.
+void App::applyPrayerCity(unsigned city) {
+    if (city == settings_.prayerCity) return;
+    auto updated = Settings::load();
+    updated.prayerCity = city;
+    if (updated.saveNotifications()) {
+        settings_.prayerCity = updated.prayerCity;
+        island_.setPreferences(settings_);
+        refreshPrayers();
+    } else {
+        MessageBoxW(window_, L"Could not save the prayer location.", appName, MB_OK | MB_ICONWARNING);
+    }
+}
+
+// The prayer search box: typing filters the results, Up/Down move the highlight, Enter picks it,
+// and Esc or a click elsewhere cancels.
+void App::openPrayerEdit() {
+    const auto bounds = island_.prayerSearchRect();
+    if (!bounds || prayerEdit_) return;
+    prayerPreviousFocus_ = GetForegroundWindow();
+    prayerEdit_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"EDIT", L"", WS_POPUP | ES_AUTOHSCROLL,
+        bounds->left, bounds->top, bounds->right - bounds->left, bounds->bottom - bounds->top,
+        window_, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!prayerEdit_) return;
+    if (!SetWindowSubclass(prayerEdit_, prayerEditInput, 1, reinterpret_cast<DWORD_PTR>(window_))) {
+        closePrayerEdit();
+        return;
+    }
+    const auto dpi = GetDpiForWindow(window_);
+    const int height = bounds->bottom - bounds->top;
+    prayerEditFont_ = CreateFontW(-std::min(MulDiv(12, static_cast<int>(dpi), 96), height * 3 / 5), 0, 0, 0, FW_NORMAL,
+                                  FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    prayerEditColor_ = island_.prayerSearchColor();
+    prayerEditBrush_ = CreateSolidBrush(prayerEditColor_);
+    SendMessageW(prayerEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(prayerEditFont_), FALSE);
+    SendMessageW(prayerEdit_, EM_SETLIMITTEXT, 60, 0);
+    const int margin = MulDiv(4, static_cast<int>(dpi), 96);
+    SendMessageW(prayerEdit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(margin, margin));
+    SendMessageW(prayerEdit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"Type a city, province, or zone"));
+    island_.setPopupOpen(true);
+    island_.setPrayerSearchOpen(true);
+    ShowWindow(prayerEdit_, SW_SHOW);
+    SetForegroundWindow(prayerEdit_);
+    SetFocus(prayerEdit_);
+}
+
+void App::closePrayerEdit(bool restoreFocus) {
+    if (!prayerEdit_) return;
+    const HWND closing = std::exchange(prayerEdit_, nullptr);
+    const bool restore = restoreFocus && GetForegroundWindow() == closing;
+    RemoveWindowSubclass(closing, prayerEditInput, 1);
+    DestroyWindow(closing);
+    if (prayerEditFont_) DeleteObject(std::exchange(prayerEditFont_, nullptr));
+    if (prayerEditBrush_) DeleteObject(std::exchange(prayerEditBrush_, nullptr));
+    island_.setPopupOpen(false);
+    island_.setPrayerSearchOpen(false);
+    if (restore && IsWindow(prayerPreviousFocus_)) SetForegroundWindow(prayerPreviousFocus_);
+    prayerPreviousFocus_ = nullptr;
+}
+
+LRESULT CALLBACK App::prayerEditInput(HWND edit, UINT message, WPARAM wparam, LPARAM lparam,
+                                      UINT_PTR, DWORD_PTR context) {
+    const auto owner = reinterpret_cast<HWND>(context);
+    if (message == WM_KEYDOWN && (wparam == VK_RETURN || wparam == VK_ESCAPE || wparam == VK_UP || wparam == VK_DOWN ||
+                                  wparam == VK_PRIOR || wparam == VK_NEXT)) {
+        PostMessageW(owner, prayerEditKey, reinterpret_cast<WPARAM>(edit), static_cast<LPARAM>(wparam));
+        return 0;
+    }
+    if (message == WM_CHAR && (wparam == L'\r' || wparam == 27)) return 0;
+    if (message == WM_KILLFOCUS) PostMessageW(owner, prayerEditKey, reinterpret_cast<WPARAM>(edit), 0);
+    const auto result = DefSubclassProc(edit, message, wparam, lparam);
+    if (message == WM_CHAR || (message == WM_KEYDOWN && wparam == VK_DELETE) || message == WM_PASTE || message == WM_CUT)
+        PostMessageW(owner, prayerEditKey, reinterpret_cast<WPARAM>(edit), 1);
+    return result;
+}
+
 void App::closeTaskEdit(bool restoreFocus) {
     if (!taskEdit_) return;
     const HWND closing = std::exchange(taskEdit_, nullptr);
@@ -558,23 +656,15 @@ void App::run(IslandCommand const& command) {
         if (updated.saveTimer()) settings_ = updated;
         break;
     }
-    case IslandCommand::Kind::prayerLocation: {
-        prayerPickerActive_ = true;
-        island_.setPopupOpen(true);
-        const auto city = choosePrayerLocation(window_, settings_.prayerCity);
-        island_.setPopupOpen(false);
-        prayerPickerActive_ = false;
-        if (city && *city != settings_.prayerCity) {
-            auto updated = Settings::load();
-            updated.prayerCity = *city;
-            if (updated.saveNotifications()) {
-                settings_.prayerCity = updated.prayerCity;
-                island_.setPreferences(settings_);
-                refreshPrayers();
-            } else MessageBoxW(window_, L"Could not save the prayer location.", appName, MB_OK | MB_ICONWARNING);
-        }
+    case IslandCommand::Kind::openPrayerSearch:
+        frame();            // lay out the search field before placing the text box over it
+        openPrayerEdit();
         break;
-    }
+    case IslandCommand::Kind::prayerLocation:
+        island_.closePrayerPicker();
+        closePrayerEdit(true);
+        applyPrayerCity(static_cast<unsigned>(command.index));
+        break;
     case IslandCommand::Kind::appMute:
         desktop_.setAppVolume(command.appId, std::nullopt, command.seconds != 0);
         island_.setAppVolumes(desktop_.appVolumes());
@@ -1264,6 +1354,36 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         island_.pointerCancel();
         frame();
         return 0;
+    case prayerEditKey:
+        if (prayerEdit_ == reinterpret_cast<HWND>(wparam)) {
+            switch (lparam) {
+            case 0:            // focus left the box: cancel
+            case VK_ESCAPE:
+                island_.closePrayerPicker();
+                closePrayerEdit(lparam == VK_ESCAPE);
+                break;
+            case 1: {          // text changed
+                const int length = GetWindowTextLengthW(prayerEdit_);
+                std::wstring text(static_cast<size_t>(length) + 1, L'\0');
+                text.resize(GetWindowTextW(prayerEdit_, text.data(), length + 1));
+                island_.setPrayerQuery(std::move(text));
+                break;
+            }
+            case VK_UP: island_.movePrayerHighlight(-1); break;
+            case VK_DOWN: island_.movePrayerHighlight(1); break;
+            case VK_PRIOR: island_.movePrayerHighlight(-7); break;
+            case VK_NEXT: island_.movePrayerHighlight(7); break;
+            case VK_RETURN:
+                if (const auto city = island_.highlightedPrayerLocation()) {
+                    island_.closePrayerPicker();
+                    closePrayerEdit(true);
+                    applyPrayerCity(*city);
+                }
+                break;
+            }
+            frame();
+        }
+        return 0;
     case taskEditFinished:
         if (taskEdit_ == reinterpret_cast<HWND>(wparam)) {
             if (lparam == 2) {
@@ -1280,6 +1400,12 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
         }
         return 0;
     case WM_CTLCOLOREDIT:
+        if (prayerEdit_ && reinterpret_cast<HWND>(lparam) == prayerEdit_) {
+            const auto dc = reinterpret_cast<HDC>(wparam);
+            SetTextColor(dc, RGB(0xf2, 0xf5, 0xf8));
+            SetBkColor(dc, prayerEditColor_);
+            return reinterpret_cast<LRESULT>(prayerEditBrush_);
+        }
         if (taskEdit_ && reinterpret_cast<HWND>(lparam) == taskEdit_) {
             const auto dc = reinterpret_cast<HDC>(wparam);
             SetTextColor(dc, RGB(0xf2, 0xf5, 0xf8));
@@ -1333,6 +1459,7 @@ LRESULT App::handle(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_DESTROY:
         closeTimerEdit(false);
         closeTaskEdit();
+        closePrayerEdit();
         cancelPrayerRequest();
         spectrum_.select({});
         dropZone_.detach();

@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cwchar>
 #include <iterator>
+#include <numeric>
+#include <cwctype>
 
 namespace zenith {
 namespace {
@@ -77,6 +79,9 @@ constexpr float prayerPickerHeight = 24;
 constexpr float prayerPanelHeight = 184;
 constexpr float prayerPanelWidth = 570;
 constexpr float prayerInfoWidth = 176;
+constexpr float prayerResultHeight = 30;
+constexpr size_t visiblePrayerResults = 7;
+constexpr float prayerPickHeight = 12 + 30 + 8 + prayerResultHeight * visiblePrayerResults + 8;
 constexpr float appRowsTop = 73;
 constexpr float appRowHeight = 28;
 constexpr float bluetoothRowsTop = 73;
@@ -1030,8 +1035,133 @@ COLORREF Island::scratchEditorColor() const {
     return colorRef(scratchSurface());
 }
 
+COLORREF Island::prayerSearchColor() const {
+    return colorRef(mixColor(scratchSurface(), rgb(0xffffff), 0.085f));
+}
+
 COLORREF Island::taskInputColor() const {
     return colorRef(mixColor(scratchSurface(), rgb(0xffffff), 0.085f));
+}
+
+namespace {
+
+// "JAWA BARAT" -> "Jawa Barat"; short all-caps words (DKI, DI) stay as acronyms.
+std::wstring titleCase(std::wstring_view text) {
+    std::wstring result(text);
+    size_t start = 0;
+    while (start < result.size()) {
+        auto end = result.find(L' ', start);
+        if (end == std::wstring::npos) end = result.size();
+        if (end - start > 3) {
+            for (size_t i = start + 1; i < end; ++i) result[i] = static_cast<wchar_t>(towlower(result[i]));
+        }
+        start = end + 1;
+    }
+    return result;
+}
+
+std::wstring_view withoutPrefix(std::wstring_view name) {
+    if (name.starts_with(L"Kota ") || name.starts_with(L"Kab. ")) name.remove_prefix(5);
+    return name;
+}
+
+bool containsText(std::wstring_view text, std::wstring_view term) {
+    return term.empty() || FindNLSStringEx(LOCALE_NAME_INVARIANT, FIND_FROMSTART | NORM_IGNORECASE, text.data(),
+        static_cast<int>(text.size()), term.data(), static_cast<int>(term.size()), nullptr, nullptr, nullptr, 0) >= 0;
+}
+
+bool startsWithText(std::wstring_view text, std::wstring_view term) {
+    return !term.empty() && FindNLSStringEx(LOCALE_NAME_INVARIANT, FIND_STARTSWITH | NORM_IGNORECASE, text.data(),
+        static_cast<int>(text.size()), term.data(), static_cast<int>(term.size()), nullptr, nullptr, nullptr, 0) >= 0;
+}
+
+std::vector<unsigned> const& prayerOrder() {
+    static const std::vector<unsigned> order = [] {
+        std::vector<unsigned> ids(prayerLocations.size());
+        std::iota(ids.begin(), ids.end(), 1u);
+        std::ranges::stable_sort(ids, {}, [](unsigned id) { return withoutPrefix(prayerLocations[id - 1].name); });
+        return ids;
+    }();
+    return order;
+}
+
+}
+
+void Island::filterPrayerLocations() {
+    prayerResults_.clear();
+    std::wstring_view query = prayerQuery_;
+    while (!query.empty() && query.front() == L' ') query.remove_prefix(1);
+    while (!query.empty() && query.back() == L' ') query.remove_suffix(1);
+    if (query.empty() || containsText(L"Off", query)) prayerResults_.push_back(0);
+    // Names that start with the query first, then other name matches, then province or zone matches.
+    std::vector<unsigned> names, others;
+    for (const auto id : prayerOrder()) {
+        const auto& location = prayerLocations[id - 1];
+        if (query.empty() || startsWithText(withoutPrefix(location.name), query)) prayerResults_.push_back(id);
+        else if (containsText(location.name, query)) names.push_back(id);
+        else if (containsText(location.province, query) || containsText(location.zone(), query)) others.push_back(id);
+    }
+    prayerResults_.insert(prayerResults_.end(), names.begin(), names.end());
+    prayerResults_.insert(prayerResults_.end(), others.begin(), others.end());
+    prayerHighlight_ = 0;
+    if (query.empty()) {
+        // With no query, start at the current location so it is visible and ready to confirm.
+        const auto current = std::ranges::find(prayerResults_, preferences_.prayerCity);
+        if (current != prayerResults_.end()) prayerHighlight_ = static_cast<size_t>(current - prayerResults_.begin());
+    }
+    const size_t limit = prayerResults_.size() - std::min(prayerResults_.size(), visiblePrayerResults);
+    prayerResultOffset_ = std::min(prayerHighlight_ > 2 ? prayerHighlight_ - 2 : 0, limit);
+}
+
+void Island::setPrayerQuery(std::wstring query) {
+    if (query == prayerQuery_) return;
+    prayerQuery_ = std::move(query);
+    filterPrayerLocations();
+}
+
+void Island::movePrayerHighlight(int delta) {
+    if (prayerResults_.empty()) return;
+    const auto last = static_cast<int>(prayerResults_.size()) - 1;
+    prayerHighlight_ = static_cast<size_t>(std::clamp(static_cast<int>(prayerHighlight_) + delta, 0, last));
+    if (prayerHighlight_ < prayerResultOffset_) prayerResultOffset_ = prayerHighlight_;
+    if (prayerHighlight_ >= prayerResultOffset_ + visiblePrayerResults)
+        prayerResultOffset_ = prayerHighlight_ + 1 - visiblePrayerResults;
+}
+
+std::optional<unsigned> Island::highlightedPrayerLocation() const {
+    if (!prayerPicking_ || prayerHighlight_ >= prayerResults_.size()) return std::nullopt;
+    return prayerResults_[prayerHighlight_];
+}
+
+void Island::setPrayerPicking(bool picking, Clock::time_point now) {
+    if (prayerPicking_ == picking) return;
+    const float before = panelHeight(now);
+    prayerPicking_ = picking;
+    prayerModeStart_ = animate_ ? now : Clock::time_point{};
+    if (open_ && screen_ == Screen::prayer) {
+        heightFrom_ = before;
+        keepHeight_ = std::max(keepHeight_, before);
+        screenFrom_ = screen_;
+        screenStart_ = animate_ ? now : Clock::time_point{};
+    }
+}
+
+void Island::openPrayerPicker(Clock::time_point now) {
+    prayerQuery_.clear();
+    filterPrayerLocations();
+    setPrayerPicking(true, now);
+}
+
+void Island::closePrayerPicker() {
+    setPrayerPicking(false, Clock::now());
+    prayerSearchOpen_ = false;
+}
+
+std::optional<RECT> Island::prayerSearchRect() const {
+    if (!open_ || screen_ != Screen::prayer || !prayerPicking_ || !prayerSearch_) return std::nullopt;
+    const auto box = *prayerSearch_;
+    return RECT{anchor_.x + std::lround(box.left * scale_), anchor_.y + std::lround(box.top * scale_),
+                anchor_.x + std::lround(box.right * scale_), anchor_.y + std::lround(box.bottom * scale_)};
 }
 
 std::optional<RECT> Island::taskInputRect() const {
@@ -1209,7 +1339,7 @@ float Island::screenHeight(Screen screen) const {
         const float menu = audioPickerOpen_ ? systemAudioMenuTop + pickerHeight(outputs + 1) : 0;
         return navHeight + systemSectionTop(system_) + std::max({mixer, connection, menu}) + padBottom;
     }
-    case Screen::prayer: return prayerPanelHeight;
+    case Screen::prayer: return prayerPicking_ ? navHeight + prayerPickHeight : prayerPanelHeight;
     }
     return 146.0f;
 }
@@ -1243,7 +1373,7 @@ bool Island::moving(Clock::time_point now) const {
            now - scratchSlide_.start < segmentSlideTime || now - scratchModeStart_ < scratchFadeTime ||
            now - sourceMenuMotion_.start < menuRevealTime || now - audioMenuMotion_.start < menuRevealTime ||
            now - appMotion_.start < rowMotionTime || now - bluetoothMotion_.start < rowMotionTime ||
-           now - brightnessStart_ < brightnessTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
+           now - brightnessStart_ < brightnessTime || now - prayerModeStart_ < scratchFadeTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
            std::ranges::any_of(captureIndicators_, [now](auto const& item) { return now - item.start < captureTime; }) ||
            now - screenStart_ < shapeTime ||
            now - widthStart_ < shapeTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
@@ -1627,6 +1757,7 @@ void Island::setOpen(bool open, Clock::time_point now) {
     openAt_.reset();
     closeAt_.reset();
     if (open_ == open || (open && (suppressed_ || bubbleShowing()))) return;
+    if (!open) prayerPicking_ = false;
     const bool lyricsVisible = wantsLyrics();
     const auto motion = panelMotion(now);
     const float shown = motion.value;
@@ -1666,6 +1797,7 @@ void Island::setOpen(bool open, Clock::time_point now) {
 
 void Island::showScreen(Screen screen, Clock::time_point now) {
     if (screen == screen_ || !preferences_.enabled(screen)) return;
+    prayerPicking_ = false;
     const bool lyricsVisible = wantsLyrics();
     heightFrom_ = panelHeight(now);
     widthFrom_ = panelWidthAt(now);
@@ -2157,6 +2289,17 @@ bool Island::scroll(POINT client, int delta) {
         return steps != 0;
     }
     dropWheelRemainder_ = 0;
+    if (open_ && screen_ == Screen::prayer && prayerPicking_ && prayerResults_.size() > visiblePrayerResults &&
+        inside(prayerResultsViewport_, point)) {
+        wheelRemainder_ = 0;
+        prayerWheelRemainder_ += delta;
+        const int steps = prayerWheelRemainder_ / WHEEL_DELTA;
+        prayerWheelRemainder_ %= WHEEL_DELTA;
+        const int limit = static_cast<int>(prayerResults_.size() - visiblePrayerResults);
+        prayerResultOffset_ = static_cast<size_t>(std::clamp(static_cast<int>(prayerResultOffset_) - steps * 3, 0, limit));
+        return steps != 0;
+    }
+    prayerWheelRemainder_ = 0;
     if (open_ && screen_ == Screen::scratch && scratchTasks_ && tasks_ && tasks_->items.size() > visibleTaskRows &&
         inside(taskViewport_, point)) {
         wheelRemainder_ = 0;
@@ -2228,6 +2371,9 @@ bool Island::pointerDown(POINT client) {
         target->hit != Hit::source && target->hit != Hit::sourceMenu))) sourcePickerOpen_ = false;
     if (audioPickerOpen_ && (!target || (target->hit != Hit::audioPicker && target->hit != Hit::audioOutputMenu &&
         target->hit != Hit::audioOutputChoice && target->hit != Hit::soundSettings))) audioPickerOpen_ = false;
+    // While searching for a prayer location, a click anywhere but a result or the field cancels the search.
+    if (prayerPicking_ && (!target || (target->hit != Hit::prayerResult && target->hit != Hit::prayerSearchField)))
+        closePrayerPicker();
     if (!target) return false;
     if (target->hit == Hit::pill) {
         openFromCompact(Clock::now());
@@ -2321,7 +2467,15 @@ IslandCommand Island::pointerUp(POINT client) {
         }
         break;
     case Hit::prayerLocationPicker:
-        command.kind = IslandCommand::Kind::prayerLocation;
+        openPrayerPicker(now);
+        command.kind = IslandCommand::Kind::openPrayerSearch;
+        break;
+    case Hit::prayerSearchField: command.kind = IslandCommand::Kind::openPrayerSearch; break;
+    case Hit::prayerResult:
+        if (index < prayerResults_.size()) {
+            command.kind = IslandCommand::Kind::prayerLocation;
+            command.index = prayerResults_[index];
+        }
         break;
     case Hit::navHome: showScreen(Screen::home, now); break;
     case Hit::homeOverlapMode:
@@ -4214,6 +4368,75 @@ void Island::drawTaskRow(Task const& task, size_t index, float top, float left, 
     }
 }
 
+void Island::drawPrayerPicker(D2D1_RECT_F panel, bool record) {
+    const float x = (panel.left + panel.right - prayerPanelWidth) / 2 + padX;
+    const float width = prayerPanelWidth - 2 * padX;
+    const float top = panel.top + 12;
+
+    // Search field. The real text box is a Win32 edit placed over `input` by App while it has focus.
+    const auto field = box(x, top, width, 30);
+    const float hot = prayerSearchOpen_ ? 1.0f : hoverLevel(Hit::prayerSearchField);
+    target_->FillRoundedRectangle(rounded(field, 9), ink(mixColor(scratchSurface(), rgb(0xffffff), 0.05f + 0.035f * hot)));
+    const auto lens = pt(field.left + 15, (field.top + field.bottom) / 2 - 1);
+    target_->DrawEllipse(D2D1::Ellipse(lens, 4.2f, 4.2f), ink(prayerSearchOpen_ ? accent_ : rgb(mutedColor)), 1.3f);
+    target_->DrawLine(pt(lens.x + 3, lens.y + 3), pt(lens.x + 6.5f, lens.y + 6.5f),
+                      ink(prayerSearchOpen_ ? accent_ : rgb(mutedColor)), 1.3f, roundStroke_.get());
+    const auto count = prayerResults_.size();
+    const std::wstring status = count == 0 ? L"No matches" : prayerQuery_.empty() ? std::to_wstring(prayerLocations.size()) + L" locations"
+        : std::to_wstring(count) + (count == 1 ? L" result" : L" results");
+    text(status, bodyEndFont_.get(), box(field.right - 110, field.top, 100, 30), rgb(mutedColor));
+    // A single-line edit draws its text at the top, so the box is only as tall as the text line.
+    const auto input = box(field.left + 28, field.top + 7, field.right - field.left - 28 - 116, 17);
+    if (!prayerSearchOpen_) {
+        text(prayerQuery_.empty() ? L"Search city, regency, province, or WIB/WITA/WIT" : prayerQuery_,
+             bodyFont_.get(), box(input.left + 4, field.top, input.right - input.left - 4, 30),
+             prayerQuery_.empty() ? rgb(mutedColor) : rgb(inkColor));
+    }
+    if (record) {
+        prayerSearch_ = input;
+        addTarget(field, Hit::prayerSearchField);
+    }
+
+    // Results: name, province and zone; the current location carries a check.
+    const auto list = box(x, field.bottom + 8, width, prayerResultHeight * visiblePrayerResults);
+    if (record) prayerResultsViewport_ = list;
+    if (prayerResults_.empty()) {
+        text(L"No location matches that search", bodyFont_.get(), box(list.left + 10, list.top + 4, width - 20, 22),
+             rgb(mutedColor));
+        return;
+    }
+    const auto end = std::min(count, prayerResultOffset_ + visiblePrayerResults);
+    for (size_t index = prayerResultOffset_; index < end; ++index) {
+        const auto id = prayerResults_[index];
+        const auto row = box(list.left, list.top + prayerResultHeight * static_cast<float>(index - prayerResultOffset_),
+                             width - 8, prayerResultHeight);
+        const float level = std::max(index == prayerHighlight_ ? 1.0f : 0.0f,
+                                     pressed(Hit::prayerResult, index) ? 1.0f : hoverLevel(Hit::prayerResult, index));
+        if (level > 0) target_->FillRoundedRectangle(rounded(row, 7), ink(white(0.07f * level)));
+        const bool current = id == preferences_.prayerCity;
+        if (current) drawPickerCheck(pt(row.left + 13, (row.top + row.bottom) / 2));
+        const float nameLeft = row.left + 28;
+        if (id == 0) {
+            text(L"Off", bodyFont_.get(), box(nameLeft, row.top, 180, prayerResultHeight), current ? accent_ : rgb(inkColor));
+            text(L"Hide prayer times", bodyFont_.get(), box(nameLeft + 200, row.top, 220, prayerResultHeight), rgb(mutedColor));
+        } else {
+            const auto& location = prayerLocations[id - 1];
+            text(location.name, bodyFont_.get(), box(nameLeft, row.top, 190, prayerResultHeight),
+                 current ? accent_ : rgb(inkColor));
+            text(titleCase(location.province), bodyFont_.get(), box(nameLeft + 200, row.top, 220, prayerResultHeight),
+                 rgb(mutedColor));
+            text(location.zone(), bodyEndFont_.get(), box(row.right - 60, row.top, 50, prayerResultHeight), rgb(mutedColor));
+        }
+        if (record) addTarget(row, Hit::prayerResult, index);
+    }
+    if (count > visiblePrayerResults) {
+        const float span = list.bottom - list.top;
+        const float thumb = std::max(18.0f, span * visiblePrayerResults / static_cast<float>(count));
+        const float at = (span - thumb) * static_cast<float>(prayerResultOffset_) / static_cast<float>(count - visiblePrayerResults);
+        target_->FillRoundedRectangle(rounded(box(list.right - 3, list.top + at, 2, thumb), 1), ink(white(0.18f)));
+    }
+}
+
 float Island::dropFieldValue(Clock::time_point now) const {
     // 1 = the tall empty drop area, 0 = the short bar above the item list.
     const float target = dropItems_.empty() ? 1.0f : 0.0f;
@@ -4670,6 +4893,15 @@ void Island::drawConnection(D2D1_RECT_F column, bool record) {
 }
 
 void Island::drawPrayerSchedule(D2D1_RECT_F panel, bool record) {
+    const float fade = easeInOut(progress(prayerModeStart_, scratchFadeTime, drawNow_));
+    if (prayerPicking_) {
+        if (fade < 1) pushLayer(nullptr, fade);
+        drawPrayerPicker(panel, record);
+        if (fade < 1) popLayer();
+        return;
+    }
+    if (fade < 1) pushLayer(nullptr, fade);
+    struct Pop { Island* self; float fade; ~Pop() { if (fade < 1) self->popLayer(); } } pop{this, fade};
     const float x = (panel.left + panel.right - prayerPanelWidth) / 2 + padX;
     const float y = panel.top + 12;
     const auto info = box(x, y, prayerInfoWidth, 115);
@@ -5560,6 +5792,8 @@ void Island::draw(HWND window) {
     scratchEditor_.reset();
     taskInput_.reset();
     taskViewport_ = {};
+    prayerSearch_.reset();
+    prayerResultsViewport_ = {};
     timerEditor_.reset();
     lyricViewport_ = {};
     dropViewport_ = {};
