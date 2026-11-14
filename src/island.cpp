@@ -197,6 +197,7 @@ constexpr float taskFieldHeight = taskBarHeight + taskRowHeight * visibleTaskRow
 constexpr auto taskMotionTime = 260ms;
 constexpr auto segmentSlideTime = 240ms;
 constexpr auto scratchFadeTime = 220ms;
+constexpr auto menuRevealTime = 170ms;
 
 constexpr unsigned inkColor = 0xf5f6f8;
 constexpr unsigned mutedColor = 0xa4aab4;
@@ -1154,7 +1155,8 @@ bool Island::moving(Clock::time_point now) const {
            now - dropMotionStart_ < dropMotionTime || now - dropFieldStart_ < dropMotionTime ||
            now - homeRowsStart_ < homeRowTime || now - homeClockStart_ < homeClockTime ||
            now - taskMotionStart_ < taskMotionTime || now - timerSlide_.start < segmentSlideTime ||
-           now - scratchSlide_.start < segmentSlideTime || now - scratchModeStart_ < scratchFadeTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
+           now - scratchSlide_.start < segmentSlideTime || now - scratchModeStart_ < scratchFadeTime ||
+           now - sourceMenuMotion_.start < menuRevealTime || now - audioMenuMotion_.start < menuRevealTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
            std::ranges::any_of(captureIndicators_, [now](auto const& item) { return now - item.start < captureTime; }) ||
            now - screenStart_ < shapeTime ||
            now - widthStart_ < shapeTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
@@ -2442,7 +2444,38 @@ bool Island::pressed(Hit hit, size_t index) const {
 }
 
 void Island::addTarget(D2D1_RECT_F rect, Hit hit, size_t index) {
+    if (suppressTargets_) return;
     targets_.push_back({rect, hit, index});
+}
+
+float Island::menuReveal(MenuMotion& motion, bool open, Clock::time_point now) {
+    const auto at = [&] {
+        const float target = motion.open ? 1.0f : 0.0f;
+        return std::lerp(motion.from, target, easeOut(progress(motion.start, menuRevealTime, now)));
+    };
+    // Only animate while the panel stays on screen; a menu left open when the panel closed is gone on reopen.
+    const bool continuing = animate_ && motion.drawnAt != Clock::time_point{} && now - motion.drawnAt < 1500ms;
+    if (open != motion.open) {
+        motion.from = continuing ? at() : (open ? 0.0f : 1.0f);
+        motion.open = open;
+        motion.start = continuing ? now : Clock::time_point{};
+    }
+    motion.drawnAt = now;
+    return at();
+}
+
+void Island::beginMenuReveal(D2D1_RECT_F menu, float reveal) {
+    if (reveal >= 1) return;
+    target_->GetTransform(&menuTransform_);
+    const auto scale = D2D1::Matrix3x2F::Scale(0.96f + 0.04f * reveal, 0.86f + 0.14f * reveal, pt(menu.left, menu.top));
+    target_->SetTransform(scale * menuTransform_);
+    pushLayer(nullptr, reveal);
+}
+
+void Island::endMenuReveal(float reveal) {
+    if (reveal >= 1) return;
+    popLayer();
+    target_->SetTransform(menuTransform_);
 }
 
 // ---- Device resources ----------------------------------------------------------------------------
@@ -3263,8 +3296,20 @@ void Island::drawIsland(Clock::time_point now, float value, float amount, bool m
             drawScreen(screen_, content, now, artOpacity, morphTitle, recordPanel_);
         }
         drawNav(full, now, recordPanel_);
-        if (recordPanel_ && sourcePickerOpen_) drawSourceMenu(content);
-        if (recordPanel_ && audioPickerOpen_ && screen_ == Screen::system) drawAudioOutputMenu(content);
+        if (recordPanel_) {
+            const float source = menuReveal(sourceMenuMotion_, sourcePickerOpen_, now);
+            if (source > 0 && screen_ == Screen::media) {
+                suppressTargets_ = !sourcePickerOpen_;
+                drawSourceMenu(content, source);
+                suppressTargets_ = false;
+            }
+            const float audio = menuReveal(audioMenuMotion_, audioPickerOpen_ && screen_ == Screen::system, now);
+            if (audio > 0 && screen_ == Screen::system) {
+                suppressTargets_ = !audioPickerOpen_;
+                drawAudioOutputMenu(content, audio);
+                suppressTargets_ = false;
+            }
+        }
         if (panelOpacity < 1) popLayer();
     }
     if (sharedArt) {
@@ -3619,13 +3664,14 @@ void Island::drawSourceIcon(MediaSource const& source, D2D1_POINT_2F c) {
     }
 }
 
-void Island::drawSourceMenu(D2D1_RECT_F panel) {
+void Island::drawSourceMenu(D2D1_RECT_F panel, float reveal) {
     const size_t total = media_.sources.size();
     const size_t rows = (total + sourceColumns - 1) / sourceColumns;
     sourceOffset_ = std::min(sourceOffset_, rows > 2 ? (rows - 2) * sourceColumns : 0);
     const size_t count = std::min(visibleSources, total - sourceOffset_);
     const float width = 2 * pickerInset + sourceMenuStep * static_cast<float>(std::min(count, sourceColumns));
     sourceMenuRect_ = box(panel.left + padX, panel.top + sourceMenuTop, width, sourcePickerHeight(count));
+    beginMenuReveal(sourceMenuRect_, reveal);
     drawPickerSurface(sourceMenuRect_, Hit::sourceMenu);
     for (size_t slot = 0; slot < count; ++slot) {
         const size_t i = sourceOffset_ + slot;
@@ -3638,6 +3684,7 @@ void Island::drawSourceMenu(D2D1_RECT_F panel) {
         drawPickerRow(rect, L"", Hit::source, i, selected);
         drawSourceIcon(source, selected ? pt(c.x - 4, c.y) : c);
     }
+    endMenuReveal(reveal);
 }
 
 void Island::prepareLyricLayout(float width) {
@@ -4419,12 +4466,13 @@ void Island::drawPickerButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit
     target_->DrawLine(pt(x, y + 1.5f * direction), pt(x + 3, y - 1.5f * direction), ink(color), 1.2f);
 }
 
-void Island::drawAudioOutputMenu(D2D1_RECT_F panel) {
+void Island::drawAudioOutputMenu(D2D1_RECT_F panel, float reveal) {
     const float x = (panel.left + panel.right - systemPanelWidth) / 2 + padX;
     const float y = panel.top + systemSectionTop(system_) + systemAudioMenuTop;
     const auto count = std::min(audioOutputs_.size(), visibleAudioOutputs);
     const auto rows = std::max<size_t>(1, count);
     audioOutputMenuRect_ = box(x, y, systemColumnWidth, pickerHeight(rows + 1));
+    beginMenuReveal(audioOutputMenuRect_, reveal);
     drawPickerSurface(audioOutputMenuRect_, Hit::audioOutputMenu);
     const auto row = [&](size_t index) {
         return box(x + pickerInset, y + pickerInset + pickerRowHeight * static_cast<float>(index),
@@ -4437,6 +4485,7 @@ void Island::drawAudioOutputMenu(D2D1_RECT_F panel) {
     }
     if (!count) text(L"No outputs available", bodyFont_.get(), grow(row(0), -8, 0), rgb(mutedColor));
     drawPickerRow(row(rows), L"Sound settings…", Hit::soundSettings, 0, false);
+    endMenuReveal(reveal);
 }
 
 void Island::drawConnection(D2D1_RECT_F column, bool record) {

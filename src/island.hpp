@@ -274,8 +274,10 @@ private:
     void drawScreen(Screen screen, D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record);
     void drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record);
     void drawSourceIcon(MediaSource const& source, D2D1_POINT_2F center);
-    void drawSourceMenu(D2D1_RECT_F panel);
-    void drawAudioOutputMenu(D2D1_RECT_F panel);
+    void drawSourceMenu(D2D1_RECT_F panel, float reveal);
+    void drawAudioOutputMenu(D2D1_RECT_F panel, float reveal);
+    void beginMenuReveal(D2D1_RECT_F menu, float reveal);
+    void endMenuReveal(float reveal);
     void drawPickerSurface(D2D1_RECT_F rect, Hit hit);
     void drawPickerButton(D2D1_RECT_F rect, std::wstring_view label, Hit hit, bool record, bool expanded,
                           std::optional<bool> headphones = {});
@@ -508,6 +510,19 @@ private:
     SegmentSlide scratchSlide_;
     Clock::time_point scratchModeStart_{};
     float slidePosition(SegmentSlide& slide, size_t selected, Clock::time_point now);
+    // Dropdown menus grow from their top edge on open and shrink back on close. A closing menu is
+    // still drawn for a moment, but records no hit targets.
+    struct MenuMotion {
+        bool open = false;
+        float from = 0;
+        Clock::time_point start{};
+        Clock::time_point drawnAt{};
+    };
+    MenuMotion sourceMenuMotion_;
+    MenuMotion audioMenuMotion_;
+    bool suppressTargets_ = false;
+    D2D1_MATRIX_3X2_F menuTransform_{};
+    float menuReveal(MenuMotion& motion, bool open, Clock::time_point now);
     void drawTaskRow(Task const& task, size_t index, float top, float left, float width, float check, bool record);
     bool dropHover_ = false;
     bool popupOpen_ = false;
