@@ -3,12 +3,17 @@
 #define IDI_ZENITH_DOT 101
 #define IDD_SETTINGS 102
 #define IDD_PRAYER_LOCATION 103
+#define IDD_CONFIRM 104
 
 // Prayer location dialog
 #define IDC_PRAYER_SEARCH 1091
 #define IDC_PRAYER_RESULTS 1092
 #define IDC_PRAYER_STATUS 1093
 #define IDC_PRAYER_SOURCE 1094
+
+// Confirmation dialog
+#define IDC_CONFIRM_TITLE 1095
+#define IDC_CONFIRM_BODY 1096
 
 // Settings: the window creates these controls in code.
 #define IDC_START_WITH_WINDOWS 1001

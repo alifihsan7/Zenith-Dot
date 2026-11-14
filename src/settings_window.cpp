@@ -1185,10 +1185,120 @@ void SettingsWindow::move(Feature which, int step, int via) {
         SetFocus(proxy(IDC_FEATURE_MEDIA + static_cast<int>(which)));
 }
 
+// A dark Cancel / action question in the Settings style. Focus starts on Cancel,
+// and Enter presses whichever button has focus.
+struct Question {
+    wchar_t const* heading;
+    wchar_t const* body;
+    HBRUSH fill = CreateSolidBrush(background);
+    HFONT strong{};
+    HFONT normal{};
+
+    ~Question() {
+        DeleteObject(fill);
+        if (strong) DeleteObject(strong);
+        if (normal) DeleteObject(normal);
+    }
+};
+
+void roundedGdi(HDC dc, RECT area, int radius, COLORREF value) {
+    const auto brush = SelectObject(dc, GetStockObject(DC_BRUSH));
+    const auto pen = SelectObject(dc, GetStockObject(NULL_PEN));
+    SetDCBrushColor(dc, value);
+    RoundRect(dc, area.left, area.top, area.right + 1, area.bottom + 1, radius, radius);
+    SelectObject(dc, pen);
+    SelectObject(dc, brush);
+}
+
+LRESULT CALLBACK enterPresses(HWND button, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR id, DWORD_PTR) {
+    if (message == WM_GETDLGCODE && lparam && wparam == VK_RETURN) return DLGC_BUTTON | DLGC_WANTMESSAGE;
+    if (message == WM_KEYDOWN && wparam == VK_RETURN) {
+        SendMessageW(GetParent(button), WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(button), BN_CLICKED),
+                     reinterpret_cast<LPARAM>(button));
+        return 0;
+    }
+    if (message == WM_CHAR && wparam == VK_RETURN) return 0;
+    if (message == WM_NCDESTROY) RemoveWindowSubclass(button, enterPresses, id);
+    return DefSubclassProc(button, message, wparam, lparam);
+}
+
+INT_PTR CALLBACK questionProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    auto* question = reinterpret_cast<Question*>(GetWindowLongPtrW(window, DWLP_USER));
+    const auto scale = [&](int value) { return MulDiv(value, GetDpiForWindow(window), 96); };
+    switch (message) {
+    case WM_INITDIALOG: {
+        question = reinterpret_cast<Question*>(lparam);
+        SetWindowLongPtrW(window, DWLP_USER, lparam);
+        const BOOL dark = TRUE;
+        DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+        const auto font = [&](int size, int weight) {
+            return CreateFontW(-scale(size), 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                               CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        };
+        question->strong = font(15, FW_SEMIBOLD);
+        question->normal = font(13, FW_NORMAL);
+        SetDlgItemTextW(window, IDC_CONFIRM_TITLE, question->heading);
+        SetDlgItemTextW(window, IDC_CONFIRM_BODY, question->body);
+        SendDlgItemMessageW(window, IDC_CONFIRM_TITLE, WM_SETFONT, reinterpret_cast<WPARAM>(question->strong), FALSE);
+        SendDlgItemMessageW(window, IDC_CONFIRM_BODY, WM_SETFONT, reinterpret_cast<WPARAM>(question->normal), FALSE);
+        for (const int id : {IDCANCEL, IDOK}) SetWindowSubclass(GetDlgItem(window, id), enterPresses, 0, 0);
+        SetFocus(GetDlgItem(window, IDCANCEL));
+        return FALSE;
+    }
+    case WM_CTLCOLORDLG:
+        if (question) return reinterpret_cast<INT_PTR>(question->fill);
+        break;
+    case WM_CTLCOLORSTATIC:
+        if (question) {
+            const auto dc = reinterpret_cast<HDC>(wparam);
+            SetTextColor(dc, GetDlgCtrlID(reinterpret_cast<HWND>(lparam)) == IDC_CONFIRM_TITLE ? ink : muted);
+            SetBkColor(dc, background);
+            return reinterpret_cast<INT_PTR>(question->fill);
+        }
+        break;
+    case WM_DRAWITEM: {
+        if (!question) break;
+        const auto& item = *reinterpret_cast<DRAWITEMSTRUCT const*>(lparam);
+        FillRect(item.hDC, &item.rcItem, question->fill);
+        const bool action = item.CtlID == IDOK;
+        const bool pressed = (item.itemState & ODS_SELECTED) != 0;
+        const bool focused = (item.itemState & ODS_FOCUS) != 0 && !(item.itemState & ODS_NOFOCUSRECT);
+        auto face = item.rcItem;
+        // The focus ring sits outside a 3 px gap, so it also reads on the blue button.
+        if (focused) {
+            roundedGdi(item.hDC, face, scale(14), action ? ink : accent);
+            InflateRect(&face, -scale(3), -scale(3));
+            roundedGdi(item.hDC, face, scale(10), background);
+            InflateRect(&face, -scale(1), -scale(1));
+        }
+        roundedGdi(item.hDC, face, scale(10), action ? (pressed ? RGB(119, 170, 220) : accent) : pressed ? pressColor : hoverColor);
+        SetBkMode(item.hDC, TRANSPARENT);
+        SetTextColor(item.hDC, action ? background : ink);
+        const auto previous = SelectObject(item.hDC, question->normal);
+        RECT label = item.rcItem;
+        DrawTextW(item.hDC, action ? L"Reset" : L"Cancel", -1, &label, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        SelectObject(item.hDC, previous);
+        return TRUE;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wparam) == IDOK || LOWORD(wparam) == IDCANCEL) {
+            EndDialog(window, LOWORD(wparam) == IDOK);
+            return TRUE;
+        }
+        break;
+    case WM_CLOSE:
+        EndDialog(window, 0);
+        return TRUE;
+    }
+    return FALSE;
+}
+
 void SettingsWindow::reset() {
-    if (MessageBoxW(window_, L"Reset all Zenula settings to their defaults?\n\n"
-                    L"Your prayer location, Start with Windows, and the Windows notification connection stay as "
-                    L"they are. This can’t be undone.", title, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+    Question question{L"Reset all settings?",
+        L"Your prayer location, Start with Windows, and the Windows notification connection stay as they are. "
+        L"This can’t be undone."};
+    if (DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_CONFIRM), window_, questionProc,
+                        reinterpret_cast<LPARAM>(&question)) != 1) return;
     const auto current = Settings::load();
     Settings defaults;
     defaults.prayerCity = current.prayerCity;
