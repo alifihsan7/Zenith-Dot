@@ -523,6 +523,20 @@ private:
     bool suppressTargets_ = false;
     D2D1_MATRIX_3X2_F menuTransform_{};
     float menuReveal(MenuMotion& motion, bool open, Clock::time_point now);
+    // Rows in the App Volume and Bluetooth lists slide when their order changes and fade in when new.
+    // Only a change of membership or order animates; the per-second refresh of volumes does not.
+    struct RowMotion {
+        std::vector<std::wstring> keys;
+        std::vector<float> fromSlot;      // slot offset each row starts from
+        std::vector<bool> entering;
+        size_t offset = 0;
+        Clock::time_point start{};
+    };
+    RowMotion appMotion_;
+    RowMotion bluetoothMotion_;
+    void updateRowMotion(RowMotion& motion, std::vector<std::wstring> keys, size_t offset);
+    // Row top shift in slots and opacity for the row at index, for the current frame.
+    std::pair<float, float> rowMotion(RowMotion const& motion, size_t index) const;
     void drawTaskRow(Task const& task, size_t index, float top, float left, float width, float check, bool record);
     bool dropHover_ = false;
     bool popupOpen_ = false;

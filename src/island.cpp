@@ -198,6 +198,7 @@ constexpr auto taskMotionTime = 260ms;
 constexpr auto segmentSlideTime = 240ms;
 constexpr auto scratchFadeTime = 220ms;
 constexpr auto menuRevealTime = 170ms;
+constexpr auto rowMotionTime = 260ms;
 
 constexpr unsigned inkColor = 0xf5f6f8;
 constexpr unsigned mutedColor = 0xa4aab4;
@@ -723,8 +724,45 @@ bool Island::setBrightness(std::optional<float> level) {
     return true;
 }
 
+void Island::updateRowMotion(RowMotion& motion, std::vector<std::wstring> keys, size_t offset) {
+    if (keys == motion.keys && offset == motion.offset) return;
+    std::vector<bool> kept(motion.keys.size());
+    std::vector<float> from(keys.size(), 0.0f);
+    std::vector<bool> entering(keys.size(), false);
+    for (size_t i = 0; i < keys.size(); ++i) {
+        size_t match = motion.keys.size();
+        for (size_t j = 0; j < motion.keys.size(); ++j) {
+            if (!kept[j] && motion.keys[j] == keys[i]) { match = j; break; }
+        }
+        if (match == motion.keys.size()) {
+            entering[i] = !motion.keys.empty();     // the first fill of a list does not animate
+            continue;
+        }
+        kept[match] = true;
+        from[i] = (static_cast<float>(match) - static_cast<float>(motion.offset)) -
+                  (static_cast<float>(i) - static_cast<float>(offset));
+    }
+    // A scroll alone moves the window, not the rows, so it stays instant.
+    const bool membership = keys != motion.keys;
+    motion.keys = std::move(keys);
+    motion.fromSlot = std::move(from);
+    motion.entering = std::move(entering);
+    motion.offset = offset;
+    motion.start = animate_ && membership ? Clock::now() : Clock::time_point{};
+}
+
+std::pair<float, float> Island::rowMotion(RowMotion const& motion, size_t index) const {
+    const float t = easeInOut(progress(motion.start, rowMotionTime, drawNow_));
+    if (t >= 1 || index >= motion.fromSlot.size()) return {0.0f, 1.0f};
+    if (motion.entering[index]) return {0.2f * (1 - t), t};
+    return {motion.fromSlot[index] * (1 - t), 1.0f};
+}
+
 void Island::setBluetoothDevices(std::vector<ConnectedBluetoothDevice> devices) {
     bluetoothOffset_ = std::min(bluetoothOffset_, devices.size() - std::min(devices.size(), visibleBluetoothRows));
+    std::vector<std::wstring> keys;
+    for (const auto& device : devices) keys.push_back(device.name);
+    updateRowMotion(bluetoothMotion_, std::move(keys), bluetoothOffset_);
     bluetoothDevices_ = std::move(devices);
 }
 
@@ -746,6 +784,9 @@ void Island::setAppVolumes(std::vector<AppVolume> apps) {
     appOffset_ = std::min(appOffset_, limit);
     if ((pressed_ == Hit::appMute) && (pressedIndex_ >= apps.size() || pressedIndex_ >= appVolumes_.size() ||
         apps[pressedIndex_].id != appVolumes_[pressedIndex_].id)) pressed_ = Hit::none;
+    std::vector<std::wstring> keys;
+    for (const auto& app : apps) keys.push_back(app.id);
+    updateRowMotion(appMotion_, std::move(keys), appOffset_);
     appVolumes_ = std::move(apps);
 }
 
@@ -1156,7 +1197,8 @@ bool Island::moving(Clock::time_point now) const {
            now - homeRowsStart_ < homeRowTime || now - homeClockStart_ < homeClockTime ||
            now - taskMotionStart_ < taskMotionTime || now - timerSlide_.start < segmentSlideTime ||
            now - scratchSlide_.start < segmentSlideTime || now - scratchModeStart_ < scratchFadeTime ||
-           now - sourceMenuMotion_.start < menuRevealTime || now - audioMenuMotion_.start < menuRevealTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
+           now - sourceMenuMotion_.start < menuRevealTime || now - audioMenuMotion_.start < menuRevealTime ||
+           now - appMotion_.start < rowMotionTime || now - bluetoothMotion_.start < rowMotionTime || now - pillStart_ < shapeTime || now - panelStart_ < shapeTime || now - navStart_ < navRevealTime || now - navSelectionStart_ < navSelectionTime ||
            std::ranges::any_of(captureIndicators_, [now](auto const& item) { return now - item.start < captureTime; }) ||
            now - screenStart_ < shapeTime ||
            now - widthStart_ < shapeTime || (wantsLyrics() && now - lyricScrollStart_ < lyricScrollTime) ||
@@ -4360,10 +4402,15 @@ void Island::drawSystem(D2D1_RECT_F panel, bool record) {
     if (appVolumes_.empty()) {
         text(L"No apps are playing audio", bodyFont_.get(), box(x, rows.top, width, appRowHeight), rgb(mutedColor));
     }
+    target_->PushAxisAlignedClip(grow(rows, 8, 0), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     for (size_t index = appOffset_; index < end; ++index) {
-        drawAppVolume(index, box(x, rows.top + appRowHeight * static_cast<float>(index - appOffset_),
+        const auto [shift, opacity] = rowMotion(appMotion_, index);
+        if (opacity < 1) pushLayer(nullptr, opacity);
+        drawAppVolume(index, box(x, rows.top + appRowHeight * (static_cast<float>(index - appOffset_) + shift),
                                  width, appRowHeight), record);
+        if (opacity < 1) popLayer();
     }
+    target_->PopAxisAlignedClip();
 
     const float divider = x + width + systemRightGap / 2;
     const auto devices = std::clamp<size_t>(bluetoothDevices_.size(), 1, visibleBluetoothRows);
@@ -4538,9 +4585,12 @@ void Island::drawConnection(D2D1_RECT_F column, bool record) {
     const auto output = audioOutput_.find(L'(');
     const auto outputName = output != std::wstring::npos && audioOutput_.ends_with(L')')
         ? audioOutput_.substr(output + 1, audioOutput_.size() - output - 2) : audioOutput_;
+    target_->PushAxisAlignedClip(grow(viewport, 4, 0), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     for (size_t i = bluetoothOffset_; i < end; ++i) {
         const auto& device = bluetoothDevices_[i];
-        const float top = viewport.top + bluetoothRowHeight * static_cast<float>(i - bluetoothOffset_);
+        const auto [shift, opacity] = rowMotion(bluetoothMotion_, i);
+        const float top = viewport.top + bluetoothRowHeight * (static_cast<float>(i - bluetoothOffset_) + shift);
+        if (opacity < 1) pushLayer(nullptr, opacity);
         const bool active = device.audio && _wcsicmp(outputName.c_str(), device.name.c_str()) == 0;
         drawAlertIcon(device.audio ? IslandAlert::Kind::bluetoothAudio : IslandAlert::Kind::bluetooth,
                       pt(x + 1, top + 8), accent_);
@@ -4552,7 +4602,9 @@ void Island::drawConnection(D2D1_RECT_F column, bool record) {
             text(std::to_wstring(*device.battery) + L"%", bodyEndFont_.get(),
                  box(column.right - 36, top, 36, bluetoothRowHeight), accent_);
         }
+        if (opacity < 1) popLayer();
     }
+    target_->PopAxisAlignedClip();
     const auto notificationLabel = !windowsNotificationsQuiet_ ? L"Notification settings" :
         *windowsNotificationsQuiet_ ? L"Do Not Disturb on" : L"Do Not Disturb off";
     drawButton(box(x, viewport.top + static_cast<float>(std::clamp<size_t>(count, 1, visibleBluetoothRows)) * bluetoothRowHeight + 4,
