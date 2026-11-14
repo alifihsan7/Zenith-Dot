@@ -95,17 +95,20 @@ constexpr float bluetoothRowHeight = 33;
 constexpr size_t visibleAppRows = 3;
 constexpr size_t visibleAudioOutputs = 3;
 constexpr size_t visibleBluetoothRows = 3;
-constexpr float mediaPanelHeight = 239;
 constexpr float mediaIdleHeight = 88;
-constexpr float mediaCoverSize = 80;
-constexpr float mediaCoverTop = 12;
-constexpr float mediaTitleSize = 19;
-constexpr float mediaTitleHeight = 26;
-constexpr float mediaTitleTop = mediaCoverTop;
+// Now Playing, from the content top: header, song row, the spectrum timeline, times, then the transport.
+constexpr float mediaCoverSize = 56;
+constexpr float mediaCoverTop = 46;
+constexpr float mediaTitleSize = 17;
+constexpr float mediaTitleHeight = 23;
+constexpr float mediaTitleTop = mediaCoverTop + 8;
 constexpr float mediaArtistHeight = 16.8f;
-constexpr float mediaControlsCenterY = 159;
+constexpr float mediaBarsTop = mediaCoverTop + mediaCoverSize + 10;
+constexpr float mediaBarsHeight = 36;
+constexpr float mediaTimesTop = mediaBarsTop + mediaBarsHeight + 2;
+constexpr float mediaTransportRadius = 22;
 constexpr float mediaActionHeight = 32;
-constexpr float mediaActionsTop = mediaControlsCenterY - mediaActionHeight / 2;
+constexpr float mediaTransportY = mediaTimesTop + 14 + 10 + mediaTransportRadius;
 constexpr size_t visibleSources = 5;        // rows in the source list before it scrolls
 constexpr float sourceMenuWidth = 210;
 
@@ -1327,7 +1330,7 @@ float Island::screenHeight(Screen screen) const {
         return navHeight + homeCardsTop + (count ? homeCardStep * static_cast<float>(count) - homeCardGap : homeQuietHeight) + padBottom + 4;
     }
     case Screen::media:
-        return mediaPanelHeight;
+        return navHeight + mediaTransportY + mediaTransportRadius + 12;
     case Screen::timers: {
         const bool quickIdle = !quick_.running() && !quick_.paused();
         const bool focusIdle = !focus_.running() && !focus_.paused();
@@ -3803,9 +3806,33 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
 void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record) {
     const float x = panel.left;
     const float y = panel.top;
+    const float left = x + padX;
+    const float right = x + mediaPanelWidth - padX;
     const bool hasMedia = media_.hasSession;
     constexpr float mediaInnerWidth = mediaPanelWidth - 2 * padX;
-    const auto cover = box(x + padX, y + mediaCoverTop, mediaCoverSize, mediaCoverSize);
+
+    // Header: the title, and on the right the app that is playing; with several, it opens the source list.
+    text(L"Now Playing", titleFont_.get(), box(left, y + padTop, 160, 22.4f), rgb(inkColor));
+    if (hasMedia && !media_.sources.empty()) {
+        const auto chip = sourceChipRect(panel);
+        const auto& source = currentSource();
+        const bool multiple = media_.sources.size() > 1;
+        if (multiple) drawButton(chip, L"", Hit::sourcePicker, record, 0, sourcePickerOpen_);
+        else target_->FillRoundedRectangle(rounded(chip, 8), ink(white(0.04f)));
+        const float middle = chip.top + 15;
+        drawSourceIcon(source, pt(chip.left + 17, middle));
+        text(appName(source.appId), bodyFont_.get(), box(chip.left + 32, chip.top, chip.right - chip.left - 32 - (multiple ? 18 : 8), 30),
+             rgb(inkColor));
+        if (multiple) {
+            const auto color = ink(rgb(mutedColor));
+            const float direction = sourcePickerOpen_ ? -1.0f : 1.0f;
+            target_->DrawLine(pt(chip.right - 14, middle - 2 * direction), pt(chip.right - 10, middle + 2 * direction), color, 1);
+            target_->DrawLine(pt(chip.right - 10, middle + 2 * direction), pt(chip.right - 6, middle - 2 * direction), color, 1);
+        }
+    }
+
+    // Song: cover, title, artist and album.
+    const auto cover = box(left, y + mediaCoverTop, mediaCoverSize, mediaCoverSize);
     if (hasMedia) drawArt(cover, artOpacity);
     else {
         target_->FillRoundedRectangle(rounded(cover, 8), ink(white(0.07f)));
@@ -3819,79 +3846,59 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
     if (!hideTitle)
         text(hasMedia ? title() : L"Not playing", mediaTitleFont_.get(), box(x + mediaTitleLeft, y + mediaTitleTop, mediaTitleWidth, mediaTitleHeight),
              rgb(inkColor));
-    const auto& detail = media_.artist.empty() ? media_.album : media_.artist;
-    const auto artist = box(x + mediaTitleLeft, y + mediaTitleTop + mediaTitleHeight, mediaTitleWidth, mediaArtistHeight);
-    text(detail, bodyFont_.get(), artist, rgb(mutedColor));
-    if (hasMedia && preferences_.showWaveform) {
-        const float pauseSeconds = std::chrono::duration<float>(now - pausedAt_).count();
-        const float strength = !animate_ ? 0 : media_.playing ? 1 : 1 - lin(0, 0.35f, pauseSeconds);
-        constexpr float barWidth = 4;
-        const float top = artist.bottom + 5;
-        const float bottom = cover.bottom - 2;
-        const float step = (mediaTitleWidth - barWidth) / static_cast<float>(spectrum_.size() - 1);
-        for (size_t i = 0; i < spectrum_.size(); ++i) {
-            const float level = spectrum_[i] * strength;
-            const float height = std::lerp(2.0f, bottom - top, level);
-            const float left = x + mediaTitleLeft + static_cast<float>(i) * step;
-            target_->FillRoundedRectangle(rounded(box(left, bottom - height, barWidth, height), 1.5f),
-                                          ink(withAlpha(accent_, std::lerp(0.35f, 0.92f, level))));
-        }
-    }
+    std::wstring detail = media_.artist;
+    if (!media_.album.empty() && media_.album != media_.artist) detail += (detail.empty() ? L"" : L" · ") + media_.album;
+    if (!hasMedia) detail = L"Play something in any app";
+    text(detail, bodyFont_.get(), box(x + mediaTitleLeft, y + mediaTitleTop + mediaTitleHeight, mediaTitleWidth, mediaArtistHeight),
+         rgb(mutedColor));
 
-    if (hasMedia && !media_.sources.empty()) {
-        const auto selected = std::ranges::find_if(media_.sources, [this](MediaSource const& source) {
-            return source.id == media_.sourceId && source.appId == media_.appId;
-        });
-        const auto& source = selected != media_.sources.end() ? *selected : media_.sources.front();
-        const auto picker = box(x + padX, y + mediaActionsTop, 38, mediaActionHeight);
-        const float middle = picker.top + mediaActionHeight / 2;
-        const bool multiple = media_.sources.size() > 1;
-        if (multiple) {
-            drawButton(picker, L"", Hit::sourcePicker, record, 0, sourcePickerOpen_);
-            const auto color = ink(rgb(mutedColor));
-            const float direction = sourcePickerOpen_ ? -1.0f : 1.0f;
-            target_->DrawLine(pt(picker.right - 12, middle - 2 * direction), pt(picker.right - 8, middle + 2 * direction), color, 1);
-            target_->DrawLine(pt(picker.right - 8, middle + 2 * direction), pt(picker.right - 4, middle - 2 * direction), color, 1);
-        }
-        drawSourceIcon(source, pt(picker.left + (multiple ? 11 : 19), middle));
-    }
-
-    constexpr float lyricButtonWidth = 34;
-    const auto lyricButton = box(x + mediaPanelWidth - padX - lyricButtonWidth, y + mediaActionsTop,
-                                 lyricButtonWidth, mediaActionHeight);
-    if (hasMedia) {
-        drawButton(lyricButton, L"", Hit::lyrics, record, 0, lyricsOpen_);
-        drawLyricsGlyph(pt(lyricButton.left + 9, lyricButton.top + 8), lyricsOpen_ ? rgb(readoutColor) : rgb(inkColor));
-    }
-
-    // Timeline.
-    const auto rail = box(x + padX, cover.bottom + 9, mediaInnerWidth, 15);
+    // Timeline: the visualizer is the seek bar. Bars before the playhead take the accent; paused,
+    // they settle flat and it reads as a plain bar.
+    const auto rail = box(left, y + mediaBarsTop, mediaInnerWidth, mediaBarsHeight);
     timelineRect_ = rail;
-    const float middle = rail.top + 7.5f;
+    const float railMiddle = (rail.top + rail.bottom) / 2;
     const bool timed = hasMedia && media_.duration > 0;
     const double position = media_.positionAt(now);
-    const float fraction = dragging_ ? dragFraction_ : timed ? static_cast<float>(position / media_.duration) : 0;
-    target_->FillRoundedRectangle(rounded(box(rail.left, middle - 2, mediaInnerWidth, 4), 2), ink(white(0.18f)));
+    const float fraction = dragging_ ? dragFraction_ : timed ? std::clamp(static_cast<float>(position / media_.duration), 0.0f, 1.0f) : 0;
+    const float playX = rail.left + mediaInnerWidth * fraction;
+    const float pauseSeconds = std::chrono::duration<float>(now - pausedAt_).count();
+    const float strength = !hasMedia || !preferences_.showWaveform || !animate_ ? 0
+        : media_.playing ? 1 : 1 - lin(0, 0.35f, pauseSeconds);
+    constexpr int barCount = 40;
+    constexpr float barGap = 3;
+    constexpr float barWidth = (mediaInnerWidth - barGap * (barCount - 1)) / barCount;
+    constexpr float lastBand = static_cast<float>(std::tuple_size_v<Spectrum> - 1);
+    for (int i = 0; i < barCount; ++i) {
+        const float band = lastBand * static_cast<float>(i) / (barCount - 1);
+        const auto low = static_cast<size_t>(band);
+        const auto high = std::min(low + 1, spectrum_.size() - 1);
+        const float level = std::lerp(spectrum_[low], spectrum_[high], band - static_cast<float>(low)) * strength;
+        const float height = std::lerp(4.0f, mediaBarsHeight, level);
+        const float barLeft = rail.left + static_cast<float>(i) * (barWidth + barGap);
+        const bool played = hasMedia && (!timed || barLeft + barWidth / 2 <= playX);
+        const auto color = played ? withAlpha(accent_, std::lerp(0.8f, 1.0f, level)) : white(std::lerp(0.16f, 0.28f, level));
+        target_->FillRoundedRectangle(rounded(box(barLeft, railMiddle - height / 2, barWidth, height), 2), ink(color));
+    }
     if (timed) {
-        const float end = rail.left + mediaInnerWidth * fraction;
-        target_->FillRoundedRectangle(rounded(D2D1::RectF(rail.left, middle - 2, end, middle + 2), 2), ink(accent_));
-        if (media_.canSeek) {
-            const float knob = dragging_ || hovered(Hit::timeline) ? 7.0f : 6.0f;
-            target_->FillEllipse(D2D1::Ellipse({end, middle}, knob, knob), ink(accent_));
-            if (record) addTarget(grow(rail, 0, 4), Hit::timeline);
-        }
+        const bool seekable = media_.canSeek;
+        const float head = seekable && (dragging_ || hovered(Hit::timeline)) ? 3.0f : 2.0f;
+        target_->FillRoundedRectangle(rounded(box(playX - head / 2, rail.top, head, mediaBarsHeight), head / 2), ink(rgb(inkColor)));
+        if (record && seekable) addTarget(grow(rail, 0, 2), Hit::timeline);
         const double shown = dragging_ ? fraction * media_.duration : position;
         const bool showHours = media_.duration >= 3600;
-        text(timestamp(shown, showHours), monoFont_.get(), box(rail.left, rail.bottom, mediaInnerWidth / 2, 14), rgb(mutedColor));
+        auto elapsed = timestamp(shown, showHours);
+        if (!media_.playing) elapsed += L" · Paused";
+        const auto times = box(rail.left, y + mediaTimesTop, mediaInnerWidth / 2, 14);
+        text(elapsed, monoFont_.get(), times, rgb(mutedColor));
         text(timestamp(media_.duration, showHours), monoEndFont_.get(),
-             box(rail.left + mediaInnerWidth / 2, rail.bottom, mediaInnerWidth / 2, 14), rgb(mutedColor));
+             box(rail.left + mediaInnerWidth / 2, times.top, mediaInnerWidth / 2, 14), rgb(mutedColor));
     } else if (hasMedia) {
-        text(L"Live", monoFont_.get(), box(rail.left, rail.bottom, mediaInnerWidth / 2, 14), rgb(mutedColor));
+        text(L"Live", monoFont_.get(), box(rail.left, y + mediaTimesTop, mediaInnerWidth / 2, 14), rgb(mutedColor));
     }
 
-    // Transport: previous, play/pause on an accent disc, next.
-    const float middleY = y + mediaControlsCenterY;
-    constexpr float transportRadius = 22;
+    // Transport: previous, play/pause on an accent disc, next. Lyrics sits on the right.
+    const float middleY = y + mediaTransportY;
+    constexpr float transportRadius = mediaTransportRadius;
     const float centerX = x + mediaPanelWidth / 2;
     const Hit buttons[]{Hit::previous, Hit::toggle, Hit::next};
     const auto onAccent = mixColor(accent_, D2D1::ColorF(0, 0, 0), 0.86f);
@@ -3924,10 +3931,30 @@ void Island::drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacit
             addTarget(box(c.x - transportRadius, c.y - transportRadius, 2 * transportRadius, 2 * transportRadius),
                       buttons[i]);
     }
+    if (hasMedia) {
+        constexpr float lyricButtonWidth = 34;
+        const auto lyricButton = box(right - lyricButtonWidth, middleY - mediaActionHeight / 2, lyricButtonWidth, mediaActionHeight);
+        drawButton(lyricButton, L"", Hit::lyrics, record, 0, lyricsOpen_);
+        drawLyricsGlyph(pt(lyricButton.left + 9, lyricButton.top + 8), lyricsOpen_ ? rgb(readoutColor) : rgb(inkColor));
+    }
 
     if (panel.right - panel.left > mediaPanelWidth) {
         drawLyrics(panel, now, dragging_ ? dragFraction_ * media_.duration : position);
     }
+}
+
+MediaSource const& Island::currentSource() const {
+    const auto selected = std::ranges::find_if(media_.sources, [this](MediaSource const& source) {
+        return source.id == media_.sourceId && source.appId == media_.appId;
+    });
+    return selected != media_.sources.end() ? *selected : media_.sources.front();
+}
+
+D2D1_RECT_F Island::sourceChipRect(D2D1_RECT_F panel) {
+    const bool multiple = media_.sources.size() > 1;
+    const float nameWidth = std::min(110.0f, std::ceil(measure(appName(currentSource().appId), bodyFont_.get())));
+    const float width = 32 + nameWidth + (multiple ? 20 : 10);
+    return box(panel.left + mediaPanelWidth - padX - width, panel.top + 9, width, 30);
 }
 
 void Island::drawSourceIcon(MediaSource const& source, D2D1_POINT_2F c) {
@@ -3945,15 +3972,15 @@ void Island::drawSourceIcon(MediaSource const& source, D2D1_POINT_2F c) {
     }
 }
 
-// The same list as Audio Output, opening upward from the source button over the cover and title,
+// The same list as Audio Output, dropping down from the source chip over the song and timeline,
 // so the panel keeps its height.
 void Island::drawSourceMenu(D2D1_RECT_F panel, float reveal) {
     const size_t total = media_.sources.size();
     sourceOffset_ = std::min(sourceOffset_, total > visibleSources ? total - visibleSources : 0);
     const size_t count = std::min(visibleSources, total - sourceOffset_);
     const float height = pickerHeight(count);
-    const float bottom = panel.top + mediaActionsTop - 4;
-    sourceMenuRect_ = box(panel.left + padX, bottom - height, sourceMenuWidth, height);
+    const auto chip = sourceChipRect(panel);
+    sourceMenuRect_ = box(chip.right - sourceMenuWidth, chip.bottom + 4, sourceMenuWidth, height);
     beginMenuReveal(sourceMenuRect_, reveal);
     drawPickerSurface(sourceMenuRect_, Hit::sourceMenu);
     for (size_t slot = 0; slot < count; ++slot) {

@@ -295,6 +295,8 @@ private:
     void drawMedia(D2D1_RECT_F panel, Clock::time_point now, float artOpacity, bool hideTitle, bool record);
     void drawSourceIcon(MediaSource const& source, D2D1_POINT_2F center);
     void drawSourceMenu(D2D1_RECT_F panel, float reveal);
+    MediaSource const& currentSource() const;
+    D2D1_RECT_F sourceChipRect(D2D1_RECT_F panel);
     void drawAudioOutputMenu(D2D1_RECT_F panel, float reveal);
     void beginMenuReveal(D2D1_RECT_F menu, float reveal);
     void endMenuReveal(float reveal);
