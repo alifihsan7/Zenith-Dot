@@ -675,7 +675,7 @@ private:
     int breakSeconds_ = 5 * 60;
     std::optional<int> longBreakSeconds_;
     bool breakPhase_ = false;
-    bool quickView_ = false;
+    bool quickView_ = true;   // Timers opens on Quick Timer
     bool autoCycle_ = false;
     int focusRound_ = 1;     // 1..focusRounds while the automatic cycle is on
     Countdown focus_{25 * 60};
