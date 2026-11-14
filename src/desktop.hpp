@@ -34,8 +34,6 @@ struct AppVolume {
     bool operator==(AppVolume const&) const = default;
 };
 
-HWND windowBehindPill(HWND overlay, RECT const& pill);
-bool windowControlsOverlap(HWND window, RECT const& pill);
 bool fullscreenOnPrimary(HWND overlay, HWND foreground);
 void restoreOverlayZOrder(HWND overlay);
 bool activateMediaWindow(HWND overlay, std::wstring const& appId);

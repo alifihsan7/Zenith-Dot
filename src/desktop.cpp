@@ -8,7 +8,6 @@
 #include <mfidl.h>
 #include <initguid.h>
 #include <mmdeviceapi.h>
-#include <uiautomation.h>
 #include <oleauto.h>
 #include <shellapi.h>
 #include <shobjidl.h>
@@ -542,77 +541,6 @@ std::optional<bool> primaryWindowFullscreen(HWND window, FullscreenScan const& s
     return false;
 }
 
-}
-
-HWND windowBehindPill(HWND overlay, RECT const& pill) {
-    struct Scan {
-        RECT pill;
-        DWORD overlayProcess = 0;
-        HWND result = nullptr;
-    } scan{pill};
-    GetWindowThreadProcessId(overlay, &scan.overlayProcess);
-    EnumWindows([](HWND window, LPARAM data) -> BOOL {
-        auto& scan = *reinterpret_cast<Scan*>(data);
-        if (!IsWindowVisible(window) || IsIconic(window) || window == GetShellWindow()) return TRUE;
-        DWORD process = 0;
-        GetWindowThreadProcessId(window, &process);
-        if (process == scan.overlayProcess) return TRUE;
-
-        DWORD cloaked = 0;
-        if (SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
-            return TRUE;
-        RECT bounds{}, overlap{};
-        if (FAILED(DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS, &bounds, sizeof(bounds))) &&
-            !GetWindowRect(window, &bounds)) return TRUE;
-        if (!IntersectRect(&overlap, &bounds, &scan.pill)) return TRUE;
-        scan.result = window;
-        return FALSE;
-    }, reinterpret_cast<LPARAM>(&scan));
-    return scan.result;
-}
-
-bool windowControlsOverlap(HWND window, RECT const& pill) {
-    winrt::com_ptr<IUIAutomation2> automation;
-    if (FAILED(CoCreateInstance(__uuidof(CUIAutomation8), nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(automation.put())))) return false;
-    automation->put_ConnectionTimeout(350);
-    automation->put_TransactionTimeout(350);
-
-    winrt::com_ptr<IUIAutomationElement> root;
-    if (FAILED(automation->ElementFromHandle(window, root.put()))) return false;
-
-    winrt::com_ptr<IUIAutomationCondition> tabs, toolbar, title, chrome, visible, query;
-    VARIANT value{};
-    value.vt = VT_I4;
-    value.lVal = UIA_TabItemControlTypeId;
-    if (FAILED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, value, tabs.put()))) return false;
-    value.lVal = UIA_ToolBarControlTypeId;
-    if (FAILED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, value, toolbar.put()))) return false;
-    value.lVal = UIA_TitleBarControlTypeId;
-    if (FAILED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, value, title.put()))) return false;
-    IUIAutomationCondition* types[]{tabs.get(), toolbar.get(), title.get()};
-    if (FAILED(automation->CreateOrConditionFromNativeArray(types, 3, chrome.put()))) return false;
-    value.vt = VT_BOOL;
-    value.boolVal = VARIANT_FALSE;
-    if (FAILED(automation->CreatePropertyCondition(UIA_IsOffscreenPropertyId, value, visible.put())) ||
-        FAILED(automation->CreateAndCondition(chrome.get(), visible.get(), query.put()))) return false;
-
-    winrt::com_ptr<IUIAutomationCacheRequest> cache;
-    winrt::com_ptr<IUIAutomationElementArray> controls;
-    if (FAILED(automation->CreateCacheRequest(cache.put())) ||
-        FAILED(cache->AddProperty(UIA_BoundingRectanglePropertyId)) ||
-        FAILED(cache->put_AutomationElementMode(AutomationElementMode_None)) ||
-        FAILED(root->FindAllBuildCache(TreeScope_Descendants, query.get(), cache.get(), controls.put()))) return false;
-    int count = 0;
-    if (FAILED(controls->get_Length(&count))) return false;
-    for (int i = 0; i < count; ++i) {
-        winrt::com_ptr<IUIAutomationElement> control;
-        RECT bounds{}, overlap{};
-        if (SUCCEEDED(controls->GetElement(i, control.put())) &&
-            SUCCEEDED(control->get_CachedBoundingRectangle(&bounds)) &&
-            IntersectRect(&overlap, &bounds, &pill)) return true;
-    }
-    return false;
 }
 
 bool fullscreenOnPrimary(HWND overlay, HWND foreground) {

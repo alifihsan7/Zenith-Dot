@@ -42,7 +42,7 @@ struct Settings {
     bool showMicrophoneIndicator = true;
     bool autoCycle = false;   // Focus and Break follow each other automatically
     bool hideInFullscreen = true;
-    bool shrinkOverControls = false;
+    bool dotOnly = false;   // the island stays a dot; hovering still opens it
     bool fixedPillMinimum = false;
     unsigned islandSize = 1;
     unsigned accentMode = 0;

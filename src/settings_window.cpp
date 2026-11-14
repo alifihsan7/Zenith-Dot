@@ -110,6 +110,7 @@ struct Toggle {
 
 constexpr Toggle toggles[]{
     {IDC_HIDE_FULLSCREEN, &Settings::hideInFullscreen, &Settings::saveDisplay},
+    {IDC_DOT_ONLY, &Settings::dotOnly, &Settings::saveDisplay},
     {IDC_SHOW_WAVEFORM, &Settings::showWaveform, &Settings::saveIsland},
     {IDC_PILL_LYRICS, &Settings::showPillLyrics, &Settings::saveIsland},
     {IDC_AUTO_CYCLE, &Settings::autoCycle, &Settings::saveTimer},
@@ -864,6 +865,13 @@ void SettingsWindow::content(Builder& b, View view) const {
             : L"Not available for this copy of Zenula.", .enabled = canStart, .click = IDC_START_WITH_WINDOWS},
             {toggle(IDC_START_WITH_WINDOWS, canStart)});
         b.close();
+        b.label(L"Behavior");
+        b.open();
+        b.row({.title = L"Dot only", .detail = L"Keep the island as a quiet dot while you work. Hover to open it.",
+               .click = IDC_DOT_ONLY}, {toggle(IDC_DOT_ONLY)});
+        b.row({.title = L"Hide in fullscreen", .detail = L"Hide the island over fullscreen apps and games.",
+               .click = IDC_HIDE_FULLSCREEN}, {toggle(IDC_HIDE_FULLSCREEN)});
+        b.close();
         b.label(L"Reset");
         b.open();
         b.row({.title = L"Reset settings", .detail = L"Restore the defaults. Your prayer location and startup stay."},
@@ -885,7 +893,7 @@ void SettingsWindow::content(Builder& b, View view) const {
         b.row({.title = L"Size"}, {choice(IDC_ISLAND_SIZE)});
         b.row({.title = L"Pill width", .detail = L"Short titles keep a steady pill."}, {choice(IDC_PILL_WIDTH)});
         b.close();
-        b.label(L"Color and behavior");
+        b.label(L"Color");
         b.open();
         b.row({.title = L"Accent"}, {choice(IDC_ACCENT_MODE)});
         if (settings_.accentMode == 2) {
@@ -894,8 +902,6 @@ void SettingsWindow::content(Builder& b, View view) const {
             b.row({.title = L"Custom color", .indent = true},
                   {part(Draw::swatch, 0), part(Draw::value, 0, hex), part(Draw::button, IDC_CUSTOM_ACCENT, L"Change…")});
         }
-        b.row({.title = L"Hide in fullscreen", .detail = L"Hide the island over fullscreen apps and games.",
-               .click = IDC_HIDE_FULLSCREEN}, {toggle(IDC_HIDE_FULLSCREEN)});
         b.close();
         break;
     }

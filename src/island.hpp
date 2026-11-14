@@ -97,8 +97,7 @@ public:
     bool alertsQuiet() const;
     bool setWindowsNotificationsQuiet(std::optional<bool> quiet);
     void setSuppressed(bool suppressed);
-    bool setPillOccluded(bool occluded);
-    std::optional<RECT> pillFootprint() const;
+    bool setDotOnly(bool on);
     bool setCaptureActivity(CaptureActivity const& activity);
     void setLyrics(LyricsView const& lyrics);
     void setScratchpad(ScratchpadView const& scratchpad);
@@ -603,7 +602,7 @@ private:
     int dropWheelRemainder_ = 0;
     D2D1_RECT_F dropViewport_{};
     bool panelPinned_ = false;
-    bool pillOccluded_ = false;
+    bool dotOnly_ = false;
     ScratchpadView const* scratchpad_ = nullptr;
     std::optional<D2D1_RECT_F> scratchEditor_;
     winrt::com_ptr<IDWriteTextLayout> scratchLayout_;

@@ -644,6 +644,7 @@ void Island::setPreferences(Settings const& settings) {
     const bool newBreak = settings.breakPreset != preferences_.breakPreset;
     const bool hideClipboardPreview = preferences_.showClipboardPreviews && !settings.showClipboardPreviews;
     preferences_ = settings;
+    setDotOnly(settings.dotOnly);
     if (newFocus) focusSeconds_ = settings.focusMinutes() * 60;
     if (newBreak) {
         breakSeconds_ = settings.breakMinutes() * 60;
@@ -1526,7 +1527,7 @@ void Island::updatePill(Clock::time_point now, bool keepActivity) {
         else pillTitle_ = screenLabel(screen_);
         pillPlaying_ = media_.playing;
     }
-    const bool compact = pillOccluded_ && mode != PillMode::preview;
+    const bool compact = dotOnly_ && mode != PillMode::preview;
     if (bubbleShowing()) return;
     const float target = mode == PillMode::dot || compact ? 0.0f : 1.0f;
     if (target != pillTarget_) {
@@ -1694,24 +1695,12 @@ void Island::setSuppressed(bool suppressed) {
     pointerCancel();
 }
 
-bool Island::setPillOccluded(bool occluded) {
-    if (pillOccluded_ == occluded) return false;
-    pillOccluded_ = occluded;
-    if (occluded) openAt_.reset();
+bool Island::setDotOnly(bool on) {
+    if (dotOnly_ == on) return false;
+    dotOnly_ = on;
+    if (on) openAt_.reset();
     updatePill(Clock::now());
     return true;
-}
-
-std::optional<RECT> Island::pillFootprint() const {
-    if (pillMode_ == PillMode::dot || pillMode_ == PillMode::preview || pillSizeTarget_.width <= 0)
-        return std::nullopt;
-    const auto now = Clock::now();
-    const float halfWidth = (pillSizeTarget_.width + privacyBadgeWidth(now)) / 2;
-    const auto companion = activityCompanion();
-    const float extra = companion == PillMode::dot ? 0 : activityDotGap + activityWidth(companion, now);
-    return RECT{anchor_.x - std::lround(halfWidth * scale_), anchor_.y + std::lround(pillTop * scale_),
-                anchor_.x + std::lround((halfWidth + extra) * scale_),
-                anchor_.y + std::lround((pillTop + pillSizeTarget_.height) * scale_)};
 }
 
 bool Island::setCaptureActivity(CaptureActivity const& activity) {
@@ -1867,7 +1856,7 @@ void Island::finishFocus(Clock::time_point now, bool fromCompanion) {
 }
 
 void Island::completeCountdown(Clock::time_point now, PillMode mode, IslandAlert alert) {
-    if (!suppressed_ && !open_ && !pillOccluded_ && pillMode_ == mode && alertAllowed(alert.kind)) {
+    if (!suppressed_ && !open_ && !dotOnly_ && pillMode_ == mode && alertAllowed(alert.kind)) {
         const auto reveal = animate_ ? countdownCompletionMotion : 0ms;
         countdownCompletion_ = {now, now + reveal + alertHoldTime(alert), mode, std::move(alert.title)};
         return;
@@ -2028,7 +2017,7 @@ bool Island::wantsAudioSpectrum() const {
     if (!animate_ || suppressed_ || !preferences_.showWaveform ||
         !preferences_.enabled(Screen::media) || !media_.playing) return false;
     if (open_) return screen_ == Screen::media;
-    return !pillOccluded_ && ((pillMode_ == PillMode::media && !pillLyric_.layout) ||
+    return !dotOnly_ && ((pillMode_ == PillMode::media && !pillLyric_.layout) ||
                              activityCompanion() == PillMode::media);
 }
 
@@ -2052,7 +2041,7 @@ unsigned Island::frameInterval() const {
         return screen_ == Screen::system || scratchEditing_ || timerRunning ? 1000 : 0;
     }
     if (open_ || alert_) return 50;
-    if (pillOccluded_ && pillMode_ != PillMode::preview) return timerRunning ? 1000 : 0;
+    if (dotOnly_ && pillMode_ != PillMode::preview) return timerRunning ? 1000 : 0;
     if (pillMode_ == PillMode::preview) return 50;
     if (wantsLyricPill()) return 50;
     if (pillMode_ == PillMode::media) {
@@ -2633,7 +2622,7 @@ void Island::setHovered(Hit hit, size_t index, Clock::time_point now) {
 }
 
 float Island::shrinkToggleValue(Clock::time_point now) {
-    const bool on = preferences_.shrinkOverControls;
+    const bool on = preferences_.dotOnly;
     const auto at = [&] {
         const float t = animate_ ? easeInOut(progress(shrinkStart_, toggleTime, now)) : 1;
         return std::lerp(shrinkFrom_, *shrinkShown_ ? 1.0f : 0.0f, t);
@@ -3443,7 +3432,7 @@ void Island::drawHandoffOutgoing(D2D1_RECT_F pill, float opacity) {
 
 void Island::drawIsland(Clock::time_point now, float value, float amount, bool morphTitle) {
     const auto full = panelRect(now);
-    const bool pendingHandoff = !pillOccluded_ && !open_ && value > 0 && activitySwapActive(now) && activitySwap_.retireOutgoing;
+    const bool pendingHandoff = !dotOnly_ && !open_ && value > 0 && activitySwapActive(now) && activitySwap_.retireOutgoing;
     const auto from = pendingHandoff ? activitySwap_.pill : compactShape(now, amount);
     morphTitle = morphTitle && !pendingHandoff;
     const float fromRadius = std::min(from.right - from.left, from.bottom - from.top) / 2;
@@ -3457,7 +3446,7 @@ void Island::drawIsland(Clock::time_point now, float value, float amount, bool m
 
     if (!open_) {
         // Layered windows receive pointer input only where pixels have nonzero alpha.
-        const auto hit = compactHit(from, amount, pillOccluded_);
+        const auto hit = compactHit(from, amount, dotOnly_);
         target_->FillRectangle(hit, ink(D2D1::ColorF(0, 0, 0, 1.0f / 255)));
         addTarget(hit, Hit::pill);
     }
@@ -3616,7 +3605,7 @@ void Island::drawHome(D2D1_RECT_F panel, Clock::time_point now, bool record) {
     const auto modeRow = box(left, modeTop, innerWidth, 27);
     if (const float level = pressed(Hit::homeOverlapMode) ? 1 : hoverLevel(Hit::homeOverlapMode); level > 0)
         target_->FillRoundedRectangle(rounded(modeRow, 7), ink(white(0.07f * level)));
-    text(L"Auto-shrink", bodyFont_.get(), box(left, modeTop, innerWidth - 48, 27), rgb(inkColor));
+    text(L"Dot only", bodyFont_.get(), box(left, modeTop, innerWidth - 48, 27), rgb(inkColor));
     const float shrink = shrinkToggleValue(now);
     const auto toggle = box(right - 36, modeTop + 4, 36, 19);
     target_->FillRoundedRectangle(rounded(toggle, 9.5f), ink(mixColor(white(0.14f), accent_, shrink)));
@@ -5227,7 +5216,7 @@ void Island::startAlert(IslandAlert alert, Clock::time_point now, bool update) {
     alert_ = std::move(alert);
     if (update) return;
     closingDot_.reset();
-    alertFromOccludedDot_ = pillOccluded_ && pillMode_ != PillMode::preview;
+    alertFromOccludedDot_ = dotOnly_ && pillMode_ != PillMode::preview;
     const bool hasPrimaryPill = pillMode_ != PillMode::dot && pillMode_ != PillMode::privacy;
     const bool hasCompanion = activityCompanion() != PillMode::dot;
     alertUsesCompanionSlot_ = hasPrimaryPill && alert_->kind != IslandAlert::Kind::mediaStarted &&
@@ -5660,7 +5649,7 @@ void Island::draw(HWND window) {
     anchor_ = {work.left + (work.right - work.left) / 2, work.top - std::lround((1 - opacity) * 14 * scale_)};
     prepareText();
     updatePillLayout(now, workWidth);
-    const bool compactForControls = pillOccluded_ && pillMode_ != PillMode::preview;
+    const bool compactForControls = dotOnly_ && pillMode_ != PillMode::preview;
     const bool swapping = !compactForControls && activitySwapActive(now);
     if (swapping) {
         pillTransitionStart_ = {};
