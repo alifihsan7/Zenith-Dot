@@ -140,7 +140,7 @@ bool isTry(int id) { return id > IDC_SETTINGS_TRY && validSettingsTest(static_ca
 constexpr wchar_t const* featureNames[]{L"Now Playing", L"Timers", L"Scratchpad", L"Drop Zone", L"System"};
 constexpr wchar_t const* widthChoices[]{L"Fit to title", L"147 px minimum"};
 constexpr wchar_t const* sizeChoices[]{L"Compact", L"Default", L"Large"};
-constexpr wchar_t const* accentChoices[]{L"Album artwork", L"Zenula blue", L"Custom"};
+constexpr wchar_t const* accentChoices[]{L"Album artwork", L"Zenula blue", L"Custom", L"Per feature"};
 constexpr wchar_t const* pauseChoices[]{L"Now", L"3 s", L"5 s", L"Keep title"};
 constexpr wchar_t const* rhythmChoices[]{L"Pomodoro", L"Deep work", L"Long focus", L"Custom"};
 constexpr wchar_t const* quietChoices[]{L"Off", L"Follow Windows", L"On"};
@@ -912,7 +912,8 @@ void SettingsWindow::content(Builder& b, View view) const {
         b.close();
         b.label(L"Color");
         b.open();
-        b.row({.title = L"Accent"}, {choice(IDC_ACCENT_MODE)});
+        b.row({.title = L"Accent", .detail = settings_.accentMode == 3 ? L"Each panel has its own color." : L""},
+              {choice(IDC_ACCENT_MODE)});
         if (settings_.accentMode == 2) {
             wchar_t hex[16]{};
             swprintf_s(hex, L"#%06X", settings_.customAccent);
@@ -1697,7 +1698,7 @@ void SettingsWindow::drawItem(Item const& item, std::vector<Item> const& items, 
 void SettingsWindow::drawPreview(RECT stage, Clock::time_point now) {
     const auto area = rectF(stage);
     canvas_.rounded(area, pxf(10), color(stageColor));
-    const auto art = settings_.accentMode == 0 ? albumSample : settings_.accentMode == 1 ? accent
+    const auto art = settings_.accentMode == 0 || settings_.accentMode == 3 ? albumSample : settings_.accentMode == 1 ? accent
         : hexColor(settings_.customAccent);
     constexpr wchar_t song[] = L"Now Playing";
     const float textWidth = canvas_.measure(song, Font::label);

@@ -117,7 +117,7 @@ Settings Settings::load() {
         settings.showWaveform = (*value & 2u) != 0;
         settings.showPillLyrics = (*value & 4u) != 0;
         settings.islandSize = choice(3, 1);
-        settings.accentMode = choice(5, 0);
+        settings.accentMode = choice(5, 0, 4);   // 0 album, 1 Zenula blue, 2 custom, 3 per feature
         settings.compactPause = choice(7, 1, 4);
     }
     if (const auto value = read(notificationsValue)) {

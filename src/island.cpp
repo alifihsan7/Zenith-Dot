@@ -1705,10 +1705,37 @@ void Island::updatePillLayout(Clock::time_point now, float workWidth) {
     if (pillMode_ == PillMode::dot) previousPillLyric_ = {};
 }
 
+// Per feature: the open panel's color, or the pill's activity when the panel is closed. Now Playing keeps
+// the cover's colors; the rest are fixed (each over 9:1 against the cards).
+CoverTheme Island::featureTheme() const {
+    const bool cover = media_.hasSession && preferences_.enabled(Screen::media);
+    auto shown = screen_;
+    if (!open_) {
+        shown = pillMode_ == PillMode::media ? Screen::media
+            : pillMode_ == PillMode::focus || pillMode_ == PillMode::timer ? Screen::timers : Screen::home;
+    }
+    CoverTheme theme{};
+    switch (shown) {
+    case Screen::media: if (cover) theme = media_.theme; break;
+    case Screen::timers: {
+        const bool resting = breakPhase_ && (focus_.running() || focus_.paused()) && (open_ ? !quickView_ : pillMode_ == PillMode::focus);
+        theme.accent = resting ? breakColor : 0x8fd0ff;
+        break;
+    }
+    case Screen::scratch: theme.accent = 0xf2d38a; break;
+    case Screen::drop: theme.accent = 0xc8b4ff; break;
+    case Screen::system: theme.accent = 0xa9c0dc; break;
+    case Screen::prayer: theme.accent = 0x86dcb8; break;
+    case Screen::home: break;
+    }
+    return theme;
+}
+
 void Island::updateTheme(Clock::time_point now) {
     auto target = media_.hasSession && preferences_.enabled(Screen::media) && preferences_.accentMode == 0
         ? media_.theme : CoverTheme{};
     if (preferences_.accentMode == 2) target.accent = preferences_.customAccent;
+    if (preferences_.accentMode == 3) target = featureTheme();
     const auto fade = [&] {
         const float t = progress(themeStart_, themeTime, now);
         return t * t * (3 - 2 * t);

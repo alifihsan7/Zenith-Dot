@@ -246,6 +246,7 @@ private:
     bool moving(Clock::time_point now) const;
     void updatePill(Clock::time_point now, bool keepActivity = true);
     void updatePillLayout(Clock::time_point now, float workWidth);
+    CoverTheme featureTheme() const;
     void updateTheme(Clock::time_point now);
     bool alertAllowed(IslandAlert::Kind kind) const;
     void setOpen(bool open, Clock::time_point now);
